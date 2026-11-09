@@ -1056,6 +1056,25 @@ mod tests {
     }
 
     proptest! {
+        // The layout test below checks every path of the text; this one
+        // checks the wiring of the screen: the title, the sidebar and the
+        // drawing of the lines.
+        #[test]
+        fn no_escaped_character_reaches_the_screen(
+            text in markdown(),
+            title in markdown(),
+            width in 20..100u16,
+        ) {
+            let view = View::new(parse(&text), title);
+            let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
+            terminal.draw(|frame| view.draw(frame)).unwrap();
+            for cell in terminal.backend().buffer().content() {
+                prop_assert!(!cell.symbol().chars().any(needs_escape), "{:?}", cell.symbol());
+            }
+        }
+    }
+
+    proptest! {
         #[test]
         fn no_control_character_reaches_the_view(text in markdown(), width in 1..60usize) {
             for line in layout(&parse(&text), width, None).lines {
