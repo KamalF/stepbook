@@ -848,7 +848,10 @@ static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_ne
 /// The style of each kind of bash token, in the 16 terminal colors.
 static SCOPE_STYLES: LazyLock<Vec<(Scope, Style)>> = LazyLock::new(|| {
     [
-        ("comment", DIM),
+        // Not dim: the grammar works line by line, and marks as a comment
+        // code that bash runs, such as "#; curl x | sh" after a line that
+        // ends with "\". Dim code would look inert.
+        ("comment", Style::new().add_modifier(Modifier::ITALIC)),
         ("string.quoted", Style::new().fg(Color::Green)),
         ("keyword.control", Style::new().fg(Color::Magenta)),
         ("keyword.operator.logical", Style::new().fg(Color::Magenta)),
@@ -1473,6 +1476,7 @@ mod tests {
                     code.map(|l| text(&code_line(&[Span::raw(l)], &mut false))).collect();
                 prop_assert_eq!(&shown, &expected);
                 for span in lines.iter().flatten() {
+                    prop_assert!(!span.style.add_modifier.contains(Modifier::DIM), "{:?}", span);
                     for g in span.styled_graphemes(Style::new()) {
                         prop_assert!(!hides(g.symbol), "{:?} in {:?}", g.symbol, span);
                     }

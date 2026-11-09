@@ -969,7 +969,7 @@ mod tests {
             "```bash\nexport A=\"x $HOME\" # note\nif [ -n 1 ]; then ls -la | grep x; fi\n```";
         assert_snapshot!(render(text, 80), @r#"
         ▌ «b:#1»
-        ▌ «magenta:export» «cyan:A»=«green:"x »«cyan:$HOME»«green:"» «d:# note»
+        ▌ «magenta:export» «cyan:A»=«green:"x »«cyan:$HOME»«green:"» «i:# note»
         ▌ «magenta:if» «blue:[» -n 1 «blue:]»«magenta:;» «magenta:then» «blue:ls» -la «magenta:|» «blue:grep» x«magenta:;» «magenta:fi»
         "#);
     }
@@ -1148,7 +1148,7 @@ mod tests {
         ▌ «b:#1»  «yellow:hidden characters in code»
         ▌ «blue:echo» «green:"prod»«yellow:<200b>»«green:"» ok«yellow:<fe0f>»
         ▌ «yellow:<0301>»«blue:ls» «green:'x»«yellow:<ff9e><ff9e>»«green:'»
-        ▌ «blue:true»«yellow:<a0>»«d:#; ls»
+        ▌ «blue:true»«yellow:<a0>»«i:#; ls»
         "#);
     }
 
