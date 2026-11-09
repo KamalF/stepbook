@@ -355,7 +355,7 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 | `watch.rs` | File watcher. |
 
 - Rust, one crate, no async runtime, no component framework. The target size is 2,000 to 3,000 lines without tests.
-- Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `unicode-width` (word wrap), `portable-pty`, `vt100`, `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
+- Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `portable-pty`, `vt100`, `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
 - The main thread owns all state. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events.
 - Control events (keys, paste, resize, process exit, file change) go to their own channel. The loop handles them before pending output, so keys stay responsive while a block prints a lot.
 - Output goes through a bounded channel per run. A slow UI slows the program, and no output is lost.
@@ -469,5 +469,6 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The repository is `KamalF/stepbook` on GitHub, with the MIT licence and CI on GitHub Actions | 2026-11-09 |
 | stepbook installs with mise from the GitHub repository, and from releases on crates.io | 2026-11-09 |
 | New dependency: `unicode-width`, for the word wrap. ratatui already depends on it | 2026-11-09 |
+| `unicode-width` is dropped. stepbook measures each grapheme with ratatui's `CellWidth`, as the ratatui buffer does: a sum of character widths gets emoji with a variation selector wrong | 2026-11-09 |
 | stepbook parses its arguments with its own code, not with clap: it has four options | 2026-11-09 |
 | Bidi controls are escaped as control characters are (6.5) | 2026-11-09 |

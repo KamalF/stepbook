@@ -2,12 +2,12 @@ use pulldown_cmark::{Alignment, HeadingLevel};
 use ratatui::Frame;
 use std::ops::Range;
 
+use ratatui::buffer::CellWidth;
 use ratatui::layout::{Constraint, Layout, Position, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::merge::MergeStrategy;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding};
-use unicode_width::UnicodeWidthChar;
 
 use crate::doc::{Cell, DIM, Document, Item, Kind, WARNING, escaped};
 
@@ -97,7 +97,8 @@ impl View {
     /// The width of the sidebar with its left border: the longest label
     /// and 4 columns, between 12 and 30.
     fn sidebar_width(&self) -> u16 {
-        let labels = (0..self.doc.blocks.len()).map(|i| Span::raw(self.doc.label(i)).width());
+        let labels =
+            (0..self.doc.blocks.len()).map(|i| text_width(&[Span::raw(self.doc.label(i))]));
         let width = labels.max().unwrap_or(0) + 4;
         width.clamp(12, 30) as u16
     }
@@ -249,7 +250,7 @@ pub fn layout(doc: &Document, width: usize, selected: Option<usize>) -> Page {
     let mut paragraph = None;
     for item in &doc.items {
         let start = lines.len();
-        let prefix_width = item.rest.iter().map(Span::width).sum::<usize>();
+        let prefix_width = text_width(&item.rest);
         let width = width.saturating_sub(prefix_width).max(1);
         let body = match &item.kind {
             Kind::Text(text) => wrap(text, width),
@@ -332,7 +333,7 @@ fn code(
     }
     for line in lines {
         for part in hard_wrap(line, width) {
-            out.push(Line::from([vec![gutter.clone()], part].concat()));
+            out.push(Line::from([vec![gutter.clone()], part.spans].concat()));
         }
     }
     out
@@ -345,7 +346,7 @@ fn table(aligns: &[Alignment], rows: &[Vec<Cell>], width: usize) -> Vec<Line<'st
     let mut widths = vec![1; columns];
     for row in rows {
         for (cell, w) in row.iter().zip(&mut widths) {
-            *w = (*w).max(cell.iter().map(Span::width).sum());
+            *w = (*w).max(text_width(cell));
         }
     }
     // Each column takes a border and a space on each side of its text.
@@ -375,7 +376,7 @@ fn table(aligns: &[Alignment], rows: &[Vec<Cell>], width: usize) -> Vec<Line<'st
                     .map(|s| s.patch_style(Modifier::BOLD))
                     .collect();
             }
-            let gap = w - cell.iter().map(Span::width).sum::<usize>();
+            let gap = w - text_width(&cell);
             let before = match aligns.get(column) {
                 Some(Alignment::Center) => gap / 2,
                 Some(Alignment::Right) => gap,
@@ -397,138 +398,159 @@ fn table(aligns: &[Alignment], rows: &[Vec<Cell>], width: usize) -> Vec<Line<'st
 
 /// Cuts styled text to `width` columns. Cut text ends with `…`.
 fn truncate(text: &[Span], width: usize) -> Vec<Span<'static>> {
-    let mut chars: Vec<Styled> = text
-        .iter()
-        .flat_map(|s| s.content.chars().map(|c| (c, s.style)))
-        .collect();
-    if chars.iter().map(|(c, _)| char_width(*c)).sum::<usize>() > width {
-        let mut used = 0;
-        let keep = chars
-            .iter()
-            .take_while(|(c, _)| {
-                used += char_width(*c);
-                used < width
-            })
-            .count();
-        let style = chars.get(keep).map_or_else(Style::new, |(_, s)| *s);
-        chars.truncate(keep);
-        chars.push(('…', style));
-    }
-    join_styles(chars)
-}
-
-/// Wraps styled text at `width` columns, at any character.
-fn hard_wrap(text: &[Span], width: usize) -> Vec<Vec<Span<'static>>> {
-    let mut lines = Vec::new();
-    let mut line = Vec::new();
+    let mut kept: Vec<Glyph> = Vec::new();
     let mut used = 0;
-    for (c, style) in text
-        .iter()
-        .flat_map(|s| s.content.chars().map(|c| (c, s.style)))
-    {
-        let w = char_width(c);
-        if used + w > width && !line.is_empty() {
-            lines.push(join_styles(std::mem::take(&mut line)));
-            used = 0;
+    for glyph in glyphs(text).flatten() {
+        if used + glyph.width <= width {
+            used += glyph.width;
+            kept.push(glyph);
+            continue;
         }
-        line.push((c, style));
-        used += w;
+        // Drop glyphs until the ellipsis fits. It takes the style of the
+        // first glyph that does not show.
+        let mut first_cut = glyph;
+        while used + 1 > width
+            && let Some(last) = kept.pop()
+        {
+            used -= last.width;
+            first_cut = last;
+        }
+        if width > 0 {
+            kept.push(Glyph {
+                text: "…",
+                style: first_cut.style,
+                width: 1,
+            });
+        }
+        break;
     }
-    lines.push(join_styles(line));
-    lines
+    join_styles(&kept)
 }
 
-/// Word-wraps styled text to `width` columns. A `\n` starts a new line.
-/// A word longer than the width breaks at the width.
+/// Wraps styled text at `width` columns, at any grapheme.
+fn hard_wrap(text: &[Span], width: usize) -> Vec<Line<'static>> {
+    let mut wrapper = Wrapper::new(width);
+    for glyph in glyphs(text).flatten() {
+        wrapper.push(glyph);
+    }
+    wrapper.finish()
+}
+
+/// Word-wraps styled text to `width` columns. A word longer than the
+/// width breaks at the width.
 fn wrap(text: &[Span], width: usize) -> Vec<Line<'static>> {
-    let mut wrapper = Wrapper {
-        width,
-        lines: Vec::new(),
-        line: Vec::new(),
-        line_width: 0,
-        word: Vec::new(),
-        word_width: 0,
-        spaces: Vec::new(),
-    };
-    for span in text {
-        for c in span.content.chars() {
-            match c {
-                '\n' => {
-                    wrapper.end_word();
-                    wrapper.spaces.clear();
-                    wrapper.break_line();
-                }
-                ' ' => {
-                    wrapper.end_word();
-                    wrapper.spaces.push((c, span.style));
-                }
-                _ => {
-                    wrapper.word.push((c, span.style));
-                    wrapper.word_width += char_width(c);
-                }
+    let mut wrapper = Wrapper::new(width);
+    for glyph in glyphs(text) {
+        match glyph {
+            None => {
+                wrapper.end_word();
+                wrapper.spaces.clear();
+                wrapper.break_line();
             }
+            Some(glyph) if glyph.text == " " => {
+                wrapper.end_word();
+                wrapper.spaces.push(glyph);
+            }
+            Some(glyph) => wrapper.word.push(glyph),
         }
     }
-    wrapper.end_word();
-    wrapper.break_line();
-    wrapper.lines
+    wrapper.finish()
 }
 
-fn char_width(c: char) -> usize {
-    c.width().unwrap_or(0)
+/// A grapheme of styled text, with the columns that it takes on screen.
+#[derive(Clone, Copy)]
+struct Glyph<'a> {
+    text: &'a str,
+    style: Style,
+    width: usize,
 }
 
-type Styled = (char, Style);
+/// The graphemes of styled text, measured as the ratatui buffer measures
+/// them. A hard line break, a span `\n` alone (see `doc::Kind::Text`),
+/// gives `None`.
+fn glyphs<'a>(text: &'a [Span<'a>]) -> impl Iterator<Item = Option<Glyph<'a>>> {
+    text.iter().flat_map(|span| {
+        let hard_break = std::iter::once(None).filter(move |_| span.content == "\n");
+        let glyphs = span.styled_graphemes(Style::new()).map(|g| {
+            Some(Glyph {
+                text: g.symbol,
+                style: g.style,
+                width: usize::from(g.symbol.cell_width()),
+            })
+        });
+        hard_break.chain(glyphs)
+    })
+}
 
-struct Wrapper {
+/// The width of styled text on screen.
+fn text_width(text: &[Span]) -> usize {
+    glyphs(text).flatten().map(|g| g.width).sum()
+}
+
+#[derive(Default)]
+struct Wrapper<'a> {
     width: usize,
     lines: Vec<Line<'static>>,
-    line: Vec<Styled>,
+    line: Vec<Glyph<'a>>,
     line_width: usize,
-    word: Vec<Styled>,
-    word_width: usize,
+    word: Vec<Glyph<'a>>,
     /// The spaces before the word. They are dropped at a line break.
-    spaces: Vec<Styled>,
+    spaces: Vec<Glyph<'a>>,
 }
 
-impl Wrapper {
+impl<'a> Wrapper<'a> {
+    fn new(width: usize) -> Self {
+        Wrapper {
+            width,
+            ..Default::default()
+        }
+    }
+
+    /// Adds a glyph to the line, after a line break if it would pass the
+    /// width. A glyph wider than the width gets a line of its own.
+    fn push(&mut self, glyph: Glyph<'a>) {
+        if self.line_width + glyph.width > self.width && !self.line.is_empty() {
+            self.break_line();
+        }
+        self.line_width += glyph.width;
+        self.line.push(glyph);
+    }
+
     fn end_word(&mut self) {
         if self.word.is_empty() {
             return;
         }
         let spaces = std::mem::take(&mut self.spaces);
         let word = std::mem::take(&mut self.word);
-        let word_width = std::mem::take(&mut self.word_width);
+        let word_width: usize = word.iter().map(|g| g.width).sum();
         if self.line_width + spaces.len() + word_width <= self.width {
-            self.line_width += spaces.len();
-            self.line.extend(spaces);
+            spaces.into_iter().for_each(|g| self.push(g));
         } else if !self.line.is_empty() {
             self.break_line();
         }
-        for (c, style) in word {
-            let w = char_width(c);
-            if self.line_width + w > self.width && !self.line.is_empty() {
-                self.break_line();
-            }
-            self.line.push((c, style));
-            self.line_width += w;
-        }
+        word.into_iter().for_each(|g| self.push(g));
     }
 
     fn break_line(&mut self) {
-        let chars = std::mem::take(&mut self.line);
+        let glyphs = std::mem::take(&mut self.line);
         self.line_width = 0;
-        self.lines.push(Line::from(join_styles(chars)));
+        self.lines.push(Line::from(join_styles(&glyphs)));
+    }
+
+    fn finish(mut self) -> Vec<Line<'static>> {
+        self.end_word();
+        self.break_line();
+        self.lines
     }
 }
 
-/// Groups characters of the same style into spans.
-fn join_styles(chars: Vec<Styled>) -> Vec<Span<'static>> {
+/// Groups glyphs of the same style into spans.
+fn join_styles(glyphs: &[Glyph]) -> Vec<Span<'static>> {
     let mut spans: Vec<Span> = Vec::new();
-    for (c, style) in chars {
+    for glyph in glyphs {
         match spans.last_mut() {
-            Some(span) if span.style == style => span.content.to_mut().push(c),
-            _ => spans.push(Span::styled(c.to_string(), style)),
+            Some(span) if span.style == glyph.style => span.content.to_mut().push_str(glyph.text),
+            _ => spans.push(Span::styled(glyph.text.to_string(), glyph.style)),
         }
     }
     spans
@@ -537,7 +559,7 @@ fn join_styles(chars: Vec<Styled>) -> Vec<Span<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doc::{needs_escape, parse};
+    use crate::doc::{escaped, needs_escape, parse};
     use insta::assert_snapshot;
     use proptest::prelude::*;
     use ratatui::Terminal;
@@ -966,8 +988,14 @@ mod tests {
         let lines: Vec<Line> = (0..height)
             .map(|y| {
                 let cells = (0..width).map(|x| &buffer[(x, y)]);
-                let chars = cells.flat_map(|c| c.symbol().chars().map(|ch| (ch, c.style())));
-                Line::from(join_styles(chars.collect()))
+                let glyphs: Vec<Glyph> = cells
+                    .map(|c| Glyph {
+                        text: c.symbol(),
+                        style: c.style(),
+                        width: 1,
+                    })
+                    .collect();
+                Line::from(join_styles(&glyphs))
             })
             .collect();
         markup(&lines)
@@ -1223,6 +1251,37 @@ mod tests {
         }
         println!("{count} runbooks in {}", dir.display());
         assert!(count > 0);
+    }
+
+    /// The widths of the lines of `markdown` at `width`, as the ratatui
+    /// buffer measures them.
+    fn line_widths(markdown: &str, width: usize) -> Vec<usize> {
+        let page = layout(&parse(markdown), width, None);
+        page.lines.iter().map(|l| text_width(&l.spans)).collect()
+    }
+
+    #[test]
+    fn emoji_with_a_variation_selector_count_two_columns() {
+        // "⚠️" is 1 column as a sum of chars, and 2 on screen.
+        let table = "| ⚠\u{fe0f}⚠\u{fe0f}⚠\u{fe0f} | b |\n|---|---|\n";
+        assert!(line_widths(table, 12).iter().all(|&w| w <= 12));
+        let code = format!("```bash\necho {}\n```", "⚠\u{fe0f}".repeat(8));
+        assert_eq!(line_widths(&code, 8), [4, 7, 8, 8, 6]);
+    }
+
+    proptest! {
+        #[test]
+        fn hard_wrap_keeps_each_glyph_within_the_width(text in any::<String>(), width in 1..12usize) {
+            let spans = escaped(&text, Style::new());
+            let lines = hard_wrap(&spans, width);
+            for line in &lines {
+                // Only a glyph wider than the width passes it, alone.
+                let glyphs = glyphs(&line.spans).count();
+                prop_assert!(text_width(&line.spans) <= width || glyphs == 1);
+            }
+            let shown: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+            prop_assert_eq!(shown, spans.iter().map(|s| s.content.as_ref()).collect::<String>());
+        }
     }
 
     #[test]

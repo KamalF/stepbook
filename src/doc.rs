@@ -2,11 +2,11 @@ use std::collections::HashMap;
 use std::sync::LazyLock;
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use ratatui::buffer::CellWidth;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 use syntect::util::LinesWithEndings;
-use unicode_width::UnicodeWidthChar;
 
 pub const INLINE_CODE: Style = Style::new().fg(Color::Cyan);
 pub const DIM: Style = Style::new().add_modifier(Modifier::DIM);
@@ -471,35 +471,53 @@ pub fn needs_escape(c: char) -> bool {
 
 /// Appends `text` to `out`, with each character that needs an escape
 /// shown as vim shows it, in the warning color: `^[` for ESC, `^?` for
-/// DEL, `<9b>` for a C1 character and `<202e>` for a bidi control. A tab expands to spaces up to the next
-/// multiple of 8 columns. `column` counts the columns of the line so far.
+/// DEL, `<9b>` for a C1 character and `<202e>` for a bidi control. A tab
+/// expands to spaces up to the next multiple of 8 columns. `column` counts
+/// the columns of the line so far.
 pub fn escape_into(out: &mut Vec<Span<'static>>, text: &str, style: Style, column: &mut usize) {
-    let mut plain = String::new();
+    // A run of plain text or of escapes, and the bytes of it that `column`
+    // counts already.
+    let mut run = String::new();
+    let mut escapes = false;
+    let mut counted = 0;
     for c in text.chars() {
+        let escape = c != '\t' && needs_escape(c);
+        if escape != escapes && !run.is_empty() {
+            *column += width(&run[counted..]);
+            out.push(run_span(std::mem::take(&mut run), style, escapes));
+            counted = 0;
+        }
+        escapes = escape;
         if c == '\t' {
+            *column += width(&run[counted..]);
             let spaces = 8 - *column % 8;
-            plain.extend(std::iter::repeat_n(' ', spaces));
+            run.extend(std::iter::repeat_n(' ', spaces));
             *column += spaces;
-        } else if needs_escape(c) {
-            if !plain.is_empty() {
-                out.push(Span::styled(std::mem::take(&mut plain), style));
+            counted = run.len();
+        } else if escape {
+            match u32::from(c) {
+                0x7f => run.push_str("^?"),
+                n @ 0..0x20 => run.extend(['^', char::from_u32(n + 0x40).unwrap_or('?')]),
+                n @ 0x80..0x100 => run.push_str(&format!("<{n:02x}>")),
+                n => run.push_str(&format!("<{n:04x}>")),
             }
-            let shown = match u32::from(c) {
-                0x7f => "^?".to_string(),
-                n @ 0..0x20 => format!("^{}", char::from_u32(n + 0x40).unwrap_or('?')),
-                n @ 0x80..0x100 => format!("<{n:02x}>"),
-                n => format!("<{n:04x}>"),
-            };
-            *column += shown.len();
-            out.push(Span::styled(shown, style.patch(WARNING)));
         } else {
-            plain.push(c);
-            *column += c.width().unwrap_or(0);
+            run.push(c);
         }
     }
-    if !plain.is_empty() {
-        out.push(Span::styled(plain, style));
+    *column += width(&run[counted..]);
+    if !run.is_empty() {
+        out.push(run_span(run, style, escapes));
     }
+}
+
+fn run_span(run: String, style: Style, escapes: bool) -> Span<'static> {
+    Span::styled(run, if escapes { style.patch(WARNING) } else { style })
+}
+
+/// The width of text on screen, as the ratatui buffer measures it.
+pub fn width(text: &str) -> usize {
+    usize::from(text.cell_width())
 }
 
 /// One line of text, with its control characters escaped.
@@ -794,7 +812,7 @@ mod tests {
             let mut out = Vec::new();
             escape_into(&mut out, &text, Style::new(), &mut column);
             prop_assert!(out.iter().all(|s| !s.content.chars().any(needs_escape)));
-            prop_assert_eq!(column, out.iter().map(Span::width).sum::<usize>());
+            prop_assert_eq!(column, out.iter().map(|s| width(&s.content)).sum::<usize>());
         }
 
         #[test]
@@ -888,9 +906,17 @@ mod tests {
     }
 
     #[test]
+    fn escapes_in_a_row_make_one_span() {
+        let spans = escaped("a\u{1b}\u{7}b", Style::new());
+        let texts: Vec<_> = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(texts, ["a", "^[^G", "b"]);
+    }
+
+    #[test]
     fn tabs_expand_to_the_next_multiple_of_8_columns() {
         assert_eq!(shown("\ta\tbc"), "        a       bc");
         assert_eq!(shown("日本語\tx"), "日本語  x");
+        assert_eq!(shown("⚠\u{fe0f}\tx"), "⚠\u{fe0f}      x");
         assert_eq!(shown("^\u{1b}\tx"), "^^[     x");
         assert_eq!(shown("abc\t\tx"), format!("abc{}x", " ".repeat(13)));
     }

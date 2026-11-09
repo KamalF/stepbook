@@ -1598,7 +1598,6 @@ dependencies = [
  "ratatui",
  "syntect",
  "tempfile",
- "unicode-width",
 ]
 
 [[package]]
