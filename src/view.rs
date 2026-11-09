@@ -1,6 +1,8 @@
 use pulldown_cmark::{Alignment, HeadingLevel};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use std::ops::Range;
+
+use ratatui::layout::{Constraint, Layout, Position, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::merge::MergeStrategy;
 use ratatui::text::{Line, Span};
@@ -38,28 +40,58 @@ impl View {
     }
 
     pub fn draw(&self, frame: &mut Frame) {
-        let [main, footer] =
-            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
-        let mut document = main;
-        if main.width >= SIDEBAR_SCREEN_WIDTH {
-            // The sidebar and the document share the border between them.
-            let width = self.sidebar_width();
-            self.draw_sidebar(
-                frame,
-                Rect {
-                    width: width + 1,
-                    ..main
-                },
-            );
-            document.x += width;
-            document.width -= width;
+        let (main, footer) = split_footer(frame.area());
+        if let Some(sidebar) = self.sidebar_area(main) {
+            self.draw_sidebar(frame, sidebar);
         }
-        self.draw_document(frame, document);
+        let area = self.document_area(main);
+        let block = self.document_block();
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let page = layout(&self.doc, usize::from(inner.width), self.selected);
+        let scroll = self
+            .scroll
+            .min(max_scroll(&page, usize::from(inner.height)));
+        let visible = page.lines.iter().skip(scroll);
+        for (y, line) in (inner.y..inner.bottom()).zip(visible) {
+            frame.buffer_mut().set_line(inner.x, y, line, inner.width);
+        }
         let line = Line::from(vec![
             Span::styled(" NORMAL ", Style::new().add_modifier(Modifier::REVERSED)),
-            Span::raw("  q quit"),
+            Span::raw("  ↑↓ move  q quit"),
         ]);
         frame.render_widget(line, footer);
+    }
+
+    /// The area of the sidebar, with the border that it shares with the
+    /// document view, or `None` on a narrow screen.
+    fn sidebar_area(&self, main: Rect) -> Option<Rect> {
+        let width = self.sidebar_width();
+        (main.width >= SIDEBAR_SCREEN_WIDTH).then_some(Rect {
+            width: width + 1,
+            ..main
+        })
+    }
+
+    fn document_area(&self, main: Rect) -> Rect {
+        match self.sidebar_area(main) {
+            Some(sidebar) => Rect {
+                x: main.x + sidebar.width - 1,
+                width: main.width - sidebar.width + 1,
+                ..main
+            },
+            None => main,
+        }
+    }
+
+    fn document_block(&self) -> Block<'static> {
+        let mut title = vec![Span::raw(" ")];
+        title.extend(escaped(&self.title, Style::new()));
+        title.push(Span::raw(" "));
+        Block::bordered()
+            .title(Line::from(title))
+            .padding(Padding::left(1))
+            .merge_borders(MergeStrategy::Exact)
     }
 
     /// The width of the sidebar with its left border: the longest label
@@ -103,29 +135,120 @@ impl View {
         }
     }
 
-    fn draw_document(&self, frame: &mut Frame, area: Rect) {
-        let mut title = vec![Span::raw(" ")];
-        title.extend(escaped(&self.title, Style::new()));
-        title.push(Span::raw(" "));
-        let block = Block::bordered()
-            .title(Line::from(title))
-            .padding(Padding::left(1))
-            .merge_borders(MergeStrategy::Exact);
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        let lines = layout(&self.doc, usize::from(inner.width), self.selected);
-        let visible = lines.iter().skip(self.scroll);
-        for (y, line) in (inner.y..inner.bottom()).zip(visible) {
-            frame.buffer_mut().set_line(inner.x, y, line, inner.width);
+    /// The page and the height of the document view on a screen of
+    /// `size`.
+    fn page(&self, size: Size) -> (Page, usize) {
+        let (main, _) = split_footer(Rect::from((Position::ORIGIN, size)));
+        let inner = self.document_block().inner(self.document_area(main));
+        let page = layout(&self.doc, usize::from(inner.width), self.selected);
+        (page, usize::from(inner.height))
+    }
+
+    /// Moves the selection by `step` blocks, and scrolls to show it.
+    pub fn select_by(&mut self, step: isize, size: Size) {
+        if let Some(i) = self.selected {
+            let last = self.doc.blocks.len() - 1;
+            self.select(i.saturating_add_signed(step).min(last), size);
+        }
+    }
+
+    pub fn select_first(&mut self, size: Size) {
+        match self.doc.blocks.is_empty() {
+            true => self.scroll = 0,
+            false => self.select(0, size),
+        }
+    }
+
+    pub fn select_last(&mut self, size: Size) {
+        match self.doc.blocks.len() {
+            0 => {
+                let (page, height) = self.page(size);
+                self.scroll = max_scroll(&page, height);
+            }
+            n => self.select(n - 1, size),
+        }
+    }
+
+    fn select(&mut self, i: usize, size: Size) {
+        self.selected = Some(i);
+        let (page, height) = self.page(size);
+        let scroll = self.scroll.min(max_scroll(&page, height));
+        self.scroll = scroll_to(scroll, page.tops[i], &page.blocks[i], height);
+    }
+
+    /// Scrolls one page down (`pages` = 1) or up (-1). The selection moves
+    /// to the first block whose info line is in view, else to the first
+    /// block in view.
+    pub fn scroll_pages(&mut self, pages: isize, size: Size) {
+        let (page, height) = self.page(size);
+        let max = max_scroll(&page, height);
+        let scroll = self.scroll.min(max);
+        self.scroll = scroll
+            .saturating_add_signed(pages * height as isize)
+            .min(max);
+        let view = self.scroll..self.scroll + height;
+        let blocks = &page.blocks;
+        let in_view = blocks.iter().position(|b| view.contains(&b.start));
+        let overlap = || {
+            blocks
+                .iter()
+                .position(|b| b.start < view.end && b.end > view.start)
+        };
+        if let Some(i) = in_view.or_else(overlap) {
+            self.selected = Some(i);
         }
     }
 }
 
+fn split_footer(area: Rect) -> (Rect, Rect) {
+    let [main, footer] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
+    (main, footer)
+}
+
+/// The largest scroll: the last line of the page at the bottom of the view.
+fn max_scroll(page: &Page, height: usize) -> usize {
+    page.lines.len().saturating_sub(height)
+}
+
+/// The scroll closest to `scroll` that shows the lines from `top` to the
+/// end of `block`. If they do not fit in `height`, it shows `top`, or the
+/// first line of the block if `top` is too far above it.
+fn scroll_to(scroll: usize, top: usize, block: &Range<usize>, height: usize) -> usize {
+    if block.end - top > height {
+        if block.start - top < height {
+            top
+        } else {
+            block.start
+        }
+    } else if top < scroll {
+        top
+    } else if block.end > scroll + height {
+        block.end - height
+    } else {
+        scroll
+    }
+}
+
+/// The document laid out at a width.
+pub struct Page {
+    pub lines: Vec<Line<'static>>,
+    /// The lines of each block: its info line, then its code.
+    pub blocks: Vec<Range<usize>>,
+    /// The first line of the paragraph above each block, or the first line
+    /// of the block if no paragraph is right above it.
+    pub tops: Vec<usize>,
+}
+
 /// The lines of the document view at `width` columns. The selected block
 /// gets a highlighted gutter.
-pub fn layout(doc: &Document, width: usize, selected: Option<usize>) -> Vec<Line<'static>> {
+pub fn layout(doc: &Document, width: usize, selected: Option<usize>) -> Page {
     let mut lines = Vec::new();
+    let mut blocks = vec![0..0; doc.blocks.len()];
+    let mut tops = vec![0; doc.blocks.len()];
+    // The first line of the last item that is not blank, if it is text.
+    let mut paragraph = None;
     for item in &doc.items {
+        let start = lines.len();
         let prefix_width = item.rest.iter().map(Span::width).sum::<usize>();
         let width = width.saturating_sub(prefix_width).max(1);
         let body = match &item.kind {
@@ -148,8 +271,21 @@ pub fn layout(doc: &Document, width: usize, selected: Option<usize>) -> Vec<Line
             Kind::Blank => vec![Line::default()],
         };
         lines.extend(prefixed(item, body));
+        match item.kind {
+            Kind::Code { block: Some(i), .. } => {
+                blocks[i] = start..lines.len();
+                tops[i] = paragraph.unwrap_or(start);
+            }
+            Kind::Blank => continue,
+            _ => {}
+        }
+        paragraph = matches!(item.kind, Kind::Text(_)).then_some(start);
     }
-    lines
+    Page {
+        lines,
+        blocks,
+        tops,
+    }
 }
 
 /// Puts the item's prefixes before the lines of its body.
@@ -450,7 +586,7 @@ mod tests {
     }
 
     fn render(markdown: &str, width: usize) -> String {
-        markup(&layout(&parse(markdown), width, None))
+        markup(&layout(&parse(markdown), width, None).lines)
     }
 
     #[test]
@@ -593,11 +729,11 @@ mod tests {
     #[test]
     fn deep_nesting_does_not_overflow_the_stack() {
         let quotes = layout(&parse(&format!("{} x\n", ">".repeat(100_000))), 80, None);
-        assert_eq!(quotes.len(), 1);
+        assert_eq!(quotes.lines.len(), 1);
         let list: String = (0..1_000)
             .map(|i| format!("{}- a\n", "  ".repeat(i)))
             .collect();
-        assert_eq!(layout(&parse(&list), 80, None).len(), 1_000);
+        assert_eq!(layout(&parse(&list), 80, None).lines.len(), 1_000);
     }
 
     #[test]
@@ -793,7 +929,7 @@ mod tests {
     proptest! {
         #[test]
         fn no_control_character_reaches_the_view(text in markdown(), width in 1..60usize) {
-            for line in layout(&parse(&text), width, None) {
+            for line in layout(&parse(&text), width, None).lines {
                 for span in &line.spans {
                     prop_assert!(!span.content.chars().any(char::is_control), "{:?}", span);
                 }
@@ -803,7 +939,7 @@ mod tests {
 
     /// The screen of `view` at `width` by `height`, in the format of
     /// `markup`.
-    fn screen(view: &View, width: u16, height: u16) -> String {
+    fn screen_with_footer(view: &View, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| view.draw(frame)).unwrap();
         let buffer = terminal.backend().buffer();
@@ -817,6 +953,12 @@ mod tests {
         markup(&lines)
     }
 
+    /// The screen without its footer, which changes with each milestone.
+    fn screen(view: &View, width: u16, height: u16) -> String {
+        let screen = screen_with_footer(view, width, height);
+        screen.rsplit_once('\n').unwrap().0.to_string()
+    }
+
     fn view(markdown: &str) -> View {
         View::new(parse(markdown), "run.md".into())
     }
@@ -825,7 +967,7 @@ mod tests {
 
     #[test]
     fn the_screen_has_a_sidebar_a_document_view_and_a_footer() {
-        assert_snapshot!(screen(&view(BLOCKS), 80, 16), @"
+        assert_snapshot!(screen_with_footer(&view(BLOCKS), 80, 16), @"
         ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
         │«cyan,b:▶»«red:!» «cyan,b:check»   │ «b:Restart»                                                          │
         │   restart │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━»│
@@ -841,7 +983,7 @@ mod tests {
         │           │ ▌ «b:#3»                                                             │
         │           │ ▌ «blue:echo»                                                           │
         └───────────┴──────────────────────────────────────────────────────────────────┘
-        «r: NORMAL »  q quit
+        «r: NORMAL »  ↑↓ move  q quit
         ");
     }
 
@@ -862,7 +1004,6 @@ mod tests {
         │           │ «cyan,b:▌ »«b:restart»                                                        │
         │           │ «cyan,b:▌ »«blue:systemctl» restart api                                          │
         └───────────┴──────────────────────────────────────────────────────────────────┘
-        «r: NORMAL »  q quit
         ");
     }
 
@@ -876,7 +1017,6 @@ mod tests {
         │ Why: apply the config.                                                      │
         │                                                                             │
         └─────────────────────────────────────────────────────────────────────────────┘
-        «r: NORMAL »  q quit
         ");
     }
 
@@ -896,7 +1036,6 @@ mod tests {
         ┌ blocks ─────────────────────┬ run.md ────────────────────────────────────────┐
         │«cyan,b:▶»  «cyan,b:nnnnnnnnnnnnnnnnnnnnnnnnn…»│ «cyan,b:▌ »«b:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn»     │
         └─────────────────────────────┴────────────────────────────────────────────────┘
-        «r: NORMAL »  q quit
         ");
     }
 
@@ -910,7 +1049,6 @@ mod tests {
         │   #7      │                                                                  │
         │«cyan,b:▶»  «cyan,b:#8»      │ ▌ «b:#2»                                                             │
         └───────────┴──────────────────────────────────────────────────────────────────┘
-        «r: NORMAL »  q quit
         ");
     }
 
@@ -920,8 +1058,106 @@ mod tests {
         assert_snapshot!(screen(&view, 40, 3), @"
         ┌ a«yellow:^[»]52;c;x«yellow:^G^J»b.md ──────────────────┐
         └──────────────────────────────────────┘
-        «r: NORMAL »  q quit
         ");
+    }
+
+    #[test]
+    fn scroll_to_moves_as_little_as_possible() {
+        // (scroll, top, block, height) -> scroll
+        let cases = [
+            ((5, 6, 8..10, 10), 5),
+            ((5, 2, 3..6, 10), 2),
+            ((0, 12, 14..20, 10), 10),
+            ((0, 12, 14..30, 10), 12),
+            ((0, 2, 14..30, 10), 14),
+        ];
+        for ((scroll, top, block, height), expected) in cases {
+            let found = scroll_to(scroll, top, &block, height);
+            assert_eq!(found, expected, "{scroll} {top} {block:?} {height}");
+        }
+    }
+
+    /// Four steps of 9 lines: a heading and its rule, a blank line, a
+    /// paragraph, a blank line, a block of 3 lines and a blank line. Step
+    /// i starts at line 9 * i, and its block at line 9 * i + 5. The view
+    /// shows 6 lines.
+    fn steps() -> View {
+        let step =
+            |i| format!("## Step {i}\n\nWhy: step {i}.\n\n```bash [name:s{i}]\nls\nls\n```\n\n");
+        view(&(1..=4).map(step).collect::<String>())
+    }
+
+    const SMALL: Size = Size::new(60, 9);
+
+    fn position(view: &View) -> (Option<usize>, usize) {
+        (view.selected, view.scroll)
+    }
+
+    #[test]
+    fn moving_down_selects_the_next_block_and_shows_its_paragraph() {
+        let mut view = steps();
+        view.select_by(1, SMALL);
+        assert_eq!(position(&view), (Some(1), 11));
+        assert_snapshot!(screen(&view, 60, 9), @"
+        ┌ run.md ──────────────────────────────────────────────────┐
+        │                                                          │
+        │ Why: step 2.                                             │
+        │                                                          │
+        │ «cyan,b:▌ »«b:s2»                                                     │
+        │ «cyan,b:▌ »«blue:ls»                                                     │
+        │ «cyan,b:▌ »«blue:ls»                                                     │
+        └──────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn moving_up_shows_the_paragraph_above_the_block() {
+        let mut view = steps();
+        view.scroll = 20;
+        view.select_by(-1, SMALL);
+        assert_eq!(position(&view), (Some(0), 3));
+    }
+
+    #[test]
+    fn moving_stops_at_the_first_and_the_last_block() {
+        let mut view = steps();
+        view.select_by(-1, SMALL);
+        assert_eq!(view.selected, Some(0));
+        view.select_by(9, SMALL);
+        assert_eq!(view.selected, Some(3));
+    }
+
+    #[test]
+    fn home_and_end_select_the_first_and_the_last_block() {
+        let mut view = steps();
+        view.select_last(SMALL);
+        assert_eq!(position(&view), (Some(3), 29));
+        view.select_first(SMALL);
+        assert_eq!(position(&view), (Some(0), 3));
+    }
+
+    #[test]
+    fn page_keys_scroll_one_page_and_select_the_first_block_in_view() {
+        let mut view = steps();
+        // Lines 6 to 11: no info line, and the code of block 0.
+        view.scroll_pages(1, SMALL);
+        assert_eq!(position(&view), (Some(0), 6));
+        view.scroll_pages(1, SMALL);
+        assert_eq!(position(&view), (Some(1), 12));
+        view.scroll_pages(9, SMALL);
+        assert_eq!(position(&view), (Some(3), 29));
+        view.scroll_pages(-9, SMALL);
+        assert_eq!(position(&view), (Some(0), 0));
+    }
+
+    #[test]
+    fn without_blocks_home_and_end_scroll_to_the_top_and_the_bottom() {
+        let mut view = view(&"text\n\n".repeat(20));
+        view.select_last(SMALL);
+        // 20 lines of text and 19 blank lines, in a view of 6 lines.
+        assert_eq!(position(&view), (None, 33));
+        view.select_first(SMALL);
+        assert_eq!(position(&view), (None, 0));
     }
 
     #[test]

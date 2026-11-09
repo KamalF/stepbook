@@ -177,8 +177,8 @@ stepbook never sends a control character from the file or from a run to the term
 | Key | Action |
 |---|---|
 | `↓`, `j` / `↑`, `k` | Select the next / previous block, and scroll so that the block and the paragraph above it are visible. |
-| `Home` / `End` | Select the first / last block. |
-| `PageDown` / `PageUp` | Scroll one page. The selection moves to the first block in view. |
+| `Home` / `End` | Select the first / last block. Without blocks, scroll to the top / bottom. |
+| `PageDown` / `PageUp` | Scroll one page. The selection moves to the first block whose info line is in view, else to the first block in view. |
 | `Enter` | Run the selected block. See 8.1. |
 | `i` | Enter input mode, if the selected block is running. |
 | `o` | Open the full-screen view of the selected block, if it has run. |

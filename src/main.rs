@@ -150,9 +150,16 @@ fn event_loop(terminal: &mut DefaultTerminal, view: &mut view::View) -> std::io:
             && key.kind == KeyEventKind::Press
         {
             let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            let size = terminal.size()?;
             match key.code {
                 KeyCode::Char('q') => return Ok(()),
                 KeyCode::Char('c') if ctrl => return Ok(()),
+                KeyCode::Down | KeyCode::Char('j') => view.select_by(1, size),
+                KeyCode::Up | KeyCode::Char('k') => view.select_by(-1, size),
+                KeyCode::Home => view.select_first(size),
+                KeyCode::End => view.select_last(size),
+                KeyCode::PageDown => view.scroll_pages(1, size),
+                KeyCode::PageUp => view.scroll_pages(-1, size),
                 _ => {}
             }
         }

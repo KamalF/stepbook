@@ -48,7 +48,7 @@ Then `cargo mutants`, the check in tmux, and the review loop.
 
 ## Next
 
-1. Commit 14 of milestone 1: the keys that move and quit.
+1. Commit 15 of milestone 1: each runbook opens with no panic.
 
 ## Open points
 
