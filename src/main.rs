@@ -109,6 +109,7 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         Err(message) => {
+            let message = doc::escaped_text(&message);
             eprintln!("stepbook: {message}\n{USAGE}\nFor more information, run 'stepbook --help'.");
             return ExitCode::from(2);
         }
@@ -116,7 +117,7 @@ fn main() -> ExitCode {
     match open(&args) {
         Ok(()) => ExitCode::SUCCESS,
         Err(message) => {
-            eprintln!("stepbook: {message}");
+            eprintln!("stepbook: {}", doc::escaped_text(&message));
             ExitCode::FAILURE
         }
     }

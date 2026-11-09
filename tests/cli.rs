@@ -61,3 +61,16 @@ fn output_that_is_not_a_terminal_exits_with_1() {
     assert_eq!(output.status.code(), Some(1));
     assert!(stderr(&output).contains("run stepbook in a terminal"));
 }
+
+#[test]
+fn error_messages_show_control_characters_escaped() {
+    // A file name from a glob can hold an OSC 52 clipboard write.
+    let name = "/nonexistent/a\u{1b}]52;c;eA==\u{7}\u{202e}.md";
+    let output = stepbook(&[name], None);
+    assert_eq!(
+        stderr(&output),
+        "stepbook: cannot read /nonexistent/a^[]52;c;eA==^G<202e>.md: No such file or directory\n"
+    );
+    let output = stepbook(&["a.md", name], None);
+    assert!(stderr(&output).starts_with("stepbook: unexpected argument '/nonexistent/a^[]52"));
+}

@@ -557,6 +557,15 @@ pub fn width(text: &str) -> usize {
     usize::from(text.cell_width())
 }
 
+/// Text for a message outside the screen, such as an error on stderr,
+/// with its control characters escaped.
+pub fn escaped_text(text: &str) -> String {
+    escaped(text, Style::new())
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect()
+}
+
 /// One line of text, with its control characters escaped.
 pub fn escaped(text: &str, style: Style) -> Vec<Span<'static>> {
     let mut out = Vec::new();

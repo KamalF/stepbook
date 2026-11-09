@@ -165,7 +165,7 @@ stepbook never sends a control character or a bidi control from the file or from
 In this section, control characters are the C0 characters, DEL and the C1 characters. Bidi controls are U+061C, U+200E, U+200F, U+202A to U+202E and U+2066 to U+2069.
 
 - stepbook shows each control character as vim does: `^[` for ESC, `^M` for a carriage return, `^?` for DEL, and `<9b>` for a C1 character. It shows a bidi control as its code point, such as `<202e>`. The escapes use the warning color.
-- This applies to the text of the file, to its name, and to text from a run, such as a directory name in the footer.
+- This applies to the text of the file, to its name, to text from a run, such as a directory name in the footer, and to the error messages on stderr.
 - A tab is not escaped. It expands to spaces, up to the next multiple of 8 columns.
 - A line feed is a line break in the text and the code of the file. In one-line text, such as a file name, it shows as `^J`.
 - If the code of a block holds a bidi control, or a control character other than a tab, its info line shows the warning `control characters in code`. The block can still run.
