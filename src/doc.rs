@@ -508,10 +508,7 @@ fn block(info: &str, code: &str) -> Option<Block> {
         }
     }
     block.warnings.extend(error);
-    if code
-        .chars()
-        .any(|c| needs_escape_in_code(c) && !matches!(c, '\t' | '\n'))
-    {
+    if has_hidden_characters(code) {
         block.warnings.push("hidden characters in code".into());
     }
     Some(block)
@@ -549,6 +546,17 @@ pub fn needs_escape_in_code(c: char) -> bool {
                 | '\u{1d173}'..='\u{1d17a}'
                 | '\u{e0000}'..='\u{e0fff}'
         )
+}
+
+/// Whether code that `code_line` shows has an escape other than a tab.
+fn has_hidden_characters(code: &str) -> bool {
+    code.chars()
+        .any(|c| needs_escape_in_code(c) && !matches!(c, '\t' | '\n'))
+        || (code.split('\n')).any(|line| {
+            let span = Span::raw(line);
+            let mut graphemes = span.styled_graphemes(Style::new());
+            graphemes.any(|g| hides(g.symbol))
+        })
 }
 
 /// Appends `text` to `out`, with each character for which `escape` holds
@@ -631,13 +639,27 @@ pub fn escaped(text: &str, style: Style) -> Vec<Span<'static>> {
     out
 }
 
+/// Whether the ratatui buffer would not draw a grapheme in code: it drops
+/// a grapheme of width 0, such as a combining mark at the start of a line,
+/// and one wider than the room left. A base character with many marks
+/// (U+FF9E, U+093E) makes one grapheme of any width, and only those wider
+/// than 2 columns are not a character that a terminal draws.
+fn hides(grapheme: &str) -> bool {
+    !(1..=2).contains(&width(grapheme))
+}
+
+fn push_styled(out: &mut Vec<Span<'static>>, text: &str, style: Style) {
+    match out.last_mut() {
+        Some(last) if last.style == style => last.content.to_mut().push_str(text),
+        _ => out.push(Span::styled(text.to_string(), style)),
+    }
+}
+
 /// A line of code as the view shows it. Its characters are escaped as
 /// code needs, and each grapheme sits in one span, with the style of its
 /// first character: syntect ends a token where its grammar says, and a
-/// combining mark after a closing quote would start a span of its own. A
-/// grapheme that the terminal would draw as nothing, such as a combining
-/// mark at the start of a line, is escaped too: the ratatui buffer drops
-/// a grapheme of width 0.
+/// combining mark after a closing quote would start a span of its own. The
+/// graphemes that the buffer would not draw are escaped too (see `hides`).
 pub fn code_line(spans: &[Span]) -> Vec<Span<'static>> {
     let mut escaped = Vec::new();
     let mut column = 0;
@@ -659,18 +681,19 @@ pub fn code_line(spans: &[Span]) -> Vec<Span<'static>> {
     for grapheme in Span::raw(text.as_str()).styled_graphemes(Style::new()) {
         let mut style = starts[starts.partition_point(|(start, _)| *start <= offset) - 1].1;
         offset += grapheme.symbol.len();
-        let mut shown = grapheme.symbol.to_string();
-        if width(&shown) == 0 {
-            shown.clear();
-            grapheme
-                .symbol
-                .chars()
-                .for_each(|c| push_escape(&mut shown, c));
+        let mut chars = grapheme.symbol.chars().peekable();
+        if hides(grapheme.symbol) {
+            // A wide grapheme keeps its base character, if the terminal
+            // draws it alone, and shows its marks escaped.
+            if let Some(base) = chars.next_if(|c| !hides(c.encode_utf8(&mut [0; 4]))) {
+                push_styled(&mut out, &base.to_string(), style);
+            }
             style = style.patch(WARNING);
-        }
-        match out.last_mut() {
-            Some(last) if last.style == style => last.content.to_mut().push_str(&shown),
-            _ => out.push(Span::styled(shown, style)),
+            let mut shown = String::new();
+            chars.for_each(|c| push_escape(&mut shown, c));
+            push_styled(&mut out, &shown, style);
+        } else {
+            push_styled(&mut out, grapheme.symbol, style);
         }
     }
     out
@@ -1112,10 +1135,58 @@ mod tests {
         assert_eq!(shown("\"prod\u{200b}\""), "\"prod<200b>\"");
         assert_eq!(shown("a\u{ad}\u{feff}\u{e0041}"), "a<ad><feff><e0041>");
         assert_eq!(shown("\u{301}x"), "<0301>x");
+        assert_eq!(shown("'\u{ff9e}\u{ff9e}'"), "'<ff9e><ff9e>'");
+        // ratatui counts a halfwidth sound mark twice: 3 columns here.
+        assert_eq!(shown("\u{ff76}\u{ff9e}"), "\u{ff76}<ff9e>");
+        assert_eq!(shown("\u{301}\u{ff9e}\u{ff9e}"), "<0301><ff9e><ff9e>");
         assert_eq!(shown("e\u{301}"), "e\u{301}");
         assert_eq!(escaped_text("\u{200b}\u{200d}"), "\u{200b}\u{200d}");
-        let warning = block("bash", "a\u{200b}\n").unwrap().warnings;
-        assert_eq!(warning, ["hidden characters in code"]);
+        for code in ["a\u{200b}\n", "\u{301}a\n", "'\u{ff9e}\u{ff9e}'\n"] {
+            let warnings = block("bash", code).unwrap().warnings;
+            assert_eq!(warnings, ["hidden characters in code"], "{code:?}");
+        }
+        assert!(
+            block("bash", "e\u{301}\t\u{1f600}\n")
+                .unwrap()
+                .warnings
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn code_escapes_each_range_of_default_ignorable_code_points() {
+        let ends = [
+            '\u{ad}',
+            '\u{34f}',
+            '\u{115f}',
+            '\u{1160}',
+            '\u{17b4}',
+            '\u{17b5}',
+            '\u{180b}',
+            '\u{180f}',
+            '\u{200b}',
+            '\u{200d}',
+            '\u{2060}',
+            '\u{206f}',
+            '\u{3164}',
+            '\u{fe00}',
+            '\u{fe0f}',
+            '\u{feff}',
+            '\u{ffa0}',
+            '\u{fff0}',
+            '\u{fff8}',
+            '\u{1bca0}',
+            '\u{1bca3}',
+            '\u{1d173}',
+            '\u{1d17a}',
+            '\u{e0000}',
+            '\u{e0fff}',
+        ];
+        for c in ends {
+            assert!(needs_escape_in_code(c) && !needs_escape(c), "{c:?}");
+        }
+        let outside = ['\u{ac}', '\u{200a}', '\u{fdff}', '\u{fff9}', '\u{e1000}'];
+        assert!(!outside.into_iter().any(needs_escape_in_code));
     }
 
     fn code_text() -> impl Strategy<Value = String> {
@@ -1130,6 +1201,8 @@ mod tests {
             Just('\u{200b}'),
             Just('\u{1b}'),
             Just('$'),
+            Just('\u{ff9e}'),
+            Just('\u{93e}'),
         ];
         prop::collection::vec(chars, 0..60).prop_map(|c| c.into_iter().collect())
     }
@@ -1150,7 +1223,7 @@ mod tests {
                 prop_assert_eq!(&shown, &expected);
                 for span in lines.iter().flatten() {
                     for g in span.styled_graphemes(Style::new()) {
-                        prop_assert!(width(g.symbol) > 0, "{:?} in {:?}", g.symbol, span);
+                        prop_assert!(!hides(g.symbol), "{:?} in {:?}", g.symbol, span);
                     }
                 }
             }

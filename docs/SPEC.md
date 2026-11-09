@@ -168,7 +168,7 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 - This applies to the text of the file, to its name, to text from a run, such as a directory name in the footer, and to the error messages on stderr.
 - A tab is not escaped. It expands to spaces, up to the next multiple of 8 columns.
 - A line feed is a line break in the text and the code of the file. In one-line text, such as a file name, it shows as `^J`.
-- Code also escapes the default ignorable code points of Unicode, which a terminal draws as nothing, such as U+200B (zero-width space): `"prod<U+200B>"` would look like `"prod"`. So does any other grapheme that the terminal would draw as nothing, such as a combining mark at the start of a line. Prose keeps them: emoji and some scripts need them, and there they do not change what runs.
+- Code also escapes the default ignorable code points of Unicode, which a terminal draws as nothing, such as U+200B (zero-width space): `"prod<U+200B>"` would look like `"prod"`. So does any grapheme that the ratatui buffer would not draw: one of width 0, such as a combining mark at the start of a line, and one wider than 2 columns, such as a quote followed by 400 halfwidth sound marks (U+FF9E). A wide grapheme keeps its base character and shows its marks escaped. Prose keeps them: emoji and some scripts need them, and there they do not change what runs.
 - If the code of a block holds a character that code escapes, other than a tab or a line feed, its info line shows the warning `hidden characters in code`. The block can still run.
 - The view and the run use the same code text, so what runs is what the view shows.
 - Program output reaches the terminal only through the vt100 screen. See 6.4.

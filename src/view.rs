@@ -1102,6 +1102,16 @@ mod tests {
     }
 
     #[test]
+    fn code_shows_escaped_what_a_terminal_would_not_draw() {
+        let text = "```bash\necho \"prod\u{200b}\" ok\u{fe0f}\n\u{301}ls 'x\u{ff9e}\u{ff9e}'\n```";
+        assert_snapshot!(render(text, 60), @r#"
+        ▌ «b:#1»  «yellow:hidden characters in code»
+        ▌ «blue:echo» «green:"prod»«yellow:<200b>»«green:"» ok«yellow:<fe0f>»
+        ▌ «yellow:<0301>»«blue:ls» «green:'x»«yellow:<ff9e><ff9e>»«green:'»
+        "#);
+    }
+
+    #[test]
     fn tabs_in_code_expand_to_8_columns() {
         assert_snapshot!(render("```\na\tb\n\tc\n```", 40), @"
         «d:▌ »a       b
@@ -1448,7 +1458,7 @@ mod tests {
         // "⚠️" is 1 column as a sum of chars, and 2 on screen.
         let table = "| ⚠\u{fe0f}⚠\u{fe0f}⚠\u{fe0f} | b |\n|---|---|\n";
         assert!(line_widths(table, 12).iter().all(|&w| w <= 12));
-        // Prose keeps U+FE0F; code escapes it.
+        // In prose, which keeps U+FE0F.
         let text = format!("echo {}", "⚠\u{fe0f}".repeat(8));
         assert_eq!(line_widths(&text, 8), [4, 8, 8]);
     }
