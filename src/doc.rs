@@ -84,7 +84,7 @@ pub fn parse(text: &str) -> Document {
         builder.push_item(Kind::Source(lines));
         builder.blank = true;
     }
-    for (event, range) in Parser::new_ext(body, options()).into_offset_iter() {
+    for (event, range) in Parser::new_ext(body, options(body)).into_offset_iter() {
         builder.event(event, &body[range]);
     }
     mark_duplicates(&mut builder.blocks);
@@ -275,7 +275,9 @@ impl Builder {
                             table.row.pop();
                         }
                     }
-                    table.rows.push(std::mem::take(&mut table.row));
+                    let mut row = std::mem::take(&mut table.row);
+                    row.shrink_to_fit();
+                    table.rows.push(row);
                 }
             }
             TagEnd::Table => {
@@ -449,8 +451,23 @@ fn source_lines(text: &str) -> Vec<Vec<Span<'static>>> {
     text.lines().map(|line| escaped(line, DIM)).collect()
 }
 
-fn options() -> Options {
-    Options::ENABLE_TABLES | Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH
+/// pulldown-cmark pads each short row of a table with empty cells, up to
+/// the columns of its header, and keeps them all: 1 MB of crafted tables
+/// takes gigabytes. A file that could make more cells than this shows its
+/// tables as text.
+const MAX_TABLE_CELLS: usize = 200_000;
+
+fn options(text: &str) -> Options {
+    let mut options = Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
+    // At most each line is a row, and a row has at most as many cells as
+    // the most `|` on one line, plus 1.
+    let (lines, pipes) = (text.lines()).fold((0, 0), |(lines, pipes), line| {
+        (lines + 1, pipes.max(line.matches('|').count()))
+    });
+    if lines * (pipes + 1) <= MAX_TABLE_CELLS {
+        options |= Options::ENABLE_TABLES;
+    }
+    options
 }
 
 /// Splits off the lines between a first line `---` and the next `---`
@@ -1103,6 +1120,16 @@ mod tests {
         assert_eq!(warning("a\u{85}\n"), ["hidden characters in code"]);
         assert_eq!(warning("a\u{202e}\n"), ["hidden characters in code"]);
         assert!(warning("a\tb\n").is_empty());
+    }
+
+    #[test]
+    fn a_file_that_could_make_too_many_table_cells_shows_tables_as_text() {
+        let header = format!("{}|\n{}|\n", "|a".repeat(399), "|-".repeat(399));
+        let is_table = |text: &str| matches!(parse(text).items[0].kind, Kind::Table(..));
+        // The header has 400 `|`: 498 lines can make 199,698 cells, and
+        // 499 lines 200,099.
+        assert!(is_table(&format!("{header}{}", "b\n".repeat(496))));
+        assert!(!is_table(&format!("{header}{}", "b\n".repeat(497))));
     }
 
     #[test]

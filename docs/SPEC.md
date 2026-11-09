@@ -60,6 +60,7 @@ stepbook [--log PATH | --no-log] FILE
 
 - stepbook parses CommonMark with GFM tables, task lists and strikethrough (pulldown-cmark).
 - The metadata-block extensions stay off. If the file starts with a `---` line, stepbook shows the lines up to the next `---` line as dimmed frontmatter. Without that closing line, the file has no frontmatter. A `---` anywhere else is a thematic break or a setext heading, as in CommonMark. This avoids upmd issue K1 (see 18).
+- If the file could make more than 200,000 table cells, stepbook shows its tables as text. The bound is its lines times the most `|` on one line, plus 1. pulldown-cmark pads each short row up to the columns of its header, so 1 MB of crafted tables takes gigabytes.
 - A fenced code block with the language token `bash` or `sh` is a block. Both run with bash.
 - Other code blocks, including indented ones, are shown as code and cannot run.
 
@@ -473,6 +474,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | `unicode-width` is dropped. stepbook measures each grapheme with ratatui's `CellWidth`, as the ratatui buffer does: a sum of character widths gets emoji with a variation selector wrong | 2026-11-09 |
 | stepbook parses its arguments with its own code, not with clap: it has four options | 2026-11-09 |
 | Bidi controls are escaped as control characters are (6.5) | 2026-11-09 |
+| A file that could make more than 200,000 table cells shows its tables as text (5.1): pulldown-cmark pads short rows, and 1 MB of crafted tables took gigabytes | 2026-11-09 |
 | FILE must be a regular file of at most 1 MB (4): a link to /dev/zero filled the memory, and the view lays out the whole file on each frame. The largest runbook has 22 KB | 2026-11-09 |
 | Code also escapes the default ignorable code points and the graphemes of width 0; prose keeps them (6.5). The warning becomes `hidden characters in code` | 2026-11-09 |
 | Highlighting stops at lines longer than 1,000 bytes and after 32 KB of code (5.3): syntect takes 10 s on a line of 80 KB. The largest runbook has 16 KB of bash, with lines of at most 386 bytes | 2026-11-09 |
