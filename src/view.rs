@@ -5,9 +5,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
-use crate::doc::{Document, Item};
-
-const DIM: Style = Style::new().add_modifier(Modifier::DIM);
+use crate::doc::{DIM, Document, Item, Kind};
 
 pub fn draw(frame: &mut Frame, doc: &Document) {
     let [body, footer] =
@@ -25,24 +23,39 @@ pub fn draw(frame: &mut Frame, doc: &Document) {
 
 /// The lines of the document view at `width` columns.
 pub fn layout(doc: &Document, width: usize) -> Vec<Line<'static>> {
-    let width = width.max(1);
     let mut lines = Vec::new();
     for item in &doc.items {
-        match item {
-            Item::Text(text) => lines.extend(wrap(text, width)),
-            Item::Heading(level, text) => {
-                lines.extend(wrap(text, width));
+        let prefix_width = item.rest.iter().map(Span::width).sum::<usize>();
+        let width = width.saturating_sub(prefix_width).max(1);
+        let body = match &item.kind {
+            Kind::Text(text) => wrap(text, width),
+            Kind::Heading(level, text) => {
+                let mut body = wrap(text, width);
                 let rule = match level {
                     HeadingLevel::H1 => "━",
                     HeadingLevel::H2 => "─",
-                    _ => continue,
+                    _ => "",
                 };
-                lines.push(Line::styled(rule.repeat(width), DIM));
+                if !rule.is_empty() {
+                    body.push(Line::from(Span::styled(rule.repeat(width), DIM)));
+                }
+                body
             }
-            Item::Blank => lines.push(Line::default()),
-        }
+            Kind::Blank => vec![Line::default()],
+        };
+        lines.extend(prefixed(item, body));
     }
     lines
+}
+
+/// Puts the item's prefixes before the lines of its body.
+fn prefixed(item: &Item, body: Vec<Line<'static>>) -> impl Iterator<Item = Line<'static>> {
+    body.into_iter().enumerate().map(|(i, line)| {
+        let prefix = if i == 0 { &item.first } else { &item.rest };
+        let mut spans = prefix.clone();
+        spans.extend(line.spans);
+        Line::from(spans)
+    })
 }
 
 /// Word-wraps styled text to `width` columns. A `\n` starts a new line.
@@ -247,6 +260,97 @@ mod tests {
 
         text
         ");
+    }
+
+    #[test]
+    fn lists_indent_two_columns_per_level() {
+        let text = "- one\n  - two\n    - three\n- four\n\nafter";
+        assert_snapshot!(render(text, 40), @"
+        • one
+          ◦ two
+            • three
+        • four
+
+        after
+        ");
+    }
+
+    #[test]
+    fn list_items_wrap_under_their_text() {
+        assert_snapshot!(render("- one two three\n\n1. four five six", 10), @"
+        • one two
+          three
+
+        1. four
+           five
+           six
+        ");
+    }
+
+    #[test]
+    fn ordered_lists_keep_their_numbers() {
+        let text = "9. nine\n10. ten\n    1. nested\n11. eleven";
+        assert_snapshot!(render(text, 40), @"
+        9. nine
+        10. ten
+            1. nested
+        11. eleven
+        ");
+    }
+
+    #[test]
+    fn task_items_show_their_box() {
+        assert_snapshot!(render("- [ ] todo\n- [x] done", 40), @"
+        • [ ] todo
+        • [x] done
+        ");
+    }
+
+    #[test]
+    fn loose_lists_keep_a_blank_line_between_items() {
+        assert_snapshot!(render("- one\n\n  more\n\n- two\n", 40), @"
+        • one
+
+          more
+
+        • two
+        ");
+    }
+
+    #[test]
+    fn blockquotes_have_a_bar_per_level() {
+        let text = "> one two three\n>\n> > nested\n>\n> - item\n\nafter";
+        assert_snapshot!(render(text, 12), @"
+        «d:│ »one two
+        «d:│ »three
+        «d:│»
+        «d:│ »«d:│ »nested
+        «d:│»
+        «d:│ »• item
+
+        after
+        ");
+    }
+
+    #[test]
+    fn prefixes_keep_the_innermost_10_levels() {
+        let quotes = render(&format!("{} x", ">".repeat(12)), 80);
+        assert_eq!(quotes, format!("{}x", "«d:│ »".repeat(10)));
+        let list: String = (0..12)
+            .map(|i| format!("{}- {i}\n", "  ".repeat(i)))
+            .collect();
+        let last = render(&list, 80).lines().last().unwrap().to_string();
+        assert_eq!(last, format!("{}◦ 11", "  ".repeat(9)));
+    }
+
+    #[test]
+    fn deep_nesting_does_not_overflow_the_stack() {
+        let quotes = layout(&parse(&format!("{} x\n", ">".repeat(100_000))), 80);
+        assert_eq!(quotes.len(), 1);
+        let list: String = (0..1_000)
+            .map(|i| format!("{}- a\n", "  ".repeat(i)))
+            .collect();
+        assert_eq!(layout(&parse(&list), 80).len(), 1_000);
     }
 
     #[test]

@@ -88,7 +88,7 @@ systemctl --user restart api
 | Paragraph | Word-wrapped to the view width. A soft line break is a space, and a hard line break is a new line. |
 | Emphasis, strong, strikethrough, inline code | Terminal styles. Inline code uses a distinct color. |
 | Link | The link text, underlined. |
-| List, task list | Bullets or numbers, 2 spaces of indent per level. Task items show `[ ]` or `[x]`. No Nerd Font glyphs. |
+| List, task list | Bullets `•` and `◦`, which alternate by level, or numbers. A nested list starts under the text of its item, so bullet lists indent 2 columns per level. Task items show `[ ]` or `[x]`. No Nerd Font glyphs. |
 | Blockquote | A `│ ` prefix per level. |
 | Table | Box-drawing borders. Columns shrink to fit and truncate with `…`. |
 | Thematic break | A dimmed rule. |
@@ -99,7 +99,7 @@ systemctl --user restart api
 
 All colors come from the terminal's 16-color palette, so they follow the terminal's theme. stepbook sets no background color.
 
-No nesting depth can crash stepbook: it walks the document without recursion (upmd issue S9, see 18). Blockquote prefixes and list indents stop growing after 10 levels, so the text keeps room in the view.
+No nesting depth can crash stepbook: it walks the document without recursion (upmd issue S9, see 18). Prefixes show only the innermost 10 levels of blockquotes and list items. The text keeps room in the view, and a deep item keeps its marker.
 
 ## 6. Screen
 

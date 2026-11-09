@@ -5,6 +5,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
 pub const INLINE_CODE: Style = Style::new().fg(Color::Cyan);
+pub const DIM: Style = Style::new().add_modifier(Modifier::DIM);
+
+/// Prefixes show only the innermost levels of quotes and list items, so
+/// that the text keeps room in the view.
+const MAX_DEPTH: usize = 10;
 
 /// A fenced code block with the language `bash` or `sh` (spec 3).
 #[derive(Debug, PartialEq)]
@@ -19,7 +24,16 @@ pub struct Block {
 
 /// One element of the rendered runbook. The view wraps it to its width.
 #[derive(Debug, PartialEq)]
-pub enum Item {
+pub struct Item {
+    /// The prefix of the first line: quote bars, list indent and marker.
+    pub first: Vec<Span<'static>>,
+    /// The prefix of the other lines.
+    pub rest: Vec<Span<'static>>,
+    pub kind: Kind,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Kind {
     /// Styled text. A `\n` is a hard line break.
     Text(Vec<Span<'static>>),
     Heading(HeadingLevel, Vec<Span<'static>>),
@@ -63,6 +77,20 @@ struct Builder {
     code: Option<(String, String)>,
     /// A blank line goes before the next element.
     blank: bool,
+    containers: Vec<Container>,
+    /// The number of open lists.
+    lists: usize,
+}
+
+enum Container {
+    Quote,
+    /// The number of the next item, in an ordered list.
+    List(Option<u64>),
+    /// A list item. Its marker shows on the first line of its content.
+    Item {
+        marker: Option<String>,
+        indent: usize,
+    },
 }
 
 impl Builder {
@@ -77,6 +105,9 @@ impl Builder {
             Event::Code(text) => self.push(&text, INLINE_CODE),
             Event::SoftBreak => self.push(" ", Style::new()),
             Event::HardBreak => self.push("\n", Style::new()),
+            Event::TaskListMarker(done) => {
+                self.push(if done { "[x] " } else { "[ ] " }, Style::new())
+            }
             _ => {}
         }
     }
@@ -84,6 +115,31 @@ impl Builder {
     fn start(&mut self, tag: Tag, source: &str) {
         match tag {
             Tag::Paragraph => self.start_element(),
+            Tag::BlockQuote(_) => {
+                self.start_element();
+                self.containers.push(Container::Quote);
+            }
+            Tag::List(first) => {
+                self.start_element();
+                self.containers.push(Container::List(first));
+                self.lists += 1;
+            }
+            Tag::Item => {
+                self.start_element();
+                let marker = match self.containers.last_mut() {
+                    Some(Container::List(Some(n))) => {
+                        *n += 1;
+                        format!("{}. ", *n - 1)
+                    }
+                    _ if self.lists % 2 == 1 => "• ".to_string(),
+                    _ => "◦ ".to_string(),
+                };
+                let indent = marker.chars().count();
+                self.containers.push(Container::Item {
+                    marker: Some(marker),
+                    indent,
+                });
+            }
             Tag::Heading { level, .. } => {
                 self.start_element();
                 self.heading = Some(level);
@@ -114,6 +170,23 @@ impl Builder {
     fn end(&mut self, tag: TagEnd) {
         match tag {
             TagEnd::Paragraph => self.end_text(),
+            TagEnd::BlockQuote(_) => {
+                self.end_text();
+                self.containers.pop();
+            }
+            TagEnd::List(_) => {
+                self.flush_text();
+                self.containers.pop();
+                self.lists -= 1;
+                // A list nested in an item ends with the item, with no blank.
+                if !matches!(self.containers.last(), Some(Container::Item { .. })) {
+                    self.blank = true;
+                }
+            }
+            TagEnd::Item => {
+                self.flush_text();
+                self.containers.pop();
+            }
             TagEnd::Heading(_) => {
                 self.styles.pop();
                 self.end_text();
@@ -145,8 +218,52 @@ impl Builder {
     fn start_element(&mut self) {
         self.flush_text();
         if std::mem::take(&mut self.blank) {
-            self.items.push(Item::Blank);
+            let (_, rest) = self.prefixes(false);
+            let mut bars: Vec<Span> = rest
+                .into_iter()
+                .filter(|s| !s.content.trim().is_empty())
+                .collect();
+            if let Some(last) = bars.last_mut() {
+                *last = Span::styled(last.content.trim_end().to_string(), last.style);
+            }
+            self.items.push(Item {
+                first: bars.clone(),
+                rest: bars,
+                kind: Kind::Blank,
+            });
         }
+    }
+
+    /// The prefixes of the first line and of the other lines of the next
+    /// item. If `show_marker`, the first line takes the pending list markers.
+    fn prefixes(&mut self, show_marker: bool) -> (Vec<Span<'static>>, Vec<Span<'static>>) {
+        let mut first = Vec::new();
+        let mut rest = Vec::new();
+        // From the inside out, so that deep nesting costs no more than 10
+        // levels. The markers of hidden outer items stay pending.
+        let mut levels: Vec<_> = (self.containers.iter_mut().rev())
+            .filter(|c| !matches!(c, Container::List(_)))
+            .take(MAX_DEPTH)
+            .collect();
+        levels.reverse();
+        for container in levels {
+            match container {
+                Container::Quote => {
+                    first.push(Span::styled("│ ", DIM));
+                    rest.push(Span::styled("│ ", DIM));
+                }
+                Container::Item { marker, indent } => {
+                    let spaces = Span::raw(" ".repeat(*indent));
+                    match marker.take_if(|_| show_marker) {
+                        Some(marker) => first.push(Span::raw(marker)),
+                        None => first.push(spaces.clone()),
+                    }
+                    rest.push(spaces);
+                }
+                Container::List(_) => {}
+            }
+        }
+        (first, rest)
     }
 
     fn end_text(&mut self) {
@@ -155,14 +272,17 @@ impl Builder {
     }
 
     fn flush_text(&mut self) {
+        let heading = self.heading.take();
         if self.text.is_empty() {
             return;
         }
         let text = std::mem::take(&mut self.text);
-        self.items.push(match self.heading.take() {
-            Some(level) => Item::Heading(level, text),
-            None => Item::Text(text),
-        });
+        let kind = match heading {
+            Some(level) => Kind::Heading(level, text),
+            None => Kind::Text(text),
+        };
+        let (first, rest) = self.prefixes(true);
+        self.items.push(Item { first, rest, kind });
     }
 }
 
