@@ -768,6 +768,13 @@ mod tests {
             .map(|i| format!("{}- a\n", "  ".repeat(i)))
             .collect();
         assert_eq!(layout(&parse(&list), 80, None).lines.len(), 1_000);
+        // 10,000 nested emphasis spans, each with text inside.
+        let open: String = (0..10_000).map(|i| ["*a ", "_a "][i % 2]).collect();
+        let close: String = (0..10_000).rev().map(|i| [" a*", " a_"][i % 2]).collect();
+        let emphasis = layout(&parse(&format!("{open}x{close}")), 80, None);
+        let spans = emphasis.lines.iter().flat_map(|l| &l.spans);
+        let x = spans.into_iter().find(|s| s.content.contains('x')).unwrap();
+        assert!(x.style.add_modifier.contains(Modifier::ITALIC));
     }
 
     #[test]

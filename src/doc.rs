@@ -144,12 +144,7 @@ impl Builder {
             Event::Html(text) | Event::InlineHtml(text) => self.push(&text, DIM),
             Event::Rule => {
                 self.start_element();
-                let (first, rest) = self.prefixes(true);
-                self.items.push(Item {
-                    first,
-                    rest,
-                    kind: Kind::Rule,
-                });
+                self.push_item(Kind::Rule);
                 self.blank = true;
             }
             Event::TaskListMarker(done) => {
@@ -198,7 +193,7 @@ impl Builder {
             Tag::Heading { level, .. } => {
                 self.start_element();
                 self.heading = Some(level);
-                self.styles.push(Style::new().add_modifier(Modifier::BOLD));
+                self.push_style(Style::new().add_modifier(Modifier::BOLD));
             }
             Tag::CodeBlock(kind) => {
                 self.start_element();
@@ -208,16 +203,10 @@ impl Builder {
                 };
                 self.code = Some((String::new(), info));
             }
-            Tag::Emphasis => self
-                .styles
-                .push(Style::new().add_modifier(Modifier::ITALIC)),
-            Tag::Strong => self.styles.push(Style::new().add_modifier(Modifier::BOLD)),
-            Tag::Strikethrough => self
-                .styles
-                .push(Style::new().add_modifier(Modifier::CROSSED_OUT)),
-            Tag::Link { .. } => self
-                .styles
-                .push(Style::new().add_modifier(Modifier::UNDERLINED)),
+            Tag::Emphasis => self.push_style(Style::new().add_modifier(Modifier::ITALIC)),
+            Tag::Strong => self.push_style(Style::new().add_modifier(Modifier::BOLD)),
+            Tag::Strikethrough => self.push_style(Style::new().add_modifier(Modifier::CROSSED_OUT)),
+            Tag::Link { .. } => self.push_style(Style::new().add_modifier(Modifier::UNDERLINED)),
             Tag::Image { .. } => self.push("[image: ", Style::new()),
             Tag::HtmlBlock => self.start_element(),
             _ => {}
@@ -240,9 +229,7 @@ impl Builder {
             }
             TagEnd::Table => {
                 if let Some(table) = self.table.take() {
-                    let (first, rest) = self.prefixes(true);
-                    let kind = Kind::Table(table.aligns, table.rows);
-                    self.items.push(Item { first, rest, kind });
+                    self.push_item(Kind::Table(table.aligns, table.rows));
                 }
                 self.blank = true;
             }
@@ -269,21 +256,15 @@ impl Builder {
             }
             TagEnd::CodeBlock => {
                 if let Some((code, info)) = self.code.take() {
-                    let kind = match block(&info, &code) {
-                        Some(block) => {
-                            self.blocks.push(block);
-                            Kind::Code {
-                                lines: highlight(&code),
-                                block: Some(self.blocks.len() - 1),
-                            }
-                        }
-                        None => Kind::Code {
-                            lines: code.lines().map(|l| escape_line(&[Span::raw(l)])).collect(),
-                            block: None,
-                        },
+                    let block = block(&info, &code).map(|block| {
+                        self.blocks.push(block);
+                        self.blocks.len() - 1
+                    });
+                    let lines = match block {
+                        Some(_) => highlight(&code),
+                        None => code.lines().map(|l| escaped(l, Style::new())).collect(),
                     };
-                    let (first, rest) = self.prefixes(true);
-                    self.items.push(Item { first, rest, kind });
+                    self.push_item(Kind::Code { lines, block });
                 }
                 self.blank = true;
             }
@@ -306,12 +287,19 @@ impl Builder {
         }
     }
 
+    /// The style of the inline text being read.
+    fn style(&self) -> Style {
+        self.styles.last().copied().unwrap_or_default()
+    }
+
+    /// Starts an inline style, such as emphasis. The stack holds combined
+    /// styles, so that deep nesting costs nothing per text event.
+    fn push_style(&mut self, style: Style) {
+        self.styles.push(self.style().patch(style));
+    }
+
     fn push(&mut self, text: &str, style: Style) {
-        let style = self
-            .styles
-            .iter()
-            .fold(Style::new(), |a, s| a.patch(*s))
-            .patch(style);
+        let style = self.style().patch(style);
         for (i, part) in text.split('\n').enumerate() {
             if i > 0 {
                 self.text.push(Span::styled("\n", style));
@@ -386,10 +374,14 @@ impl Builder {
             return;
         }
         let text = std::mem::take(&mut self.text);
-        let kind = match heading {
+        self.push_item(match heading {
             Some(level) => Kind::Heading(level, text),
             None => Kind::Text(text),
-        };
+        });
+    }
+
+    /// Adds an item, with the prefixes of the containers around it.
+    fn push_item(&mut self, kind: Kind) {
         let (first, rest) = self.prefixes(true);
         self.items.push(Item { first, rest, kind });
     }
@@ -403,11 +395,12 @@ fn options() -> Options {
 /// line. Without that closing line, the file has no frontmatter.
 fn split_frontmatter(text: &str) -> (Option<&str>, &str) {
     let mut lines = text.split_inclusive('\n');
-    if lines.next().map(str::trim_end) != Some("---") {
+    let first = lines.next().unwrap_or("");
+    if first.trim_end() != "---" {
         return (None, text);
     }
-    let start = text.find('\n').map_or(text.len(), |i| i + 1);
-    let mut end = start;
+    let mut end = first.len();
+    let start = end;
     for line in lines {
         if line.trim_end() == "---" {
             return (Some(&text[start..end]), &text[end + line.len()..]);
