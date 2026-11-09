@@ -16,17 +16,39 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 
 | # | Milestone | Status |
 |---|---|---|
-| 1 | Document view | Next |
+| 1 | Document view | In progress, on `m1-document-view` |
 | 2 | Running blocks | — |
 | 3 | Input and full-screen view | — |
 | 4 | Log and reload | — |
 | 5 | Migration | — |
 
+Kamal signed off the build order and the new dependencies on 2026-11-09.
+
+## Milestone 1: document view
+
+The plan, one commit per line:
+
+1. `chore`: the crate, `mise.toml` with the `fmt`, `lint` and `test` tasks, `.gitignore` and the MIT licence.
+2. `chore`: CI on GitHub Actions.
+3. `docs`: the Tooling and Testing rules sections of the spec.
+4. `feat`: the arguments and the startup errors (4).
+5. `feat`: the terminal setup and restore, with the panic hook. `q` and `ctrl-c` quit.
+6. `feat`: the blocks, their attributes and the frontmatter (5.1, 5.2).
+7. `feat`: paragraphs, headings and inline styles, with word wrap (5.3).
+8. `feat`: lists, task lists and blockquotes, with the cap at 10 levels (5.3).
+9. `feat`: tables (5.3).
+10. `feat`: code blocks and blocks, with bash highlighting (5.3).
+11. `feat`: thematic breaks, raw HTML, images and the frontmatter (5.3).
+12. `feat`: control characters (6.5).
+13. `feat`: the layout: sidebar, document view and footer (6.1).
+14. `feat`: the keys that move and quit (7.1).
+15. `tests`: each runbook in `~/dev/claude/runbooks/` opens with no panic.
+
+Then `cargo mutants`, the check in tmux, and the review loop.
+
 ## Next
 
-1. Milestone 1: its plan of commits in this file, then its branch `m1-document-view`.
-
-Kamal signed off the build order and the new dependencies on 2026-11-09.
+1. Commit 1 of milestone 1.
 
 ## Open points
 
