@@ -15,4 +15,9 @@ exclude_re = [
     # scroll. If top equals scroll, the result is scroll either way.
     "view.rs:\\d+:24: replace > with >= in scroll_to",
     "view.rs:\\d+:19: replace < with <= in scroll_to",
+    # If the block ends at the bottom of the view, scroll and
+    # block.end - height are the same.
+    "view.rs:\\d+:25: replace > with >= in scroll_to",
+    # Only the parity of the list count picks the bullet, and += keeps it.
+    "replace -= with \\+= in Builder::end",
 ]

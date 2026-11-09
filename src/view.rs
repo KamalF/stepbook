@@ -1091,6 +1091,7 @@ mod tests {
             ((0, 12, 14..30, 10), 12),
             ((0, 2, 14..30, 10), 14),
             ((2, 5, 7..10, 6), 4),
+            ((0, 2, 12..30, 10), 12),
         ];
         for ((scroll, top, block, height), expected) in cases {
             let found = scroll_to(scroll, top, &block, height);
@@ -1179,9 +1180,10 @@ mod tests {
         view.scroll_pages(1, SMALL);
         assert_eq!(position(&view), (Some(1), 15));
         // Lines 17 to 22: no block. Block 1 ends at 17, block 2 starts at 23.
+        view.selected = Some(0);
         view.scroll = 11;
         view.scroll_pages(1, SMALL);
-        assert_eq!(position(&view), (Some(1), 17));
+        assert_eq!(position(&view), (Some(0), 17));
     }
 
     #[test]
