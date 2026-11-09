@@ -90,7 +90,7 @@ systemctl --user restart api
 | Link | The link text, underlined. |
 | List, task list | Bullets `•` and `◦`, which alternate by level, or numbers. A nested list starts under the text of its item, so bullet lists indent 2 columns per level. Task items show `[ ]` or `[x]`. No Nerd Font glyphs. |
 | Blockquote | A `│ ` prefix per level. |
-| Table | Box-drawing borders and a bold header. If the table is too wide, its widest columns shrink, and their cells end with `…`. |
+| Table | Box-drawing borders and a bold header. If the table is too wide, its widest columns shrink, and their cells end with `…`. If the table is still too wide with all its columns 1 column wide, the columns past the width of the view do not show. |
 | Thematic break | A dimmed rule. |
 | Raw HTML | Shown dimmed, as source. An HTML block keeps its lines, which wrap at any character. A line end in inline HTML is a space. |
 | Image | `[image: <alt text>]`. |
@@ -168,7 +168,7 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 - This applies to the text of the file, to its name, to text from a run, such as a directory name in the footer, and to the error messages on stderr.
 - A tab is not escaped. It expands to spaces, up to the next multiple of 8 columns.
 - A line feed is a line break in the text and the code of the file. In one-line text, such as a file name, it shows as `^J`.
-- If the code of a block holds a bidi control, or a control character other than a tab, its info line shows the warning `control characters in code`. The block can still run.
+- If the code of a block holds a bidi control, or a control character other than a tab or a line feed, its info line shows the warning `control characters in code`. The block can still run.
 - The view and the run use the same code text, so what runs is what the view shows.
 - Program output reaches the terminal only through the vt100 screen. See 6.4.
 

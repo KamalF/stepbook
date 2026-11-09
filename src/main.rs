@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn help_and_version_win_over_other_arguments() {
+    fn help_and_version_win_over_the_arguments_after_them() {
         assert_eq!(
             parse(&["r.md", "--bad", "-h"]),
             Err("unknown option '--bad'".into())
