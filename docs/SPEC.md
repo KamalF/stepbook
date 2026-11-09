@@ -312,7 +312,8 @@ Blocks are matched by key between the old and the new file:
   1. It closes each PTY, which sends SIGHUP.
   2. It waits up to 2 seconds, then sends SIGKILL to processes still alive.
   3. It writes their `END` lines to the log and quits.
-- On exit, stepbook restores the terminal and deletes the workspace. A panic hook restores the terminal too.
+- While it runs, stepbook turns the autowrap of the terminal off: a character that the terminal draws wider than ratatui counts must not wrap into the row below and move what is there.
+- On exit, stepbook restores the terminal, autowrap included, and deletes the workspace. A panic hook restores the terminal too.
 
 ## 12. Log
 
@@ -480,6 +481,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | FILE must be a regular file of at most 1 MB (4): a link to /dev/zero filled the memory, and the view lays out the whole file on each frame. The largest runbook has 22 KB | 2026-11-09 |
 | The minimum terminal size is 40 columns and 8 rows (6.1), at Kamal's choice: at 6 columns, 1 MB of tabs in code took 2.5 GB per frame | 2026-11-09 |
 | A blank line always follows a code block (5.3): in a tight list item, text under a block could draw a gutter with ▌ and pass for code that does not run | 2026-11-09 |
+| Autowrap is off while stepbook runs (11): a line of prose that a terminal draws wider than ratatui counts wrapped into the rows below, and scrolled the screen | 2026-11-09 |
 | In code, a grapheme of several code points shows escaped after its first character (6.5): terminals count their columns otherwise than ratatui. This replaces the rule of 2026-11-09 for graphemes wider than 2 columns | 2026-11-09 |
 | Code also escapes the format characters that join the next character, U+2D7F, U+FFF9 to U+FFFB and U+13430 to U+1343F (6.5): a terminal may give them a column that ratatui does not count | 2026-11-09 |
 | Code also escapes the spaces other than U+0020 (6.5), at Kamal's choice: bash reads them as part of a word | 2026-11-09 |

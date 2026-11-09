@@ -10,6 +10,8 @@ use std::process::ExitCode;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::execute;
+use ratatui::crossterm::terminal::{DisableLineWrap, EnableLineWrap};
 
 const USAGE: &str = "Usage: stepbook [--log PATH | --no-log] FILE";
 
@@ -136,17 +138,35 @@ fn open(args: &Args) -> Result<(), String> {
         return Err("run stepbook in a terminal: its output is not a terminal".into());
     }
     let doc = doc::parse(&text);
-    // try_init also installs a panic hook that restores the terminal. If
-    // it fails, it may have turned on raw mode already.
-    let mut terminal = ratatui::try_init().map_err(|e| {
-        ratatui::restore();
-        format!("cannot set up the terminal: {}", io_message(&e))
-    })?;
+    let mut terminal =
+        set_up_terminal().map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
     let title = args.file.file_name().unwrap_or(args.file.as_os_str());
     let mut view = view::View::new(doc, title.to_string_lossy().into_owned());
     let result = event_loop(&mut terminal, &mut view);
-    ratatui::restore();
+    restore_terminal();
     result.map_err(|e| format!("terminal error: {}", io_message(&e)))
+}
+
+/// Enters raw mode and the alternate screen, and turns autowrap off: a
+/// character that the terminal draws wider than ratatui counts must not
+/// wrap into the row below and move what is there. The panic hooks
+/// restore all three.
+fn set_up_terminal() -> std::io::Result<DefaultTerminal> {
+    // try_init installs a panic hook that leaves raw mode and the
+    // alternate screen. If it fails, it may have turned on raw mode.
+    let terminal = ratatui::try_init().inspect_err(|_| restore_terminal())?;
+    let ratatui_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = execute!(std::io::stdout(), EnableLineWrap);
+        ratatui_hook(info);
+    }));
+    execute!(std::io::stdout(), DisableLineWrap).inspect_err(|_| restore_terminal())?;
+    Ok(terminal)
+}
+
+fn restore_terminal() {
+    let _ = execute!(std::io::stdout(), EnableLineWrap);
+    ratatui::restore();
 }
 
 /// Runbooks are a few KB: the largest of ~/dev/claude/runbooks had 22 KB
