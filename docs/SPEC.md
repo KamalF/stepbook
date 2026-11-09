@@ -94,7 +94,7 @@ systemctl --user restart api
 | Thematic break | A dimmed rule. |
 | Raw HTML | Shown dimmed, as source. An HTML block keeps its lines, which wrap at any character. A line end in inline HTML is a space. |
 | Image | `[image: <alt text>]`. |
-| Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted. Long lines wrap at any character, so the view shows all the code that runs. |
+| Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted. Long lines wrap at any character, so the view shows all the code that runs. A long info line wraps too, so its warnings always show. |
 | Other code block | The code with a dimmed gutter, not highlighted. Long lines wrap as in a block. |
 
 All colors come from the terminal's 16-color palette, so they follow the terminal's theme. stepbook sets no background color.

@@ -311,8 +311,9 @@ fn prefixed<'a>(
 }
 
 /// Draws a code block with a gutter. A block also gets an info line: its
-/// label, its problem and its warnings. Long lines wrap at the width, so
-/// that the view shows all the code that runs.
+/// label, its problem and its warnings. The info line and the code wrap
+/// at the width, so that the view shows every warning and all the code
+/// that runs.
 fn code(
     doc: &Document,
     lines: &[Vec<Span<'static>>],
@@ -338,9 +339,9 @@ fn code(
             info.push(Span::raw("  "));
             info.extend(escaped(&warnings.join("; "), WARNING));
         }
-        out.push(Line::from(
-            [vec![gutter.clone()], truncate(&info, width)].concat(),
-        ));
+        for line in wrap(&info, width) {
+            out.push(Line::from([vec![gutter.clone()], line.spans].concat()));
+        }
     }
     for line in lines {
         for part in hard_wrap(line, width) {
@@ -939,6 +940,17 @@ mod tests {
         «d:▌ »if x: 'a'
 
         «d:▌ »ls '$x'
+        ");
+    }
+
+    #[test]
+    fn a_long_info_line_wraps_so_that_its_warnings_show() {
+        let text = "```bash [name:deploy-the-api-to-production x:1]\n\u{1b}[8m\n```";
+        assert_snapshot!(render(text, 30), @"
+        ▌ «b:deploy-the-api-to-production»
+        ▌ «yellow:unknown attribute 'x';»
+        ▌ «yellow:control characters in code»
+        ▌ «yellow:^[»«blue:[8m»
         ");
     }
 
