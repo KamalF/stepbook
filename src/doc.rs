@@ -475,11 +475,15 @@ fn source_lines(text: &str) -> Vec<Vec<Span<'static>>> {
 }
 
 /// pulldown-cmark rescans every open quote and list on each line: a file
-/// that opens 100,000 quotes, then has 200,000 lazy lines, took 30 s. The
-/// lines of a runbook nest a few levels.
-pub const MAX_NESTING: usize = 100;
+/// that opens 100,000 quotes, then has 200,000 lazy lines, took 30 s. At
+/// 1,000 levels, 1 MB of lazy lines takes 1 s. The lines of a runbook nest
+/// a few levels.
+pub const MAX_NESTING: usize = 1_000;
 
-/// The most quote and list markers at the start of a line of `text`.
+/// The deepest nesting at the start of a line of `text`: its quote and
+/// list markers, and each 2 columns of indent before or between them, with
+/// a tab as 4 columns. A list item stays open through the indent of the
+/// lines after it, so the indent counts too.
 pub fn nesting(text: &str) -> usize {
     let lines = text.split_terminator(['\n', '\r']);
     lines.map(line_nesting).max().unwrap_or(0)
@@ -487,9 +491,16 @@ pub fn nesting(text: &str) -> usize {
 
 fn line_nesting(line: &str) -> usize {
     let mut markers = 0;
+    let mut columns = 0;
     let mut rest = line;
     loop {
-        rest = rest.trim_start_matches([' ', '\t']);
+        let text = rest.trim_start_matches([' ', '\t']);
+        let indent = &rest[..rest.len() - text.len()];
+        columns += indent
+            .chars()
+            .map(|c| if c == '\t' { 4 } else { 1 })
+            .sum::<usize>();
+        rest = text;
         let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
         let after = match rest.strip_prefix('>') {
             Some(after) => after,
@@ -503,7 +514,7 @@ fn line_nesting(line: &str) -> usize {
                 {
                     after
                 }
-                _ => return markers,
+                _ => return markers + columns / 2,
             },
         };
         markers += 1;
@@ -1443,18 +1454,21 @@ mod tests {
     }
 
     #[test]
-    fn nesting_counts_the_quote_and_list_markers_at_the_start_of_a_line() {
+    fn nesting_counts_markers_and_indent_at_the_start_of_a_line() {
         let cases = [
             ("text", 0),
             ("> a", 1),
             (">>> a", 3),
-            ("> - > 1. a", 4),
-            ("  - * + 123456789) a", 4),
+            // 4 markers and 4 columns of spaces.
+            ("> - > 1. a", 6),
+            ("  - * + 123456789) a", 7),
+            ("        code", 4),
+            ("\t\t\tcode", 6),
             ("-", 1),
             ("--- a", 0),
             ("-a", 0),
             ("1234567890. a", 0),
-            ("a\r>>\n> > >", 3),
+            ("a\r>>\n> > >", 4),
         ];
         for (text, expected) in cases {
             assert_eq!(nesting(text), expected, "{text:?}");

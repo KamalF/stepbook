@@ -155,8 +155,7 @@ const MAX_FILE: u64 = 1024 * 1024;
 
 /// Reads a runbook, which must be a regular file of at most `MAX_FILE`
 /// bytes: a link to /dev/zero would fill the memory, and a FIFO would
-/// block the open. Its lines must nest at most `doc::MAX_NESTING` quotes
-/// or lists.
+/// block the open. Its lines must nest at most `doc::MAX_NESTING` levels.
 fn read_runbook(path: &Path) -> Result<String, String> {
     let fail = |reason: String| format!("cannot read {}: {reason}", path.display());
     let metadata = std::fs::metadata(path).map_err(|e| fail(io_message(&e)))?;
@@ -171,7 +170,9 @@ fn read_runbook(path: &Path) -> Result<String, String> {
     }
     let text = String::from_utf8_lossy(&bytes).into_owned();
     if doc::nesting(&text) > doc::MAX_NESTING {
-        return Err(fail("a line nests more than 100 quotes or lists".into()));
+        return Err(fail(
+            "a line nests more than 1,000 levels of quotes, lists or indent".into(),
+        ));
     }
     Ok(text)
 }

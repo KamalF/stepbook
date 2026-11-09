@@ -46,7 +46,7 @@ stepbook [--log PATH | --no-log] FILE
 
 | Option | Effect |
 |---|---|
-| `FILE` | The Markdown runbook: a regular file of at most 1 MB, whose lines start with at most 100 quote or list markers. Required. |
+| `FILE` | The Markdown runbook: a regular file of at most 1 MB, whose lines nest at most 1,000 levels. A level is a quote or list marker at the start of a line, or 2 columns of indent before or between them, with a tab as 4 columns. Required. |
 | `--log PATH`, `--log=PATH` | Log file. The default is `FILE` with its extension replaced by `.log`. |
 | `--no-log` | Writes no log. |
 | `-h`, `--help` / `-V`, `--version` | Prints help or the version. |
@@ -476,7 +476,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | stepbook parses its arguments with its own code, not with clap: it has four options | 2026-11-09 |
 | Bidi controls are escaped as control characters are (6.5) | 2026-11-09 |
 | A file that could make more than 200,000 table cells shows its tables as text (5.1): pulldown-cmark pads short rows, and 1 MB of crafted tables took gigabytes | 2026-11-09 |
-| A line of FILE must start with at most 100 quote or list markers (4): pulldown-cmark rescans every open container on each line, and 600 KB of deep quotes and lazy lines took 30 s | 2026-11-09 |
+| A line of FILE must nest at most 1,000 levels (4), counting quote and list markers and indent: pulldown-cmark rescans every open container on each line, and 600 KB of deep quotes and lazy lines took 30 s. List items stay open through indent, so indent counts. At 1,000 levels, 1 MB takes 1 s | 2026-11-09 |
 | FILE must be a regular file of at most 1 MB (4): a link to /dev/zero filled the memory, and the view lays out the whole file on each frame. The largest runbook has 22 KB | 2026-11-09 |
 | The minimum terminal size is 40 columns and 8 rows (6.1), at Kamal's choice: at 6 columns, 1 MB of tabs in code took 2.5 GB per frame | 2026-11-09 |
 | A blank line always follows a code block (5.3): in a tight list item, text under a block could draw a gutter with ▌ and pass for code that does not run | 2026-11-09 |
