@@ -603,13 +603,24 @@ pub fn needs_escape(c: char) -> bool {
 /// nothing, such as U+200B (zero-width space): `"prod<U+200B>"` would look
 /// like `"prod"`. It escapes the spaces other than U+0020, which bash
 /// reads as part of a word: `true<U+00A0>#; curl x | sh` looks like a
-/// comment, and runs curl. Prose keeps them all, for emoji, scripts and
-/// no-break spaces.
+/// comment, and runs curl. It escapes the format characters that join the
+/// next character, such as U+070F, and U+2D7F: a terminal may give them a
+/// column of their own, which ratatui does not count, and the text after
+/// them would shift. Prose keeps them all, for emoji, scripts and no-break
+/// spaces.
 pub fn needs_escape_in_code(c: char) -> bool {
     needs_escape(c)
         || matches!(
             c,
             '\u{a0}'
+                | '\u{600}'..='\u{605}'
+                | '\u{6dd}'
+                | '\u{70f}'
+                | '\u{890}'..='\u{891}'
+                | '\u{8e2}'
+                | '\u{2d7f}'
+                | '\u{110bd}'
+                | '\u{110cd}'
                 | '\u{1680}'
                 | '\u{2000}'..='\u{200a}'
                 | '\u{2028}'..='\u{2029}'
@@ -1309,6 +1320,27 @@ mod tests {
         assert_eq!(warnings("echo\t\u{ff9e}\n"), ["hidden characters in code"]);
         // U+0301 joins the last space of the tab, and shows on it.
         assert!(warnings("echo\t\u{301}x\n").is_empty());
+    }
+
+    #[test]
+    fn code_escapes_the_format_characters_that_join_the_next_one() {
+        let joiners = [
+            '\u{600}',
+            '\u{605}',
+            '\u{6dd}',
+            '\u{70f}',
+            '\u{890}',
+            '\u{891}',
+            '\u{8e2}',
+            '\u{2d7f}',
+            '\u{110bd}',
+            '\u{110cd}',
+        ];
+        for c in joiners {
+            assert!(needs_escape_in_code(c) && !needs_escape(c), "{c:?}");
+        }
+        // U+070F joins the "b" after it into one grapheme of width 1.
+        assert_eq!(warnings("a\u{70f}b\n"), ["hidden characters in code"]);
     }
 
     #[test]
