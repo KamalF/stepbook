@@ -99,7 +99,7 @@ systemctl --user restart api
 
 All colors come from the terminal's 16-color palette, so they follow the terminal's theme. stepbook sets no background color.
 
-No nesting depth can crash stepbook: it walks the document without recursion (upmd issue S9, see 18). Prefixes show only the innermost 10 levels of blockquotes and list items. The text keeps room in the view, and a deep item keeps its marker.
+No nesting depth can crash stepbook: it walks the document without recursion (upmd issue S9, see 18). Prefixes show only the innermost 10 levels of blockquotes and list items, and they take at most half the width of the view: the outer levels go first, and the innermost level always stays. The text and the code keep room in the view, and a deep item keeps its marker.
 
 ## 6. Screen
 

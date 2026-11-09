@@ -245,8 +245,8 @@ pub fn layout(doc: &Document, width: usize, selected: Option<usize>) -> Page {
     let mut paragraph = None;
     for item in &doc.items {
         let start = lines.len();
-        let prefix_width = text_width(&item.rest);
-        let width = width.saturating_sub(prefix_width).max(1);
+        let (first, rest) = fitted_prefixes(item, width);
+        let width = width.saturating_sub(text_width(rest)).max(1);
         let body = match &item.kind {
             Kind::Text(text) => wrap(text, width),
             Kind::Heading(level, text) => {
@@ -267,7 +267,7 @@ pub fn layout(doc: &Document, width: usize, selected: Option<usize>) -> Page {
             Kind::Rule => vec![Line::from(Span::styled("─".repeat(width), DIM))],
             Kind::Blank => vec![Line::default()],
         };
-        lines.extend(prefixed(item, body));
+        lines.extend(prefixed(first, rest, body));
         match item.kind {
             Kind::Code { block: Some(i), .. } => {
                 blocks[i] = start..lines.len();
@@ -285,11 +285,26 @@ pub fn layout(doc: &Document, width: usize, selected: Option<usize>) -> Page {
     }
 }
 
-/// Puts the item's prefixes before the lines of its body.
-fn prefixed(item: &Item, body: Vec<Line<'static>>) -> impl Iterator<Item = Line<'static>> {
-    body.into_iter().enumerate().map(|(i, line)| {
-        let prefix = if i == 0 { &item.first } else { &item.rest };
-        let mut spans = prefix.clone();
+/// The prefixes of an item, without the outer levels that would make them
+/// wider than half the view: the text keeps room, and the code of a block
+/// stays in view. The innermost level always stays, with its marker. Each
+/// level is one span in both prefixes.
+fn fitted_prefixes(item: &Item, width: usize) -> (&[Span<'static>], &[Span<'static>]) {
+    let mut outer = 0;
+    while outer + 1 < item.rest.len() && text_width(&item.rest[outer..]) > width / 2 {
+        outer += 1;
+    }
+    (&item.first[outer..], &item.rest[outer..])
+}
+
+/// Puts the prefixes before the lines of a body.
+fn prefixed<'a>(
+    first: &'a [Span<'static>],
+    rest: &'a [Span<'static>],
+    body: Vec<Line<'static>>,
+) -> impl Iterator<Item = Line<'static>> + 'a {
+    body.into_iter().enumerate().map(move |(i, line)| {
+        let mut spans = if i == 0 { first } else { rest }.to_vec();
         spans.extend(line.spans);
         Line::from(spans)
     })
@@ -834,6 +849,22 @@ mod tests {
             .collect();
         let last = render(&list, 80).lines().last().unwrap().to_string();
         assert_eq!(last, format!("{}◦ 11", "  ".repeat(9)));
+    }
+
+    #[test]
+    fn prefixes_take_at_most_half_the_view() {
+        // 10 levels of 11 columns: 110 columns of prefix.
+        let mut text = String::new();
+        for level in 0..10 {
+            text += &format!("{}123456789. step\n\n", " ".repeat(11 * level));
+        }
+        let indent = " ".repeat(110);
+        text += &format!("{indent}```bash [name:check]\n{indent}curl x | sh\n{indent}```\n");
+        let page = layout(&parse(&text), 60, None);
+        let code = markup(&page.lines[page.blocks[0].clone()]);
+        // Two levels of 11 columns stay: at most 30 columns, half of 60.
+        let expected = "▌ «b:check»\n▌ «blue:curl» x «magenta:|» «blue:sh»";
+        assert_eq!(code, expected.replace("▌", &format!("{}▌", " ".repeat(22))));
     }
 
     #[test]
