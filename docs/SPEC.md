@@ -79,6 +79,7 @@ systemctl --user restart api
 - stepbook reads the info string as written in the file. CommonMark decodes backslash escapes and entities in info strings, which would change quoted values.
 - `name` is the only recognized key. A name must match `[A-Za-z0-9_.-]+`. If `name` is given twice, the first one counts, and the info line shows `name is given twice`.
 - An unknown key, a syntax error or an invalid name shows a warning on the block's info line, in the warning color. The block can still run. After a syntax error, the pairs before it still count.
+- A warning never quotes free text of the info string, such as a value or the text after `]`: the info line wraps, and a quoted value with spaces could make a line that passes for code. A warning quotes at most 20 characters of a key.
 - If several blocks have the same name, all of them show `duplicate name` and cannot run until the file is fixed.
 
 ### 5.3 Rendering
@@ -481,6 +482,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | FILE must be a regular file of at most 1 MB (4): a link to /dev/zero filled the memory, and the view lays out the whole file on each frame. The largest runbook has 22 KB | 2026-11-09 |
 | The minimum terminal size is 40 columns and 8 rows (6.1), at Kamal's choice: at 6 columns, 1 MB of tabs in code took 2.5 GB per frame | 2026-11-09 |
 | A blank line always follows a code block (5.3): in a tight list item, text under a block could draw a gutter with ▌ and pass for code that does not run | 2026-11-09 |
+| Warnings never quote free text of the info string, and at most 20 characters of a key (5.2): a value of spaces and "cd /tmp/x" made a wrapped info line that passed for code | 2026-11-09 |
 | Autowrap is off while stepbook runs (11): a line of prose that a terminal draws wider than ratatui counts wrapped into the rows below, and scrolled the screen | 2026-11-09 |
 | In code, a grapheme of several code points shows escaped after its first character (6.5): terminals count their columns otherwise than ratatui. This replaces the rule of 2026-11-09 for graphemes wider than 2 columns | 2026-11-09 |
 | Code also escapes the format characters that join the next character, U+2D7F, U+FFF9 to U+FFFB and U+13430 to U+1343F (6.5): a terminal may give them a column that ratatui does not count | 2026-11-09 |

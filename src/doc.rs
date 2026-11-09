@@ -588,13 +588,15 @@ fn block(info: &str, code: &str) -> Option<Block> {
     let mut named = false;
     for (key, value) in pairs {
         if key != "name" {
-            block.warnings.push(format!("unknown attribute '{key}'"));
+            block
+                .warnings
+                .push(format!("unknown attribute '{}'", short(&key)));
         } else if std::mem::replace(&mut named, true) {
             block.warnings.push("name is given twice".into());
         } else if is_valid_name(&value) {
             block.name = Some(value);
         } else {
-            block.warnings.push(format!("invalid name '{value}'"));
+            block.warnings.push(INVALID_NAME.into());
         }
     }
     block.warnings.extend(error);
@@ -899,6 +901,18 @@ fn scope_style(stack: &ScopeStack) -> Style {
     Style::new()
 }
 
+/// Warnings never quote free text of the info string: the info line wraps,
+/// and a quoted value with spaces could make a wrapped line that passes
+/// for code. Keys hold no space, and show at most 20 characters.
+const INVALID_NAME: &str = "invalid name: use [A-Za-z0-9_.-]";
+
+fn short(key: &str) -> String {
+    match key.get(..20) {
+        Some(start) if key.len() > 20 => format!("{start}…"),
+        _ => key.to_string(),
+    }
+}
+
 fn is_valid_name(name: &str) -> bool {
     !name.is_empty()
         && name
@@ -923,7 +937,7 @@ fn parse_attributes(section: &str) -> (Vec<(String, String)>, Option<String>) {
         rest = rest.trim_start_matches(is_separator);
         if let Some(after) = rest.strip_prefix(']') {
             let after = after.trim();
-            let error = (!after.is_empty()).then(|| format!("unexpected text after ']': {after}"));
+            let error = (!after.is_empty()).then(|| "unexpected text after ']'".to_string());
             return (pairs, error);
         }
         let Some(first) = rest.chars().next() else {
@@ -940,18 +954,24 @@ fn parse_attributes(section: &str) -> (Vec<(String, String)>, Option<String>) {
         }
         let key = &rest[..key_len];
         let Some(after) = rest[key_len..].strip_prefix(':') else {
-            return (pairs, Some(format!("missing ':' after '{key}'")));
+            return (pairs, Some(format!("missing ':' after '{}'", short(key))));
         };
         let value;
         (value, rest) = match after.strip_prefix('"') {
             Some(quoted) => match unquote(quoted) {
                 Some(found) => found,
-                None => return (pairs, Some(format!("missing '\"' in the value of '{key}'"))),
+                None => {
+                    let error = format!("missing '\"' in the value of '{}'", short(key));
+                    return (pairs, Some(error));
+                }
             },
             None => {
                 let len = after.find(|c| !is_unquoted(c)).unwrap_or(after.len());
                 if len == 0 {
-                    return (pairs, Some(format!("missing value after '{key}:'")));
+                    return (
+                        pairs,
+                        Some(format!("missing value after '{}:'", short(key))),
+                    );
                 }
                 (after[..len].to_string(), &after[len..])
             }
@@ -961,7 +981,10 @@ fn parse_attributes(section: &str) -> (Vec<(String, String)>, Option<String>) {
         {
             return (
                 pairs,
-                Some(format!("unexpected '{c}' after the value of '{key}'")),
+                Some(format!(
+                    "unexpected '{c}' after the value of '{}'",
+                    short(key)
+                )),
             );
         }
         pairs.push((key.to_string(), value));
@@ -1035,16 +1058,20 @@ mod tests {
             ),
             (
                 "bash [name:a/b, name:c]",
-                named("", &["invalid name 'a/b'", "name is given twice"]),
+                named("", &[INVALID_NAME, "name is given twice"]),
             ),
-            ("bash [name:a/b]", named("", &["invalid name 'a/b'"])),
-            ("bash [name:\"a b\"]", named("", &["invalid name 'a b'"])),
-            ("bash [name:\"\"]", named("", &["invalid name ''"])),
+            ("bash [name:a/b]", named("", &[INVALID_NAME])),
+            ("bash [name:\"a b\"]", named("", &[INVALID_NAME])),
+            ("bash [name:\"\"]", named("", &[INVALID_NAME])),
             ("bash [name:a", named("a", &["missing ']'"])),
             ("bash [", named("", &["missing ']'"])),
             (
-                "bash [name:a] x",
-                named("a", &["unexpected text after ']': x"]),
+                "bash [name:a] x   cd /",
+                named("a", &["unexpected text after ']'"]),
+            ),
+            (
+                "bash [name:a abcdefghijklmnopqrstuvwxyz:1]",
+                named("a", &["unknown attribute 'abcdefghijklmnopqrst…'"]),
             ),
             (
                 "bash [:a]",
@@ -1155,7 +1182,7 @@ mod tests {
         // pulldown-cmark would decode \" to ", and end the value at the
         // second quote.
         let doc = parse("```bash [name:\"a\\\"b\"]\n```\n");
-        assert_eq!(doc.blocks[0].warnings, ["invalid name 'a\"b'"]);
+        assert_eq!(doc.blocks[0].warnings, [INVALID_NAME]);
     }
 
     #[test]

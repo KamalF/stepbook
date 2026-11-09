@@ -1026,7 +1026,7 @@ mod tests {
 
         ▌ «b:a»  «red:duplicate name»
 
-        ▌ «b:#3»  «yellow:invalid name 'b c'»
+        ▌ «b:#3»  «yellow:invalid name: use [A-Za-z0-9_.-]»
         ");
     }
 
@@ -1132,7 +1132,7 @@ mod tests {
 
     #[test]
     fn control_characters_in_attributes_show_escaped() {
-        assert_snapshot!(render("```bash [name:\"x\u{1b}y\"]\n```", 60), @"▌ «b:#1»  «yellow:invalid name 'x^[y'»");
+        assert_snapshot!(render("```bash [\u{1b}]\n```", 60), @"▌ «b:#1»  «yellow:unexpected '^[' where a key starts»");
     }
 
     #[test]
