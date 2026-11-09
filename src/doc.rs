@@ -631,9 +631,17 @@ pub fn needs_escape_in_code(c: char) -> bool {
                 | '\u{70f}'
                 | '\u{890}'..='\u{891}'
                 | '\u{8e2}'
+                | '\u{d4e}'
                 | '\u{2d7f}'
                 | '\u{110bd}'
                 | '\u{110cd}'
+                | '\u{111c2}'..='\u{111c3}'
+                | '\u{1193f}'
+                | '\u{11941}'
+                | '\u{11a3a}'
+                | '\u{11a84}'..='\u{11a89}'
+                | '\u{11d46}'
+                | '\u{11f02}'
                 | '\u{fff9}'..='\u{fffb}'
                 | '\u{13430}'..='\u{1343f}'
                 | '\u{1680}'
@@ -754,6 +762,12 @@ fn hides(grapheme: &str) -> bool {
     grapheme.chars().nth(1).is_some() || width(grapheme) == 0
 }
 
+/// Whether `text` after a space makes one grapheme with it.
+fn joins_a_space(text: &str) -> bool {
+    let span = Span::raw(format!(" {text}"));
+    span.styled_graphemes(Style::new()).count() == 1
+}
+
 fn push_styled(out: &mut Vec<Span<'static>>, text: &str, style: Style) {
     match out.last_mut() {
         Some(last) if last.style == style => last.content.to_mut().push_str(text),
@@ -787,13 +801,20 @@ pub fn code_line(spans: &[Span], hidden: &mut bool) -> Vec<Span<'static>> {
     // drop.
     for grapheme in Span::raw(text.as_str()).styled_graphemes(Style::new()) {
         let mut style = starts[starts.partition_point(|(start, _)| *start <= offset) - 1].1;
+        // The view draws the gutter "▌ " before each line: a mark at the
+        // start of a line would join its space into one grapheme.
+        let at_start = offset == 0;
         offset += grapheme.symbol.len();
         let mut chars = grapheme.symbol.chars().peekable();
-        if hides(grapheme.symbol) {
+        if hides(grapheme.symbol) || (at_start && joins_a_space(grapheme.symbol)) {
             *hidden = true;
             // The grapheme keeps its first character, if the terminal
             // draws it alone, and shows the others escaped.
-            if let Some(base) = chars.next_if(|c| !hides(c.encode_utf8(&mut [0; 4]))) {
+            let drawn_alone = |c: &char| {
+                let c = c.encode_utf8(&mut [0; 4]).to_string();
+                !hides(&c) && !(at_start && joins_a_space(&c))
+            };
+            if let Some(base) = chars.next_if(drawn_alone) {
                 push_styled(&mut out, &base.to_string(), style);
             }
             style = style.patch(WARNING);
@@ -1381,6 +1402,16 @@ mod tests {
             '\u{2d7f}',
             '\u{110bd}',
             '\u{110cd}',
+            '\u{d4e}',
+            '\u{111c2}',
+            '\u{111c3}',
+            '\u{1193f}',
+            '\u{11941}',
+            '\u{11a3a}',
+            '\u{11a84}',
+            '\u{11a89}',
+            '\u{11d46}',
+            '\u{11f02}',
             '\u{fff9}',
             '\u{fffb}',
             '\u{13430}',
@@ -1391,6 +1422,20 @@ mod tests {
         }
         // U+070F joins the "b" after it into one grapheme of width 1.
         assert_eq!(warnings("a\u{70f}b\n"), ["hidden characters in code"]);
+    }
+
+    #[test]
+    fn code_escapes_a_mark_that_would_join_the_space_of_the_gutter() {
+        let shown = |code: &str| -> String {
+            code_line(&[Span::raw(code)], &mut false)
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        assert_eq!(shown("\u{93e}rm -rf /tmp/x"), "<093e>rm -rf /tmp/x");
+        assert_eq!(shown("\u{1f3fb}x"), "<1f3fb>x");
+        assert_eq!(shown("x\u{93e}"), "x<093e>");
+        assert_eq!(warnings("\u{93e}rm\n"), ["hidden characters in code"]);
     }
 
     #[test]
