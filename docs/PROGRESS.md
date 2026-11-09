@@ -63,6 +63,7 @@ The test of commit 15 is ignored, because CI has no runbooks: `cargo test --rele
   - Round 8: 1 blocker and 2 should-fix, fixed: each frame repaints the whole screen, since a row that a terminal drew shifted stayed on later frames; code escapes a first grapheme that would join the gutter's space; and a test checks the nesting limit at its boundary.
   - After round 8, `cargo mutants` ran again over all the fixes: 513 caught, 13 missed, which got tests or exclusions.
   - Round 9: the security reviewer found no defect. The code reviewer found 2 should-fix, fixed: the restore ends the synchronized update of a failed frame, and code escapes the regional indicators.
+  - Round 10: the security reviewer found nothing. The code reviewer found 2 should-fix, fixed: a row that goes on from a wrapped line of code starts with a dim `↪ ` (Kamal's choice), and j shows the whole block when it fits.
 
 ### Kamal's manual checklist
 
