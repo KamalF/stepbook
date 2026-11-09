@@ -47,6 +47,25 @@ fn an_unreadable_file_exits_with_1() {
 }
 
 #[test]
+fn a_file_that_is_not_regular_or_larger_than_1_mb_exits_with_1() {
+    let output = stepbook(&["/dev/zero"], None);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(
+        stderr(&output),
+        "stepbook: cannot read /dev/zero: not a regular file\n"
+    );
+    let big = runbook();
+    std::fs::write(big.path(), vec![b'a'; 1024 * 1024 + 1]).unwrap();
+    let output = stepbook(&[big.path().to_str().unwrap()], None);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).ends_with(": the file is larger than 1 MB\n"));
+    // Exactly 1 MB passes the read, and stops at the check for a terminal.
+    std::fs::write(big.path(), vec![b'a'; 1024 * 1024]).unwrap();
+    let output = stepbook(&[big.path().to_str().unwrap()], None);
+    assert!(stderr(&output).contains("run stepbook in a terminal"));
+}
+
+#[test]
 fn bash_missing_from_the_path_exits_with_1() {
     let file = runbook();
     let output = stepbook(&[file.path().to_str().unwrap()], Some(""));

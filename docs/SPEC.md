@@ -46,13 +46,13 @@ stepbook [--log PATH | --no-log] FILE
 
 | Option | Effect |
 |---|---|
-| `FILE` | The Markdown runbook. Required. |
+| `FILE` | The Markdown runbook: a regular file of at most 1 MB. Required. |
 | `--log PATH`, `--log=PATH` | Log file. The default is `FILE` with its extension replaced by `.log`. |
 | `--no-log` | Writes no log. |
 | `-h`, `--help` / `-V`, `--version` | Prints help or the version. |
 
 - The first run starts in the current directory of the stepbook process.
-- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, `bash` not found, stdout not a terminal). Exit code 2: invalid arguments.
+- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, not a regular file or larger than 1 MB, `bash` not found, stdout not a terminal). Exit code 2: invalid arguments.
 
 ## 5. Document
 
@@ -473,5 +473,6 @@ This spec is the source of truth. A change of decision updates it in the same co
 | `unicode-width` is dropped. stepbook measures each grapheme with ratatui's `CellWidth`, as the ratatui buffer does: a sum of character widths gets emoji with a variation selector wrong | 2026-11-09 |
 | stepbook parses its arguments with its own code, not with clap: it has four options | 2026-11-09 |
 | Bidi controls are escaped as control characters are (6.5) | 2026-11-09 |
+| FILE must be a regular file of at most 1 MB (4): a link to /dev/zero filled the memory, and the view lays out the whole file on each frame. The largest runbook has 22 KB | 2026-11-09 |
 | Code also escapes the default ignorable code points and the graphemes of width 0; prose keeps them (6.5). The warning becomes `hidden characters in code` | 2026-11-09 |
 | Highlighting stops at lines longer than 1,000 bytes and after 32 KB of code (5.3): syntect takes 10 s on a line of 80 KB. The largest runbook has 16 KB of bash, with lines of at most 386 bytes | 2026-11-09 |

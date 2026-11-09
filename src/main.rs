@@ -3,8 +3,8 @@ mod run;
 mod view;
 
 use std::ffi::OsString;
-use std::io::IsTerminal;
-use std::path::PathBuf;
+use std::io::{IsTerminal, Read};
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use ratatui::DefaultTerminal;
@@ -124,8 +124,7 @@ fn main() -> ExitCode {
 }
 
 fn open(args: &Args) -> Result<(), String> {
-    let bytes = std::fs::read(&args.file)
-        .map_err(|e| format!("cannot read {}: {}", args.file.display(), io_message(&e)))?;
+    let bytes = read_runbook(&args.file)?;
     let path = std::env::var_os("PATH").unwrap_or_default();
     if run::find_in_path("bash", &path).is_none() {
         return Err("cannot find bash on the PATH".into());
@@ -142,6 +141,28 @@ fn open(args: &Args) -> Result<(), String> {
     let result = event_loop(&mut terminal, &mut view);
     ratatui::restore();
     result.map_err(|e| format!("terminal error: {}", io_message(&e)))
+}
+
+/// Runbooks are a few KB: the largest of ~/dev/claude/runbooks had 22 KB
+/// on 2026-11-09. The view lays out the whole file on each frame.
+const MAX_FILE: u64 = 1024 * 1024;
+
+/// Reads a runbook, which must be a regular file of at most `MAX_FILE`
+/// bytes: a link to /dev/zero would fill the memory, and a FIFO would
+/// block the open.
+fn read_runbook(path: &Path) -> Result<Vec<u8>, String> {
+    let fail = |reason: String| format!("cannot read {}: {reason}", path.display());
+    let metadata = std::fs::metadata(path).map_err(|e| fail(io_message(&e)))?;
+    if !metadata.is_file() {
+        return Err(fail("not a regular file".into()));
+    }
+    let file = std::fs::File::open(path).map_err(|e| fail(io_message(&e)))?;
+    let mut bytes = Vec::new();
+    (file.take(MAX_FILE + 1).read_to_end(&mut bytes)).map_err(|e| fail(io_message(&e)))?;
+    if bytes.len() as u64 > MAX_FILE {
+        return Err(fail("the file is larger than 1 MB".into()));
+    }
+    Ok(bytes)
 }
 
 fn event_loop(terminal: &mut DefaultTerminal, view: &mut view::View) -> std::io::Result<()> {
