@@ -94,8 +94,8 @@ systemctl --user restart api
 | Thematic break | A dimmed rule. |
 | Raw HTML | Shown dimmed, as source. |
 | Image | `[image: <alt text>]`. |
-| Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted. |
-| Other code block | The code with a dimmed gutter, not highlighted. |
+| Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted. Long lines wrap at any character, so the view shows all the code that runs. |
+| Other code block | The code with a dimmed gutter, not highlighted. Long lines wrap as in a block. |
 
 All colors come from the terminal's 16-color palette, so they follow the terminal's theme. stepbook sets no background color.
 
@@ -121,7 +121,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
  NORMAL  ↑↓ move  ↵ run  i input  o output  ^r reload  q quit
 ```
 
-- **Sidebar:** one row per block, with a status glyph and the name (or `#<n>` for an unnamed block). Its width is the longest name plus 4, between 12 and 30 columns. It is hidden on terminals under 80 columns.
+- **Sidebar:** one row per block, with a status glyph and the name. An unnamed block shows `#<n>`, where n is its position among all the blocks of the file, from 1. Its width is the longest name plus 4, between 12 and 30 columns. It is hidden on terminals under 80 columns.
 - **Document view:** the rendered runbook. The selected block has a highlighted gutter and sidebar row.
 - **Footer:** the mode, the keys that apply now, and notifications. A notification lasts 3 seconds.
 

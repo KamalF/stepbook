@@ -1,11 +1,17 @@
 use pulldown_cmark::{Alignment, HeadingLevel};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
 use crate::doc::{Cell, DIM, Document, Item, Kind};
+
+const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
+const WARNING: Style = Style::new().fg(Color::Yellow);
+const ERROR: Style = Style::new().fg(Color::Red);
+const BLOCK_GUTTER: Style = Style::new();
+const GUTTER: &str = "▌ ";
 
 pub fn draw(frame: &mut Frame, doc: &Document) {
     let [body, footer] =
@@ -42,6 +48,7 @@ pub fn layout(doc: &Document, width: usize) -> Vec<Line<'static>> {
                 body
             }
             Kind::Table(aligns, rows) => table(aligns, rows, width),
+            Kind::Code { lines, block } => code(doc, lines, *block, width),
             Kind::Blank => vec![Line::default()],
         };
         lines.extend(prefixed(item, body));
@@ -57,6 +64,39 @@ fn prefixed(item: &Item, body: Vec<Line<'static>>) -> impl Iterator<Item = Line<
         spans.extend(line.spans);
         Line::from(spans)
     })
+}
+
+/// Draws a code block with a gutter. A block also gets an info line: its
+/// label, its problem and its warnings. Long lines wrap at the width, so
+/// that the view shows all the code that runs.
+fn code(
+    doc: &Document,
+    lines: &[Vec<Span<'static>>],
+    block: Option<usize>,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let gutter = Span::styled(GUTTER, if block.is_some() { BLOCK_GUTTER } else { DIM });
+    let width = width.saturating_sub(GUTTER.chars().count()).max(1);
+    let mut out = Vec::new();
+    if let Some(i) = block {
+        let mut info = vec![Span::styled(doc.label(i), BOLD)];
+        if let Some(problem) = doc.blocks[i].problem {
+            info.extend([Span::raw("  "), Span::styled(problem, ERROR)]);
+        }
+        let warnings = &doc.blocks[i].warnings;
+        if !warnings.is_empty() {
+            info.extend([Span::raw("  "), Span::styled(warnings.join("; "), WARNING)]);
+        }
+        out.push(Line::from(
+            [vec![gutter.clone()], truncate(&info, width)].concat(),
+        ));
+    }
+    for line in lines {
+        for part in hard_wrap(line, width) {
+            out.push(Line::from([vec![gutter.clone()], part].concat()));
+        }
+    }
+    out
 }
 
 /// Draws a table with box-drawing borders. If the table is wider than
@@ -136,6 +176,27 @@ fn truncate(text: &[Span], width: usize) -> Vec<Span<'static>> {
         chars.push(('…', style));
     }
     join_styles(chars)
+}
+
+/// Wraps styled text at `width` columns, at any character.
+fn hard_wrap(text: &[Span], width: usize) -> Vec<Vec<Span<'static>>> {
+    let mut lines = Vec::new();
+    let mut line = Vec::new();
+    let mut used = 0;
+    for (c, style) in text
+        .iter()
+        .flat_map(|s| s.content.chars().map(|c| (c, s.style)))
+    {
+        let w = char_width(c);
+        if used + w > width && !line.is_empty() {
+            lines.push(join_styles(std::mem::take(&mut line)));
+            used = 0;
+        }
+        line.push((c, style));
+        used += w;
+    }
+    lines.push(join_styles(line));
+    lines
 }
 
 /// Word-wraps styled text to `width` columns. A `\n` starts a new line.
@@ -455,6 +516,71 @@ mod tests {
         «d:├─────┼────────────┤»
         «d:│» k   «d:│» 日本語の…  «d:│»
         «d:└─────┴────────────┘»
+        ");
+    }
+
+    #[test]
+    fn blocks_show_an_info_line_and_a_gutter() {
+        let text = "```bash [name:check]\nls\n```\n\n```sh\n\ncd /\n```";
+        assert_snapshot!(render(text, 40), @"
+        ▌ «b:check»
+        ▌ «blue:ls»
+
+        ▌ «b:#2»
+        ▌
+        ▌ «blue:cd» /
+        ");
+    }
+
+    #[test]
+    fn bash_code_is_highlighted_with_terminal_colors() {
+        let text =
+            "```bash\nexport A=\"x $HOME\" # note\nif [ -n 1 ]; then ls -la | grep x; fi\n```";
+        assert_snapshot!(render(text, 80), @r#"
+        ▌ «b:#1»
+        ▌ «magenta:export» «cyan:A»=«green:"x »«cyan:$HOME»«green:"» «d:# note»
+        ▌ «magenta:if» «blue:[» -n 1 «blue:]»«magenta:;» «magenta:then» «blue:ls» -la «magenta:|» «blue:grep» x«magenta:;» «magenta:fi»
+        "#);
+    }
+
+    #[test]
+    fn other_code_blocks_have_a_dim_gutter_and_no_highlighting() {
+        assert_snapshot!(render("```python\nif x: 'a'\n```\n\n    ls '$x'", 40), @"
+        «d:▌ »if x: 'a'
+
+        «d:▌ »ls '$x'
+        ");
+    }
+
+    #[test]
+    fn long_code_lines_wrap_so_that_all_the_code_shows() {
+        assert_snapshot!(render("```bash\nrm -rf build/output/folder\n```", 12), @"
+        ▌ «b:#1»
+        ▌ «blue:rm» -rf bui
+        ▌ ld/output/
+        ▌ folder
+        ");
+    }
+
+    #[test]
+    fn info_lines_show_problems_and_warnings() {
+        let text = "```bash [name:a x:1]\n```\n```bash [name:a]\n```\n```bash [name:\"b c\"]\n```";
+        assert_snapshot!(render(text, 60), @"
+        ▌ «b:a»  «red:duplicate name»  «yellow:unknown attribute 'x'»
+
+        ▌ «b:a»  «red:duplicate name»
+
+        ▌ «b:#3»  «yellow:invalid name 'b c'»
+        ");
+    }
+
+    #[test]
+    fn code_in_a_list_keeps_the_list_indent() {
+        assert_snapshot!(render("- step:\n\n  ```bash [name:s]\n  ls\n  ```", 40), @"
+        • step:
+
+          ▌ «b:s»
+          ▌ «blue:ls»
         ");
     }
 

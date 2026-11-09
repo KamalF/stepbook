@@ -1,8 +1,11 @@
 use std::collections::HashMap;
+use std::sync::LazyLock;
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
+use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
+use syntect::util::LinesWithEndings;
 
 pub const INLINE_CODE: Style = Style::new().fg(Color::Cyan);
 pub const DIM: Style = Style::new().add_modifier(Modifier::DIM);
@@ -39,6 +42,12 @@ pub enum Kind {
     Heading(HeadingLevel, Vec<Span<'static>>),
     /// The first row is the header.
     Table(Vec<Alignment>, Vec<Vec<Cell>>),
+    /// A code block, one entry per line. `block` is the index of its block
+    /// in `Document::blocks`, if it is one.
+    Code {
+        lines: Vec<Vec<Span<'static>>>,
+        block: Option<usize>,
+    },
     Blank,
 }
 
@@ -49,8 +58,17 @@ pub struct Document {
     #[cfg_attr(not(test), expect(dead_code, reason = "a later commit renders it"))]
     pub frontmatter: Option<String>,
     pub items: Vec<Item>,
-    #[cfg_attr(not(test), expect(dead_code, reason = "a later commit renders them"))]
     pub blocks: Vec<Block>,
+}
+
+impl Document {
+    /// The name of block `i`, or `#<n>` for the n-th block if it has no name.
+    pub fn label(&self, i: usize) -> String {
+        match &self.blocks[i].name {
+            Some(name) => name.clone(),
+            None => format!("#{}", i + 1),
+        }
+    }
 }
 
 pub fn parse(text: &str) -> Document {
@@ -231,7 +249,24 @@ impl Builder {
             }
             TagEnd::CodeBlock => {
                 if let Some((code, info)) = self.code.take() {
-                    self.blocks.extend(block(&info, code));
+                    let kind = match block(&info, &code) {
+                        Some(block) => {
+                            self.blocks.push(block);
+                            Kind::Code {
+                                lines: highlight(&code),
+                                block: Some(self.blocks.len() - 1),
+                            }
+                        }
+                        None => Kind::Code {
+                            lines: code
+                                .lines()
+                                .map(|l| vec![Span::raw(l.to_string())])
+                                .collect(),
+                            block: None,
+                        },
+                    };
+                    let (first, rest) = self.prefixes(true);
+                    self.items.push(Item { first, rest, kind });
                 }
                 self.blank = true;
             }
@@ -354,7 +389,7 @@ fn raw_info(source: &str) -> &str {
     fence.trim_start_matches(marker).trim()
 }
 
-fn block(info: &str, code: String) -> Option<Block> {
+fn block(info: &str, code: &str) -> Option<Block> {
     let (lang, section) = match info.find('[') {
         Some(i) => (&info[..i], Some(&info[i..])),
         None => (info, None),
@@ -364,7 +399,7 @@ fn block(info: &str, code: String) -> Option<Block> {
     }
     let mut block = Block {
         name: None,
-        code,
+        code: code.to_string(),
         warnings: Vec::new(),
         problem: None,
     };
@@ -385,6 +420,72 @@ fn block(info: &str, code: String) -> Option<Block> {
     }
     block.warnings.extend(error);
     Some(block)
+}
+
+static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
+
+/// The style of each kind of bash token, in the 16 terminal colors.
+static SCOPE_STYLES: LazyLock<Vec<(Scope, Style)>> = LazyLock::new(|| {
+    [
+        ("comment", DIM),
+        ("string.quoted", Style::new().fg(Color::Green)),
+        ("keyword.control", Style::new().fg(Color::Magenta)),
+        ("keyword.operator.logical", Style::new().fg(Color::Magenta)),
+        ("storage.modifier", Style::new().fg(Color::Magenta)),
+        ("variable.other.readwrite", Style::new().fg(Color::Cyan)),
+        (
+            "punctuation.definition.variable",
+            Style::new().fg(Color::Cyan),
+        ),
+        ("variable.function", Style::new().fg(Color::Blue)),
+        ("support.function", Style::new().fg(Color::Blue)),
+        ("entity.name.function", Style::new().fg(Color::Blue)),
+        ("constant.numeric", Style::new().fg(Color::Yellow)),
+    ]
+    .into_iter()
+    .map(|(scope, style)| (Scope::new(scope).expect("a valid scope"), style))
+    .collect()
+});
+
+/// Highlights bash code, one entry per line. The innermost scope of each
+/// token that has a style gives the token's style.
+fn highlight(code: &str) -> Vec<Vec<Span<'static>>> {
+    let syntax = SYNTAXES
+        .find_syntax_by_token("bash")
+        .expect("syntect has a bash syntax");
+    let mut state = ParseState::new(syntax);
+    let mut stack = ScopeStack::new();
+    let mut lines = Vec::new();
+    for line in LinesWithEndings::from(code) {
+        let ops = state.parse_line(line, &SYNTAXES).unwrap_or_default();
+        // The newline is not part of the text of the line.
+        let text = line.strip_suffix('\n').unwrap_or(line);
+        let mut spans = Vec::new();
+        let mut start = 0;
+        for (end, op) in ops {
+            let end = end.min(text.len());
+            spans.push(Span::styled(
+                text[start..end].to_string(),
+                scope_style(&stack),
+            ));
+            // An invalid operation only loses the colors of the rest.
+            let _ = stack.apply(&op);
+            start = end;
+        }
+        spans.push(Span::styled(text[start..].to_string(), scope_style(&stack)));
+        spans.retain(|s| !s.content.is_empty());
+        lines.push(spans);
+    }
+    lines
+}
+
+fn scope_style(stack: &ScopeStack) -> Style {
+    for scope in stack.as_slice().iter().rev() {
+        if let Some((_, style)) = SCOPE_STYLES.iter().find(|(s, _)| s.is_prefix_of(*scope)) {
+            return *style;
+        }
+    }
+    Style::new()
 }
 
 fn is_valid_name(name: &str) -> bool {
@@ -491,7 +592,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn info(info: &str) -> Option<(Option<String>, Vec<String>)> {
-        block(info, String::new()).map(|b| (b.name, b.warnings))
+        block(info, "").map(|b| (b.name, b.warnings))
     }
 
     fn named(name: &str, warnings: &[&str]) -> Option<(Option<String>, Vec<String>)> {
@@ -594,7 +695,7 @@ mod tests {
 
         #[test]
         fn any_info_string_parses_without_panic(text in any::<String>()) {
-            block(&format!("bash [{text}"), String::new());
+            block(&format!("bash [{text}"), "");
         }
     }
 
