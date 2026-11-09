@@ -46,9 +46,11 @@ The plan, one commit per line:
 
 Then `cargo mutants`, the check in tmux, and the review loop.
 
+The test of commit 15 is ignored, because CI has no runbooks: `cargo test --release -- --ignored` runs it on `~/dev/claude/runbooks/`, or on `$STEPBOOK_RUNBOOKS`. On 2026-11-09, the 62 runbooks opened at 3 screen sizes in 2.9 s.
+
 ## Next
 
-1. Commit 15 of milestone 1: each runbook opens with no panic.
+1. `cargo mutants`, the check in tmux, and the review loop of milestone 1.
 
 ## Open points
 

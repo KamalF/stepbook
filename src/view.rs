@@ -1161,6 +1161,35 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "reads the runbooks of ~/dev/claude/runbooks, or of $STEPBOOK_RUNBOOKS"]
+    fn each_runbook_opens_without_a_panic() {
+        let dir = std::env::var_os("STEPBOOK_RUNBOOKS").map_or_else(
+            || std::path::Path::new(&std::env::var_os("HOME").unwrap()).join("dev/claude/runbooks"),
+            std::path::PathBuf::from,
+        );
+        let mut count = 0;
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let path = entry.unwrap().path();
+            if path.extension().is_none_or(|e| e != "md") {
+                continue;
+            }
+            let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
+            for (width, height) in [(20, 5), (79, 24), (120, 40)] {
+                let size = Size::new(width, height);
+                let mut view = View::new(parse(&text), path.display().to_string());
+                screen_with_footer(&view, width, height);
+                view.select_last(size);
+                view.scroll_pages(-1, size);
+                view.select_by(-1, size);
+                screen_with_footer(&view, width, height);
+            }
+            count += 1;
+        }
+        println!("{count} runbooks in {}", dir.display());
+        assert!(count > 0);
+    }
+
+    #[test]
     fn inline_styles_use_terminal_styles() {
         let text = "*em* **strong** ~~gone~~ `code` [link](http://x) ***both***";
         assert_snapshot!(render(text, 60), @"«i:em» «b:strong» «s:gone» «cyan:code» «u:link» «b,i:both»");
