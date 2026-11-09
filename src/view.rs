@@ -16,6 +16,7 @@ const ERROR: Style = Style::new().fg(Color::Red);
 const BLOCK_GUTTER: Style = Style::new();
 const SELECTED: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 const GUTTER: &str = "▌ ";
+const WRAP_MARK: &str = "↪ ";
 /// The sidebar shows on terminals at least this wide.
 const SIDEBAR_SCREEN_WIDTH: u16 = 80;
 
@@ -231,11 +232,14 @@ fn max_scroll(page: &Page, height: usize) -> usize {
 }
 
 /// The scroll closest to `scroll` that shows the lines from `top` to the
-/// end of `block`. If they do not fit in `height`, it shows `top`, or the
-/// first line of the block if `top` is too far above it.
+/// end of `block`. If they do not fit in `height`, it shows the whole
+/// block, with the end of the paragraph above it. A block taller than the
+/// view shows from `top`, or from its first line if `top` is too far above.
 fn scroll_to(scroll: usize, top: usize, block: &Range<usize>, height: usize) -> usize {
     if block.end - top > height {
-        if block.start - top < height {
+        if block.len() <= height {
+            block.end - height
+        } else if block.start - top < height {
             top
         } else {
             block.start
@@ -287,7 +291,9 @@ pub fn layout(doc: &Document, width: usize, selected: Option<usize>) -> Page {
             }
             Kind::Table(aligns, rows) => table(aligns, rows, width),
             Kind::Code { lines, block } => code(doc, lines, *block, selected, width),
-            Kind::Source(lines) => lines.iter().flat_map(|l| hard_wrap(l, width)).collect(),
+            Kind::Source(lines) => (lines.iter())
+                .flat_map(|l| hard_wrap(l, width, width))
+                .collect(),
             Kind::Rule => vec![Line::from(Span::styled("─".repeat(width), DIM))],
             Kind::Blank => vec![Line::default()],
         };
@@ -367,9 +373,17 @@ fn code(
             out.push(Line::from([vec![gutter.clone()], line.spans].concat()));
         }
     }
+    // A row that goes on from a wrapped line starts with a mark: without
+    // it, a part of a line that starts with "#" would pass for a comment.
+    let rest = width.saturating_sub(WRAP_MARK.chars().count()).max(1);
     for line in lines {
-        for part in hard_wrap(line, width) {
-            out.push(Line::from([vec![gutter.clone()], part.spans].concat()));
+        for (i, part) in hard_wrap(line, width, rest).into_iter().enumerate() {
+            let mut spans = vec![gutter.clone()];
+            if i > 0 {
+                spans.push(Span::styled(WRAP_MARK, DIM));
+            }
+            spans.extend(part.spans);
+            out.push(Line::from(spans));
         }
     }
     // An empty code block shows as a gutter, so that it, and the list
@@ -483,8 +497,9 @@ fn truncate(text: &[Span], width: usize) -> Vec<Span<'static>> {
 }
 
 /// Wraps styled text at `width` columns, at any grapheme.
-fn hard_wrap(text: &[Span], width: usize) -> Vec<Line<'static>> {
-    let mut wrapper = Wrapper::new(width);
+fn hard_wrap(text: &[Span], first: usize, rest: usize) -> Vec<Line<'static>> {
+    let mut wrapper = Wrapper::new(first);
+    wrapper.rest_width = rest;
     for glyph in glyphs(text).flatten() {
         wrapper.push(glyph);
     }
@@ -550,6 +565,8 @@ fn text_width(text: &[Span]) -> usize {
 #[derive(Default)]
 struct Wrapper<'a> {
     width: usize,
+    /// The width of the lines after the first one.
+    rest_width: usize,
     lines: Vec<Line<'static>>,
     line: Vec<Glyph<'a>>,
     line_width: usize,
@@ -562,6 +579,7 @@ impl<'a> Wrapper<'a> {
     fn new(width: usize) -> Self {
         Wrapper {
             width,
+            rest_width: width,
             ..Default::default()
         }
     }
@@ -594,6 +612,7 @@ impl<'a> Wrapper<'a> {
     fn break_line(&mut self) {
         let glyphs = std::mem::take(&mut self.line);
         self.line_width = 0;
+        self.width = self.rest_width;
         self.lines.push(Line::from(join_styles(&glyphs)));
     }
 
@@ -1039,8 +1058,8 @@ mod tests {
         assert_snapshot!(render("```bash\nrm -rf build/output/folder\n```", 12), @"
         ▌ «b:#1»
         ▌ «blue:rm» -rf bui
-        ▌ ld/output/
-        ▌ folder
+        ▌ «d:↪ »ld/outpu
+        ▌ «d:↪ »t/folder
         ");
     }
 
@@ -1163,7 +1182,7 @@ mod tests {
 
     #[test]
     fn code_shows_escaped_what_a_terminal_would_not_draw() {
-        let text = "```bash\necho \"prod\u{200b}\" ok\u{fe0f}\n\u{301}ls 'x\u{ff9e}\u{ff9e}'\ntrue\u{a0}#; ls\necho a\u{70f}b\n\u{93e}ls\n```";
+        let text = "```bash\necho \"prod\u{200b}\" ok\u{fe0f}\n\u{301}ls 'x\u{ff9e}\u{ff9e}'\ntrue\u{a0}#; ls\necho a\u{70f}b\n\u{93e}ls\necho \u{1f1eb}\u{1f1f7} \u{fff9}x \u{2d7f}\n```";
         assert_snapshot!(render(text, 60), @r#"
         ▌ «b:#1»  «yellow:hidden characters in code»
         ▌ «blue:echo» «green:"prod»«yellow:<200b>»«green:"» ok«yellow:<fe0f>»
@@ -1171,6 +1190,7 @@ mod tests {
         ▌ «blue:true»«yellow:<a0>»«i:#; ls»
         ▌ «blue:echo» a«yellow:<070f>»b
         ▌ «yellow:<093e>»«blue:ls»
+        ▌ «blue:echo» «yellow:<1f1eb><1f1f7>» «yellow:<fff9>»x «yellow:<2d7f>»
         "#);
     }
 
@@ -1408,6 +1428,9 @@ mod tests {
             ((0, 2, 14..30, 10), 14),
             ((2, 5, 7..10, 6), 4),
             ((0, 2, 12..30, 10), 12),
+            // The block fits, with only the end of its paragraph.
+            ((0, 0, 4..7, 5), 2),
+            ((0, 0, 4..9, 5), 4),
         ];
         for ((scroll, top, block, height), expected) in cases {
             let found = scroll_to(scroll, top, &block, height);
@@ -1604,8 +1627,13 @@ mod tests {
         fn wrapped_lines_stay_within_the_width_as_the_buffer_measures_them(
             text in spans(),
             width in 1..12usize,
+            rest in 1..12usize,
         ) {
-            for line in hard_wrap(&text, width).into_iter().chain(wrap(&text, width)) {
+            // The first line of hard_wrap takes `width`, the others `rest`.
+            let hard = hard_wrap(&text, width, rest).into_iter().enumerate();
+            let hard = hard.map(|(i, line)| (line, if i == 0 { width } else { rest }));
+            let words = wrap(&text, width).into_iter().map(|line| (line, width));
+            for (line, width) in hard.chain(words) {
                 // text_width splits each span into graphemes, as the buffer
                 // does. Only a glyph wider than the width passes it, alone.
                 let glyphs = glyphs(&line.spans).count();
@@ -1615,7 +1643,7 @@ mod tests {
 
         #[test]
         fn hard_wrap_keeps_each_glyph(text in spans(), width in 1..12usize) {
-            let lines = hard_wrap(&text, width);
+            let lines = hard_wrap(&text, width, width);
             let shown: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
             prop_assert_eq!(shown, text.iter().map(|s| s.content.as_ref()).collect::<String>());
         }

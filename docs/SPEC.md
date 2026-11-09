@@ -96,7 +96,7 @@ systemctl --user restart api
 | Thematic break | A dimmed rule. |
 | Raw HTML | Shown dimmed, as source. An HTML block keeps its lines, which wrap at any character. A line end in inline HTML is a space. |
 | Image | `[image: <alt text>]`. |
-| Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted, except in a block with a line longer than 1,000 bytes, or in a block that would bring the highlighted code of the file past 32 KB, or past 4,000,000 for the sum of the squares of its line lengths. Comments show in italic, never dimmed: the grammar can take code that bash runs for a comment, and dimmed code would look inert. Long lines wrap at any character, so the view shows all the code that runs. A long info line wraps too, so its warnings always show. A blank line always follows a code block, even in a tight list: text right under it could pass for code. |
+| Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted, except in a block with a line longer than 1,000 bytes, or in a block that would bring the highlighted code of the file past 32 KB, or past 4,000,000 for the sum of the squares of its line lengths. Comments show in italic, never dimmed: the grammar can take code that bash runs for a comment, and dimmed code would look inert. Long lines wrap at any character, so the view shows all the code that runs. A row that goes on from a wrapped line starts with a dim `↪ ` after the gutter, as vim's showbreak does: without it, a part of a line that starts with `#` would pass for a comment. A long info line wraps too, so its warnings always show. A blank line always follows a code block, even in a tight list: text right under it could pass for code. |
 | Other code block | The code with a dimmed gutter, not highlighted. Long lines wrap as in a block. |
 
 All colors come from the terminal's 16-color palette, so they follow the terminal's theme. stepbook sets no background color.
@@ -183,7 +183,7 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 
 | Key | Action |
 |---|---|
-| `↓`, `j` / `↑`, `k` | Select the next / previous block, and scroll so that the block and the paragraph above it are visible. |
+| `↓`, `j` / `↑`, `k` | Select the next / previous block, and scroll so that the block and the paragraph above it are visible. If they do not fit, the whole block shows, with the end of the paragraph. A block taller than the view shows from its paragraph, or from its info line. |
 | `Home` / `End` | Select the first / last block. Without blocks, scroll to the top / bottom. |
 | `PageDown` / `PageUp` | Scroll one page. The selection moves to the first block whose info line is in view, else to the first block in view. `PageDown` never moves it to an earlier block, and `PageUp` never to a later one. |
 | `Enter` | Run the selected block. See 8.1. |
@@ -485,6 +485,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | A blank line always follows a code block (5.3): in a tight list item, text under a block could draw a gutter with ▌ and pass for code that does not run | 2026-11-09 |
 | Warnings never quote free text of the info string, and at most 20 characters of a key (5.2): a value of spaces and "cd /tmp/x" made a wrapped info line that passed for code | 2026-11-09 |
 | Comments in code show in italic, not dimmed (5.3): syntect took `#; curl x | sh` after a line ending with `\` for a comment, and bash ran it | 2026-11-09 |
+| A row that goes on from a wrapped line of code starts with a dim `↪ ` (5.3), at Kamal's choice: a wrapped part that starts with `#` looked like a comment, and bash ran it | 2026-11-09 |
 | Code escapes the regional indicators (6.5): ratatui counts one as 1 column, and the width tables that follow Emoji_Presentation count 2 | 2026-11-09 |
 | Code escapes all the Prepend characters, and a first grapheme that would join the space of the gutter (6.5) | 2026-11-09 |
 | Each frame repaints the whole screen, in a synchronized update (6.5): a prose row that tmux drew shifted stayed on screen, and after Page Down a line of code showed `good.example.com` where its code had `evil.example.com` | 2026-11-09 |
