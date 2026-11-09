@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 const USAGE: &str = "Usage: stepbook [--log PATH | --no-log] FILE";
 
@@ -146,24 +146,49 @@ fn open(args: &Args) -> Result<(), String> {
 fn event_loop(terminal: &mut DefaultTerminal, view: &mut view::View) -> std::io::Result<()> {
     loop {
         terminal.draw(|frame| view.draw(frame))?;
-        if let Event::Key(key) = event::read()?
-            && key.kind == KeyEventKind::Press
-        {
-            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-            let size = terminal.size()?;
-            match key.code {
-                KeyCode::Char('q') => return Ok(()),
-                KeyCode::Char('c') if ctrl => return Ok(()),
-                KeyCode::Down | KeyCode::Char('j') => view.select_by(1, size),
-                KeyCode::Up | KeyCode::Char('k') => view.select_by(-1, size),
-                KeyCode::Home => view.select_first(size),
-                KeyCode::End => view.select_last(size),
-                KeyCode::PageDown => view.scroll_pages(1, size),
-                KeyCode::PageUp => view.scroll_pages(-1, size),
-                _ => {}
-            }
+        let Event::Key(key) = event::read()? else {
+            continue;
+        };
+        let size = terminal.size()?;
+        match action(key) {
+            Some(Action::Quit) => return Ok(()),
+            Some(Action::Select(step)) => view.select_by(step, size),
+            Some(Action::First) => view.select_first(size),
+            Some(Action::Last) => view.select_last(size),
+            Some(Action::Page(pages)) => view.scroll_pages(pages, size),
+            None => {}
         }
     }
+}
+
+/// What a key does in the document view (spec 7.1).
+#[derive(Debug, PartialEq)]
+enum Action {
+    Quit,
+    /// Select the block this many blocks away.
+    Select(isize),
+    First,
+    Last,
+    /// Scroll this many pages.
+    Page(isize),
+}
+
+fn action(key: KeyEvent) -> Option<Action> {
+    if key.kind != KeyEventKind::Press {
+        return None;
+    }
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    Some(match key.code {
+        KeyCode::Char('q') => Action::Quit,
+        KeyCode::Char('c') if ctrl => Action::Quit,
+        KeyCode::Down | KeyCode::Char('j') => Action::Select(1),
+        KeyCode::Up | KeyCode::Char('k') => Action::Select(-1),
+        KeyCode::Home => Action::First,
+        KeyCode::End => Action::Last,
+        KeyCode::PageDown => Action::Page(1),
+        KeyCode::PageUp => Action::Page(-1),
+        _ => return None,
+    })
 }
 
 #[cfg(test)]
@@ -234,6 +259,36 @@ mod tests {
         for (args, error) in cases {
             assert_eq!(parse(args), Err(error.to_string()), "{args:?}");
         }
+    }
+
+    #[test]
+    fn keys_map_to_the_actions_of_the_document_view() {
+        let ctrl = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL);
+        let key = |code| KeyEvent::new(code, KeyModifiers::NONE);
+        let cases = [
+            (key(KeyCode::Char('q')), Some(Action::Quit)),
+            (ctrl('c'), Some(Action::Quit)),
+            (key(KeyCode::Char('c')), None),
+            (key(KeyCode::Char('j')), Some(Action::Select(1))),
+            (key(KeyCode::Down), Some(Action::Select(1))),
+            (key(KeyCode::Char('k')), Some(Action::Select(-1))),
+            (key(KeyCode::Up), Some(Action::Select(-1))),
+            (key(KeyCode::Home), Some(Action::First)),
+            (key(KeyCode::End), Some(Action::Last)),
+            (key(KeyCode::PageDown), Some(Action::Page(1))),
+            (key(KeyCode::PageUp), Some(Action::Page(-1))),
+            (key(KeyCode::Char('x')), None),
+        ];
+        for (key, expected) in cases {
+            assert_eq!(action(key), expected, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn key_releases_do_nothing() {
+        let mut key = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
+        key.kind = KeyEventKind::Release;
+        assert_eq!(action(key), None);
     }
 
     #[test]
