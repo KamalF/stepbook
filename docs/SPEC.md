@@ -47,7 +47,7 @@ stepbook [--log PATH | --no-log] FILE
 | Option | Effect |
 |---|---|
 | `FILE` | The Markdown runbook. Required. |
-| `--log PATH` | Log file. The default is `FILE` with its extension replaced by `.log`. |
+| `--log PATH`, `--log=PATH` | Log file. The default is `FILE` with its extension replaced by `.log`. |
 | `--no-log` | Writes no log. |
 | `-h`, `--help` / `-V`, `--version` | Prints help or the version. |
 
@@ -465,3 +465,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The repository is `KamalF/stepbook` on GitHub, with the MIT licence and CI on GitHub Actions | 2026-11-09 |
 | stepbook installs with mise from the GitHub repository, and from releases on crates.io | 2026-11-09 |
 | New dependency: `unicode-width`, for the word wrap. ratatui already depends on it | 2026-11-09 |
+| stepbook parses its arguments with its own code, not with clap: it has four options | 2026-11-09 |
