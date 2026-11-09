@@ -429,6 +429,7 @@ fn truncate(text: &[Span], width: usize) -> Vec<Span<'static>> {
                 text: "…",
                 style: first_cut.style,
                 width: 1,
+                source: usize::MAX,
             });
         }
         break;
@@ -472,19 +473,24 @@ struct Glyph<'a> {
     text: &'a str,
     style: Style,
     width: usize,
+    /// The index of the span that the glyph comes from. Glyphs of two
+    /// spans never merge: the merged text could form other graphemes, of
+    /// another width, when the buffer splits it again.
+    source: usize,
 }
 
 /// The graphemes of styled text, measured as the ratatui buffer measures
 /// them. A hard line break, a span `\n` alone (see `doc::Kind::Text`),
 /// gives `None`.
 fn glyphs<'a>(text: &'a [Span<'a>]) -> impl Iterator<Item = Option<Glyph<'a>>> {
-    text.iter().flat_map(|span| {
+    text.iter().enumerate().flat_map(|(source, span)| {
         let hard_break = std::iter::once(None).filter(move |_| span.content == "\n");
-        let glyphs = span.styled_graphemes(Style::new()).map(|g| {
+        let glyphs = span.styled_graphemes(Style::new()).map(move |g| {
             Some(Glyph {
                 text: g.symbol,
                 style: g.style,
                 width: usize::from(g.symbol.cell_width()),
+                source,
             })
         });
         hard_break.chain(glyphs)
@@ -553,14 +559,18 @@ impl<'a> Wrapper<'a> {
     }
 }
 
-/// Groups glyphs of the same style into spans.
+/// Groups the glyphs of each span, and of each style, into spans.
 fn join_styles(glyphs: &[Glyph]) -> Vec<Span<'static>> {
     let mut spans: Vec<Span> = Vec::new();
+    let mut last_source = None;
     for glyph in glyphs {
         match spans.last_mut() {
-            Some(span) if span.style == glyph.style => span.content.to_mut().push_str(glyph.text),
+            Some(span) if last_source == Some(glyph.source) && span.style == glyph.style => {
+                span.content.to_mut().push_str(glyph.text);
+            }
             _ => spans.push(Span::styled(glyph.text.to_string(), glyph.style)),
         }
+        last_source = Some(glyph.source);
     }
     spans
 }
@@ -580,13 +590,22 @@ mod tests {
         let lines: Vec<String> = lines
             .iter()
             .map(|line| {
-                let mut out = String::new();
+                // Adjacent spans of one style look the same on screen.
+                let mut runs: Vec<(Style, String)> = Vec::new();
                 for span in &line.spans {
-                    let tags = style_tags(line.style.patch(span.style));
+                    let style = line.style.patch(span.style);
+                    match runs.last_mut() {
+                        Some((last, text)) if *last == style => text.push_str(&span.content),
+                        _ => runs.push((style, span.content.to_string())),
+                    }
+                }
+                let mut out = String::new();
+                for (style, text) in runs {
+                    let tags = style_tags(style);
                     if tags.is_empty() {
-                        out.push_str(&span.content);
+                        out.push_str(&text);
                     } else {
-                        out.push_str(&format!("«{tags}:{}»", span.content));
+                        out.push_str(&format!("«{tags}:{text}»"));
                     }
                 }
                 out.trim_end().to_string()
@@ -785,7 +804,7 @@ mod tests {
         «d:│ »one two
         «d:│ »three
         «d:│»
-        «d:│ »«d:│ »nested
+        «d:│ │ »nested
         «d:│»
         «d:│ »• item
 
@@ -796,7 +815,7 @@ mod tests {
     #[test]
     fn prefixes_keep_the_innermost_10_levels() {
         let quotes = render(&format!("{} x", ">".repeat(12)), 80);
-        assert_eq!(quotes, format!("{}x", "«d:│ »".repeat(10)));
+        assert_eq!(quotes, format!("«d:{}»x", "│ ".repeat(10)));
         let list: String = (0..12)
             .map(|i| format!("{}- {i}\n", "  ".repeat(i)))
             .collect();
@@ -920,7 +939,7 @@ mod tests {
 
         «d:│ »b
         «d:│»
-        «d:│ »«d:────────»
+        «d:│ ────────»
         ");
     }
 
@@ -1061,6 +1080,7 @@ mod tests {
                         text: c.symbol(),
                         style: c.style(),
                         width: 1,
+                        source: 0,
                     })
                     .collect();
                 Line::from(join_styles(&glyphs))
@@ -1337,19 +1357,62 @@ mod tests {
         assert_eq!(line_widths(&code, 8), [4, 7, 8, 8, 6]);
     }
 
+    /// Styled text in several spans, with characters that join the
+    /// characters before them into one grapheme.
+    fn spans() -> impl Strategy<Value = Vec<Span<'static>>> {
+        let joiners = prop_oneof![
+            any::<char>(),
+            Just('*'),
+            Just(' '),
+            Just('\u{fe0f}'),
+            Just('\u{20e3}'),
+            Just('\u{301}'),
+            Just('\u{200d}'),
+            Just('\u{1f468}'),
+            Just('\u{1f1eb}'),
+        ];
+        let part = (prop::collection::vec(joiners, 0..6), any::<bool>());
+        prop::collection::vec(part, 0..8).prop_map(|parts| {
+            let mut spans = Vec::new();
+            for (chars, bold) in parts {
+                let style = if bold { BOLD } else { Style::new() };
+                spans.extend(escaped(&chars.into_iter().collect::<String>(), style));
+            }
+            spans
+        })
+    }
+
     proptest! {
         #[test]
-        fn hard_wrap_keeps_each_glyph_within_the_width(text in any::<String>(), width in 1..12usize) {
-            let spans = escaped(&text, Style::new());
-            let lines = hard_wrap(&spans, width);
-            for line in &lines {
-                // Only a glyph wider than the width passes it, alone.
+        fn wrapped_lines_stay_within_the_width_as_the_buffer_measures_them(
+            text in spans(),
+            width in 1..12usize,
+        ) {
+            for line in hard_wrap(&text, width).into_iter().chain(wrap(&text, width)) {
+                // text_width splits each span into graphemes, as the buffer
+                // does. Only a glyph wider than the width passes it, alone.
                 let glyphs = glyphs(&line.spans).count();
-                prop_assert!(text_width(&line.spans) <= width || glyphs == 1);
+                prop_assert!(text_width(&line.spans) <= width || glyphs == 1, "{:?}", line);
             }
-            let shown: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
-            prop_assert_eq!(shown, spans.iter().map(|s| s.content.as_ref()).collect::<String>());
         }
+
+        #[test]
+        fn hard_wrap_keeps_each_glyph(text in spans(), width in 1..12usize) {
+            let lines = hard_wrap(&text, width);
+            let shown: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
+            prop_assert_eq!(shown, text.iter().map(|s| s.content.as_ref()).collect::<String>());
+        }
+    }
+
+    #[test]
+    fn a_grapheme_split_across_two_spans_keeps_its_cells() {
+        // pulldown-cmark gives an unmatched `*` its own text event, so
+        // "*️⃣" comes in two spans: 1 and 0 columns, but 2 columns merged.
+        let cell = "| *\u{fe0f}\u{20e3} or *\u{fe0f}\u{20e3} |\n|---|\n";
+        assert!(line_widths(cell, 8).iter().all(|&w| w <= 8));
+        let code = format!("```bash\n: {}; rm -rf ~/data\n```", "*\u{fe0f}".repeat(18));
+        let screen = screen(&view(&code), 40, 9);
+        assert!(screen.contains("-rf ~/data"), "{screen}");
     }
 
     #[test]
