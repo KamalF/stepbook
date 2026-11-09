@@ -461,6 +461,43 @@ fn source_lines(text: &str) -> Vec<Vec<Span<'static>>> {
     text.lines().map(|line| escaped(line, DIM)).collect()
 }
 
+/// pulldown-cmark rescans every open quote and list on each line: a file
+/// that opens 100,000 quotes, then has 200,000 lazy lines, took 30 s. The
+/// lines of a runbook nest a few levels.
+pub const MAX_NESTING: usize = 100;
+
+/// The most quote and list markers at the start of a line of `text`.
+pub fn nesting(text: &str) -> usize {
+    let lines = text.split_terminator(['\n', '\r']);
+    lines.map(line_nesting).max().unwrap_or(0)
+}
+
+fn line_nesting(line: &str) -> usize {
+    let mut markers = 0;
+    let mut rest = line;
+    loop {
+        rest = rest.trim_start_matches([' ', '\t']);
+        let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+        let after = match rest.strip_prefix('>') {
+            Some(after) => after,
+            None => match rest[digits..].strip_prefix(['-', '*', '+', '.', ')']) {
+                // A list marker is a bullet, or 1 to 9 digits and . or ),
+                // then a space or the end of the line.
+                Some(after)
+                    if (digits == 0) == rest.starts_with(['-', '*', '+'])
+                        && digits <= 9
+                        && (after.is_empty() || after.starts_with([' ', '\t'])) =>
+                {
+                    after
+                }
+                _ => return markers,
+            },
+        };
+        markers += 1;
+        rest = after;
+    }
+}
+
 /// pulldown-cmark pads each short row of a table with empty cells, up to
 /// the columns of its header, and keeps them all: 1 MB of crafted tables
 /// takes gigabytes. A file that could make more cells than this shows its
@@ -1280,6 +1317,25 @@ mod tests {
         let lines = highlight("cd \"/tmp/x\"\u{301}\n", &mut false);
         let spans: Vec<_> = lines[0].iter().map(|s| s.content.as_ref()).collect();
         assert!(!spans.iter().any(|s| s.starts_with('\u{301}')), "{spans:?}");
+    }
+
+    #[test]
+    fn nesting_counts_the_quote_and_list_markers_at_the_start_of_a_line() {
+        let cases = [
+            ("text", 0),
+            ("> a", 1),
+            (">>> a", 3),
+            ("> - > 1. a", 4),
+            ("  - * + 123456789) a", 4),
+            ("-", 1),
+            ("--- a", 0),
+            ("-a", 0),
+            ("1234567890. a", 0),
+            ("a\r>>\n> > >", 3),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(nesting(text), expected, "{text:?}");
+        }
     }
 
     #[test]

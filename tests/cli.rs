@@ -66,6 +66,17 @@ fn a_file_that_is_not_regular_or_larger_than_1_mb_exits_with_1() {
 }
 
 #[test]
+fn a_file_that_nests_more_than_100_levels_exits_with_1() {
+    let file = runbook();
+    // 600 KB that pulldown-cmark took 30 s to parse.
+    let text = format!("{}x\n{}", "> ".repeat(100_000), "a\n".repeat(200_000));
+    std::fs::write(file.path(), text).unwrap();
+    let output = stepbook(&[file.path().to_str().unwrap()], None);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).ends_with(": a line nests more than 100 quotes or lists\n"));
+}
+
+#[test]
 fn bash_missing_from_the_path_exits_with_1() {
     let file = runbook();
     let output = stepbook(&[file.path().to_str().unwrap()], Some(""));

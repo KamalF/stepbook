@@ -127,7 +127,7 @@ fn main() -> ExitCode {
 }
 
 fn open(args: &Args) -> Result<(), String> {
-    let bytes = read_runbook(&args.file)?;
+    let text = read_runbook(&args.file)?;
     let path = std::env::var_os("PATH").unwrap_or_default();
     if run::find_in_path("bash", &path).is_none() {
         return Err("cannot find bash on the PATH".into());
@@ -135,7 +135,7 @@ fn open(args: &Args) -> Result<(), String> {
     if !std::io::stdout().is_terminal() {
         return Err("run stepbook in a terminal: its output is not a terminal".into());
     }
-    let doc = doc::parse(&String::from_utf8_lossy(&bytes));
+    let doc = doc::parse(&text);
     // try_init also installs a panic hook that restores the terminal. If
     // it fails, it may have turned on raw mode already.
     let mut terminal = ratatui::try_init().map_err(|e| {
@@ -155,8 +155,9 @@ const MAX_FILE: u64 = 1024 * 1024;
 
 /// Reads a runbook, which must be a regular file of at most `MAX_FILE`
 /// bytes: a link to /dev/zero would fill the memory, and a FIFO would
-/// block the open.
-fn read_runbook(path: &Path) -> Result<Vec<u8>, String> {
+/// block the open. Its lines must nest at most `doc::MAX_NESTING` quotes
+/// or lists.
+fn read_runbook(path: &Path) -> Result<String, String> {
     let fail = |reason: String| format!("cannot read {}: {reason}", path.display());
     let metadata = std::fs::metadata(path).map_err(|e| fail(io_message(&e)))?;
     if !metadata.is_file() {
@@ -168,7 +169,11 @@ fn read_runbook(path: &Path) -> Result<Vec<u8>, String> {
     if bytes.len() as u64 > MAX_FILE {
         return Err(fail("the file is larger than 1 MB".into()));
     }
-    Ok(bytes)
+    let text = String::from_utf8_lossy(&bytes).into_owned();
+    if doc::nesting(&text) > doc::MAX_NESTING {
+        return Err(fail("a line nests more than 100 quotes or lists".into()));
+    }
+    Ok(text)
 }
 
 fn event_loop(terminal: &mut DefaultTerminal, view: &mut view::View) -> std::io::Result<()> {
