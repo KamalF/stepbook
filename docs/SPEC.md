@@ -121,7 +121,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
  NORMAL  ↑↓ move  ↵ run  i input  o output  ^r reload  q quit
 ```
 
-- **Sidebar:** one row per block, with a status glyph and the name. An unnamed block shows `#<n>`, where n is its position among all the blocks of the file, from 1. Its width is the longest name plus 4, between 12 and 30 columns. It is hidden on terminals under 80 columns.
+- **Sidebar:** one row per block, with a status glyph and the name. An unnamed block shows `#<n>`, where n is its position among all the blocks of the file, from 1. Its width, with its left border, is the longest name plus 4, between 12 and 30 columns. A longer name ends with `…`. The sidebar scrolls to keep the selected row visible, and it is hidden on terminals under 80 columns.
 - **Document view:** the rendered runbook. The selected block has a highlighted gutter and sidebar row.
 - **Footer:** the mode, the keys that apply now, and notifications. A notification lasts 3 seconds.
 

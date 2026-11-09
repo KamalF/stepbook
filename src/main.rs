@@ -136,14 +136,16 @@ fn open(args: &Args) -> Result<(), String> {
     // try_init also installs a panic hook that restores the terminal.
     let mut terminal = ratatui::try_init()
         .map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
-    let result = event_loop(&mut terminal, &doc);
+    let title = args.file.file_name().unwrap_or(args.file.as_os_str());
+    let mut view = view::View::new(doc, title.to_string_lossy().into_owned());
+    let result = event_loop(&mut terminal, &mut view);
     ratatui::restore();
     result.map_err(|e| format!("terminal error: {}", io_message(&e)))
 }
 
-fn event_loop(terminal: &mut DefaultTerminal, doc: &doc::Document) -> std::io::Result<()> {
+fn event_loop(terminal: &mut DefaultTerminal, view: &mut view::View) -> std::io::Result<()> {
     loop {
-        terminal.draw(|frame| view::draw(frame, doc))?;
+        terminal.draw(|frame| view.draw(frame))?;
         if let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {

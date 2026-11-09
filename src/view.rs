@@ -1,8 +1,10 @@
 use pulldown_cmark::{Alignment, HeadingLevel};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout};
+use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
+use ratatui::symbols::merge::MergeStrategy;
 use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Padding};
 use unicode_width::UnicodeWidthChar;
 
 use crate::doc::{Cell, DIM, Document, Item, Kind, WARNING, escaped};
@@ -10,24 +12,118 @@ use crate::doc::{Cell, DIM, Document, Item, Kind, WARNING, escaped};
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const ERROR: Style = Style::new().fg(Color::Red);
 const BLOCK_GUTTER: Style = Style::new();
+const SELECTED: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 const GUTTER: &str = "▌ ";
+/// The sidebar shows on terminals at least this wide.
+const SIDEBAR_SCREEN_WIDTH: u16 = 80;
 
-pub fn draw(frame: &mut Frame, doc: &Document) {
-    let [body, footer] =
-        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
-    let lines = layout(doc, usize::from(body.width));
-    for (row, line) in (body.y..body.bottom()).zip(&lines) {
-        frame.buffer_mut().set_line(body.x, row, line, body.width);
-    }
-    let line = Line::from(vec![
-        Span::styled(" NORMAL ", Style::new().add_modifier(Modifier::REVERSED)),
-        Span::raw("  q quit"),
-    ]);
-    frame.render_widget(line, footer);
+/// The state of the screen: the document, its file name and the
+/// selection.
+pub struct View {
+    pub doc: Document,
+    pub title: String,
+    pub selected: Option<usize>,
+    pub scroll: usize,
 }
 
-/// The lines of the document view at `width` columns.
-pub fn layout(doc: &Document, width: usize) -> Vec<Line<'static>> {
+impl View {
+    pub fn new(doc: Document, title: String) -> Self {
+        let selected = (!doc.blocks.is_empty()).then_some(0);
+        View {
+            doc,
+            title,
+            selected,
+            scroll: 0,
+        }
+    }
+
+    pub fn draw(&self, frame: &mut Frame) {
+        let [main, footer] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+        let mut document = main;
+        if main.width >= SIDEBAR_SCREEN_WIDTH {
+            // The sidebar and the document share the border between them.
+            let width = self.sidebar_width();
+            self.draw_sidebar(
+                frame,
+                Rect {
+                    width: width + 1,
+                    ..main
+                },
+            );
+            document.x += width;
+            document.width -= width;
+        }
+        self.draw_document(frame, document);
+        let line = Line::from(vec![
+            Span::styled(" NORMAL ", Style::new().add_modifier(Modifier::REVERSED)),
+            Span::raw("  q quit"),
+        ]);
+        frame.render_widget(line, footer);
+    }
+
+    /// The width of the sidebar with its left border: the longest label
+    /// and 4 columns, between 12 and 30.
+    fn sidebar_width(&self) -> u16 {
+        let labels = (0..self.doc.blocks.len()).map(|i| Span::raw(self.doc.label(i)).width());
+        let width = labels.max().unwrap_or(0) + 4;
+        width.clamp(12, 30) as u16
+    }
+
+    fn draw_sidebar(&self, frame: &mut Frame, area: Rect) {
+        let block = Block::bordered()
+            .title(" blocks ")
+            .merge_borders(MergeStrategy::Exact);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let rows = usize::from(inner.height);
+        let first = match self.selected {
+            Some(i) if i >= rows => i + 1 - rows,
+            _ => 0,
+        };
+        let label_width = usize::from(inner.width).saturating_sub(3);
+        for (y, i) in (inner.y..inner.bottom()).zip(first..self.doc.blocks.len()) {
+            let (marker, style) = if self.selected == Some(i) {
+                (Span::styled("▶", SELECTED), SELECTED)
+            } else {
+                (Span::raw(" "), Style::new())
+            };
+            let glyph = match self.doc.blocks[i].problem {
+                Some(_) => Span::styled("!", ERROR),
+                None => Span::raw(" "),
+            };
+            let mut spans = vec![marker, glyph, Span::raw(" ")];
+            spans.extend(truncate(
+                &[Span::styled(self.doc.label(i), style)],
+                label_width,
+            ));
+            frame
+                .buffer_mut()
+                .set_line(inner.x, y, &Line::from(spans), inner.width);
+        }
+    }
+
+    fn draw_document(&self, frame: &mut Frame, area: Rect) {
+        let mut title = vec![Span::raw(" ")];
+        title.extend(escaped(&self.title, Style::new()));
+        title.push(Span::raw(" "));
+        let block = Block::bordered()
+            .title(Line::from(title))
+            .padding(Padding::left(1))
+            .merge_borders(MergeStrategy::Exact);
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        let lines = layout(&self.doc, usize::from(inner.width), self.selected);
+        let visible = lines.iter().skip(self.scroll);
+        for (y, line) in (inner.y..inner.bottom()).zip(visible) {
+            frame.buffer_mut().set_line(inner.x, y, line, inner.width);
+        }
+    }
+}
+
+/// The lines of the document view at `width` columns. The selected block
+/// gets a highlighted gutter.
+pub fn layout(doc: &Document, width: usize, selected: Option<usize>) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
     for item in &doc.items {
         let prefix_width = item.rest.iter().map(Span::width).sum::<usize>();
@@ -47,7 +143,7 @@ pub fn layout(doc: &Document, width: usize) -> Vec<Line<'static>> {
                 body
             }
             Kind::Table(aligns, rows) => table(aligns, rows, width),
-            Kind::Code { lines, block } => code(doc, lines, *block, width),
+            Kind::Code { lines, block } => code(doc, lines, *block, selected, width),
             Kind::Rule => vec![Line::from(Span::styled("─".repeat(width), DIM))],
             Kind::Blank => vec![Line::default()],
         };
@@ -73,9 +169,15 @@ fn code(
     doc: &Document,
     lines: &[Vec<Span<'static>>],
     block: Option<usize>,
+    selected: Option<usize>,
     width: usize,
 ) -> Vec<Line<'static>> {
-    let gutter = Span::styled(GUTTER, if block.is_some() { BLOCK_GUTTER } else { DIM });
+    let style = match block {
+        None => DIM,
+        Some(_) if block == selected => SELECTED,
+        Some(_) => BLOCK_GUTTER,
+    };
+    let gutter = Span::styled(GUTTER, style);
     let width = width.saturating_sub(GUTTER.chars().count()).max(1);
     let mut out = Vec::new();
     if let Some(i) = block {
@@ -302,6 +404,8 @@ mod tests {
     use crate::doc::parse;
     use insta::assert_snapshot;
     use proptest::prelude::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
 
     /// The lines as text, with each styled span as «style:text». Trailing
     /// spaces are trimmed.
@@ -326,7 +430,7 @@ mod tests {
 
     fn style_tags(style: Style) -> String {
         let mut tags = Vec::new();
-        if let Some(fg) = style.fg {
+        if let Some(fg) = style.fg.filter(|c| *c != Color::Reset) {
             tags.push(fg.to_string().to_lowercase());
         }
         let modifiers = [
@@ -346,7 +450,7 @@ mod tests {
     }
 
     fn render(markdown: &str, width: usize) -> String {
-        markup(&layout(&parse(markdown), width))
+        markup(&layout(&parse(markdown), width, None))
     }
 
     #[test]
@@ -488,12 +592,12 @@ mod tests {
 
     #[test]
     fn deep_nesting_does_not_overflow_the_stack() {
-        let quotes = layout(&parse(&format!("{} x\n", ">".repeat(100_000))), 80);
+        let quotes = layout(&parse(&format!("{} x\n", ">".repeat(100_000))), 80, None);
         assert_eq!(quotes.len(), 1);
         let list: String = (0..1_000)
             .map(|i| format!("{}- a\n", "  ".repeat(i)))
             .collect();
-        assert_eq!(layout(&parse(&list), 80).len(), 1_000);
+        assert_eq!(layout(&parse(&list), 80, None).len(), 1_000);
     }
 
     #[test]
@@ -689,12 +793,135 @@ mod tests {
     proptest! {
         #[test]
         fn no_control_character_reaches_the_view(text in markdown(), width in 1..60usize) {
-            for line in layout(&parse(&text), width) {
+            for line in layout(&parse(&text), width, None) {
                 for span in &line.spans {
                     prop_assert!(!span.content.chars().any(char::is_control), "{:?}", span);
                 }
             }
         }
+    }
+
+    /// The screen of `view` at `width` by `height`, in the format of
+    /// `markup`.
+    fn screen(view: &View, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| view.draw(frame)).unwrap();
+        let buffer = terminal.backend().buffer();
+        let lines: Vec<Line> = (0..height)
+            .map(|y| {
+                let cells = (0..width).map(|x| &buffer[(x, y)]);
+                let chars = cells.flat_map(|c| c.symbol().chars().map(|ch| (ch, c.style())));
+                Line::from(join_styles(chars.collect()))
+            })
+            .collect();
+        markup(&lines)
+    }
+
+    fn view(markdown: &str) -> View {
+        View::new(parse(markdown), "run.md".into())
+    }
+
+    const BLOCKS: &str = "# Restart\n\nWhy: apply the config.\n\n```bash [name:check]\nls\n```\n\n```bash [name:restart]\nsystemctl restart api\n```\n\n```bash\necho\n```\n\n```bash [name:check]\n```\n";
+
+    #[test]
+    fn the_screen_has_a_sidebar_a_document_view_and_a_footer() {
+        assert_snapshot!(screen(&view(BLOCKS), 80, 16), @"
+        ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
+        │«cyan,b:▶»«red:!» «cyan,b:check»   │ «b:Restart»                                                          │
+        │   restart │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━»│
+        │   #3      │                                                                  │
+        │ «red:!» check   │ Why: apply the config.                                           │
+        │           │                                                                  │
+        │           │ «cyan,b:▌ »«b:check»  «red:duplicate name»                                          │
+        │           │ «cyan,b:▌ »«blue:ls»                                                             │
+        │           │                                                                  │
+        │           │ ▌ «b:restart»                                                        │
+        │           │ ▌ «blue:systemctl» restart api                                          │
+        │           │                                                                  │
+        │           │ ▌ «b:#3»                                                             │
+        │           │ ▌ «blue:echo»                                                           │
+        └───────────┴──────────────────────────────────────────────────────────────────┘
+        «r: NORMAL »  q quit
+        ");
+    }
+
+    #[test]
+    fn the_selected_block_has_a_highlighted_gutter_and_sidebar_row() {
+        let mut view = view(BLOCKS);
+        view.selected = Some(1);
+        assert_snapshot!(screen(&view, 80, 13), @"
+        ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
+        │ «red:!» check   │ «b:Restart»                                                          │
+        │«cyan,b:▶»  «cyan,b:restart» │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━»│
+        │   #3      │                                                                  │
+        │ «red:!» check   │ Why: apply the config.                                           │
+        │           │                                                                  │
+        │           │ ▌ «b:check»  «red:duplicate name»                                          │
+        │           │ ▌ «blue:ls»                                                             │
+        │           │                                                                  │
+        │           │ «cyan,b:▌ »«b:restart»                                                        │
+        │           │ «cyan,b:▌ »«blue:systemctl» restart api                                          │
+        └───────────┴──────────────────────────────────────────────────────────────────┘
+        «r: NORMAL »  q quit
+        ");
+    }
+
+    #[test]
+    fn the_sidebar_hides_under_80_columns() {
+        assert_snapshot!(screen(&view(BLOCKS), 79, 8), @"
+        ┌ run.md ─────────────────────────────────────────────────────────────────────┐
+        │ «b:Restart»                                                                     │
+        │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━»│
+        │                                                                             │
+        │ Why: apply the config.                                                      │
+        │                                                                             │
+        └─────────────────────────────────────────────────────────────────────────────┘
+        «r: NORMAL »  q quit
+        ");
+    }
+
+    #[test]
+    fn the_sidebar_width_follows_the_longest_name_up_to_30() {
+        let long = format!("```bash [name:{}]\n```\n", "n".repeat(40));
+        let rows = |markdown: &str| {
+            screen(&view(markdown), 80, 3)
+                .lines()
+                .next()
+                .unwrap()
+                .to_string()
+        };
+        assert_snapshot!(rows("```bash [name:a]\n```\n"), @"┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐");
+        assert_snapshot!(rows("```bash [name:abcdefghijklmnop]\n```\n"), @"┌ blocks ───────────┬ run.md ──────────────────────────────────────────────────┐");
+        assert_snapshot!(screen(&view(&long), 80, 4), @"
+        ┌ blocks ─────────────────────┬ run.md ────────────────────────────────────────┐
+        │«cyan,b:▶»  «cyan,b:nnnnnnnnnnnnnnnnnnnnnnnnn…»│ «cyan,b:▌ »«b:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn»     │
+        └─────────────────────────────┴────────────────────────────────────────────────┘
+        «r: NORMAL »  q quit
+        ");
+    }
+
+    #[test]
+    fn the_sidebar_scrolls_to_keep_the_selection_visible() {
+        let mut view = view(&"```bash\n```\n".repeat(10));
+        view.selected = Some(7);
+        assert_snapshot!(screen(&view, 80, 6), @"
+        ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
+        │   #6      │ ▌ «b:#1»                                                             │
+        │   #7      │                                                                  │
+        │«cyan,b:▶»  «cyan,b:#8»      │ ▌ «b:#2»                                                             │
+        └───────────┴──────────────────────────────────────────────────────────────────┘
+        «r: NORMAL »  q quit
+        ");
+    }
+
+    #[test]
+    fn the_file_name_shows_control_characters_escaped() {
+        let view = View::new(parse(""), "a\u{1b}]52;c;x\u{7}\nb.md".into());
+        assert_snapshot!(screen(&view, 40, 3), @"
+        ┌ a«yellow:^[»]52;c;x«yellow:^G^J»b.md ──────────────────┐
+        └──────────────────────────────────────┘
+        «r: NORMAL »  q quit
+        ");
     }
 
     #[test]
