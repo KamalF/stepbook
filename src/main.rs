@@ -153,14 +153,15 @@ fn open(args: &Args) -> Result<(), String> {
 /// Enters raw mode and the alternate screen, and turns autowrap off: a
 /// character that the terminal draws wider than ratatui counts must not
 /// wrap into the row below and move what is there. The panic hooks
-/// restore all three.
+/// restore all three, and end the synchronized update of a frame that
+/// failed halfway.
 fn set_up_terminal() -> std::io::Result<DefaultTerminal> {
     // try_init installs a panic hook that leaves raw mode and the
     // alternate screen. If it fails, it may have turned on raw mode.
     let terminal = ratatui::try_init().inspect_err(|_| restore_terminal())?;
     let ratatui_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(std::io::stdout(), EnableLineWrap);
+        let _ = execute!(std::io::stdout(), EndSynchronizedUpdate, EnableLineWrap);
         ratatui_hook(info);
     }));
     execute!(std::io::stdout(), DisableLineWrap).inspect_err(|_| restore_terminal())?;
@@ -168,7 +169,7 @@ fn set_up_terminal() -> std::io::Result<DefaultTerminal> {
 }
 
 fn restore_terminal() {
-    let _ = execute!(std::io::stdout(), EnableLineWrap);
+    let _ = execute!(std::io::stdout(), EndSynchronizedUpdate, EnableLineWrap);
     ratatui::restore();
 }
 
