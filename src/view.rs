@@ -40,21 +40,15 @@ impl View {
     }
 
     pub fn draw(&self, frame: &mut Frame) {
-        let (main, footer) = split_footer(frame.area());
-        if let Some(sidebar) = self.sidebar_area(main) {
+        let (sidebar, document, footer) = self.areas(frame.area());
+        if let Some(sidebar) = sidebar {
             self.draw_sidebar(frame, sidebar);
         }
-        let area = self.document_area(main);
-        let block = self.document_block();
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-        let page = layout(&self.doc, usize::from(inner.width), self.selected);
-        let scroll = self
-            .scroll
-            .min(max_scroll(&page, usize::from(inner.height)));
+        frame.render_widget(self.document_block(), document);
+        let (page, text, scroll) = self.page(frame.area());
         let visible = page.lines.iter().skip(scroll);
-        for (y, line) in (inner.y..inner.bottom()).zip(visible) {
-            frame.buffer_mut().set_line(inner.x, y, line, inner.width);
+        for (y, line) in (text.y..text.bottom()).zip(visible) {
+            frame.buffer_mut().set_line(text.x, y, line, text.width);
         }
         let line = Line::from(vec![
             Span::styled(" NORMAL ", Style::new().add_modifier(Modifier::REVERSED)),
@@ -63,25 +57,37 @@ impl View {
         frame.render_widget(line, footer);
     }
 
-    /// The area of the sidebar, with the border that it shares with the
-    /// document view, or `None` on a narrow screen.
-    fn sidebar_area(&self, main: Rect) -> Option<Rect> {
+    /// The areas of the sidebar (none on a narrow screen), of the document
+    /// view and of the footer. The sidebar and the document view share the
+    /// border between them.
+    fn areas(&self, screen: Rect) -> (Option<Rect>, Rect, Rect) {
+        let [main, footer] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(screen);
+        if main.width < SIDEBAR_SCREEN_WIDTH {
+            return (None, main, footer);
+        }
         let width = self.sidebar_width();
-        (main.width >= SIDEBAR_SCREEN_WIDTH).then_some(Rect {
+        let sidebar = Rect {
             width: width + 1,
             ..main
-        })
+        };
+        let document = Rect {
+            x: main.x + width,
+            width: main.width - width,
+            ..main
+        };
+        (Some(sidebar), document, footer)
     }
 
-    fn document_area(&self, main: Rect) -> Rect {
-        match self.sidebar_area(main) {
-            Some(sidebar) => Rect {
-                x: main.x + sidebar.width - 1,
-                width: main.width - sidebar.width + 1,
-                ..main
-            },
-            None => main,
-        }
+    /// The page of the document view on `screen`, the area of its text, and
+    /// the scroll, no more than the largest one. The keys and the drawing
+    /// both use it, so that they agree on the height of the view.
+    fn page(&self, screen: Rect) -> (Page, Rect, usize) {
+        let (_, document, _) = self.areas(screen);
+        let text = self.document_block().inner(document);
+        let page = layout(&self.doc, usize::from(text.width), self.selected);
+        let scroll = self.scroll.min(max_scroll(&page, usize::from(text.height)));
+        (page, text, scroll)
     }
 
     fn document_block(&self) -> Block<'static> {
@@ -136,15 +142,6 @@ impl View {
         }
     }
 
-    /// The page and the height of the document view on a screen of
-    /// `size`.
-    fn page(&self, size: Size) -> (Page, usize) {
-        let (main, _) = split_footer(Rect::from((Position::ORIGIN, size)));
-        let inner = self.document_block().inner(self.document_area(main));
-        let page = layout(&self.doc, usize::from(inner.width), self.selected);
-        (page, usize::from(inner.height))
-    }
-
     /// Moves the selection by `step` blocks, and scrolls to show it.
     pub fn select_by(&mut self, step: isize, size: Size) {
         if let Some(i) = self.selected {
@@ -163,8 +160,8 @@ impl View {
     pub fn select_last(&mut self, size: Size) {
         match self.doc.blocks.len() {
             0 => {
-                let (page, height) = self.page(size);
-                self.scroll = max_scroll(&page, height);
+                let (page, text, _) = self.page(screen(size));
+                self.scroll = max_scroll(&page, usize::from(text.height));
             }
             n => self.select(n - 1, size),
         }
@@ -172,8 +169,8 @@ impl View {
 
     fn select(&mut self, i: usize, size: Size) {
         self.selected = Some(i);
-        let (page, height) = self.page(size);
-        let scroll = self.scroll.min(max_scroll(&page, height));
+        let (page, text, scroll) = self.page(screen(size));
+        let height = usize::from(text.height);
         self.scroll = scroll_to(scroll, page.tops[i], &page.blocks[i], height);
     }
 
@@ -181,12 +178,11 @@ impl View {
     /// to the first block whose info line is in view, else to the first
     /// block in view.
     pub fn scroll_pages(&mut self, pages: isize, size: Size) {
-        let (page, height) = self.page(size);
-        let max = max_scroll(&page, height);
-        let scroll = self.scroll.min(max);
+        let (page, text, scroll) = self.page(screen(size));
+        let height = usize::from(text.height);
         self.scroll = scroll
             .saturating_add_signed(pages * height as isize)
-            .min(max);
+            .min(max_scroll(&page, height));
         let view = self.scroll..self.scroll + height;
         let blocks = &page.blocks;
         let in_view = blocks.iter().position(|b| view.contains(&b.start));
@@ -201,9 +197,8 @@ impl View {
     }
 }
 
-fn split_footer(area: Rect) -> (Rect, Rect) {
-    let [main, footer] = Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(area);
-    (main, footer)
+fn screen(size: Size) -> Rect {
+    Rect::from((Position::ORIGIN, size))
 }
 
 /// The largest scroll: the last line of the page at the bottom of the view.

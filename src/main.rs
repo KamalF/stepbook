@@ -125,7 +125,6 @@ fn main() -> ExitCode {
 fn open(args: &Args) -> Result<(), String> {
     let bytes = std::fs::read(&args.file)
         .map_err(|e| format!("cannot read {}: {}", args.file.display(), io_message(&e)))?;
-    let doc = doc::parse(&String::from_utf8_lossy(&bytes));
     let path = std::env::var_os("PATH").unwrap_or_default();
     if run::find_in_path("bash", &path).is_none() {
         return Err("cannot find bash on the PATH".into());
@@ -133,6 +132,7 @@ fn open(args: &Args) -> Result<(), String> {
     if !std::io::stdout().is_terminal() {
         return Err("run stepbook in a terminal: its output is not a terminal".into());
     }
+    let doc = doc::parse(&String::from_utf8_lossy(&bytes));
     // try_init also installs a panic hook that restores the terminal.
     let mut terminal = ratatui::try_init()
         .map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
