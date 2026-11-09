@@ -136,9 +136,12 @@ fn open(args: &Args) -> Result<(), String> {
         return Err("run stepbook in a terminal: its output is not a terminal".into());
     }
     let doc = doc::parse(&String::from_utf8_lossy(&bytes));
-    // try_init also installs a panic hook that restores the terminal.
-    let mut terminal = ratatui::try_init()
-        .map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
+    // try_init also installs a panic hook that restores the terminal. If
+    // it fails, it may have turned on raw mode already.
+    let mut terminal = ratatui::try_init().map_err(|e| {
+        ratatui::restore();
+        format!("cannot set up the terminal: {}", io_message(&e))
+    })?;
     let title = args.file.file_name().unwrap_or(args.file.as_os_str());
     let mut view = view::View::new(doc, title.to_string_lossy().into_owned());
     let result = event_loop(&mut terminal, &mut view);

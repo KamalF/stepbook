@@ -348,6 +348,11 @@ fn code(
             out.push(Line::from([vec![gutter.clone()], part.spans].concat()));
         }
     }
+    // An empty code block shows as a gutter, so that it, and the list
+    // marker before it, stay in view.
+    if out.is_empty() {
+        out.push(Line::from(gutter));
+    }
     out
 }
 
@@ -756,6 +761,15 @@ mod tests {
         10. ten
             1. nested
         11. eleven
+        ");
+    }
+
+    #[test]
+    fn an_empty_code_block_shows_its_gutter() {
+        assert_snapshot!(render("1. a\n2. ```\n   ```\n3. c", 40), @"
+        1. a
+        2. «d:▌ »
+        3. c
         ");
     }
 
