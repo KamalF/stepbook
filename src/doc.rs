@@ -327,7 +327,7 @@ impl Builder {
                         // Split on LF only: str::lines would drop a CR
                         // before an LF, which bash still gets.
                         _ => (code.split_terminator('\n'))
-                            .map(|l| escaped(l, Style::new()))
+                            .map(|l| code_line(&[Span::raw(l)]))
                             .collect(),
                     };
                     self.push_item(Kind::Code { lines, block });
@@ -361,7 +361,7 @@ impl Builder {
 
     fn push(&mut self, text: &str, style: Style) {
         let style = self.style().patch(style);
-        escape_into(&mut self.text, text, style, &mut self.column);
+        escape_into(&mut self.text, text, style, &mut self.column, needs_escape);
     }
 
     /// Ends the text before a new element, and adds the blank line that
@@ -510,9 +510,9 @@ fn block(info: &str, code: &str) -> Option<Block> {
     block.warnings.extend(error);
     if code
         .chars()
-        .any(|c| needs_escape(c) && !matches!(c, '\t' | '\n'))
+        .any(|c| needs_escape_in_code(c) && !matches!(c, '\t' | '\n'))
     {
-        block.warnings.push("control characters in code".into());
+        block.warnings.push("hidden characters in code".into());
     }
     Some(block)
 }
@@ -525,19 +525,51 @@ pub fn needs_escape(c: char) -> bool {
         || matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
 }
 
-/// Appends `text` to `out`, with each character that needs an escape
+/// Whether stepbook shows `c` escaped in code. Code also escapes the
+/// default ignorable code points of Unicode, which a terminal draws as
+/// nothing, such as U+200B (zero-width space): `"prod<U+200B>"` would look
+/// like `"prod"`. Prose keeps them, for emoji and scripts that need them.
+pub fn needs_escape_in_code(c: char) -> bool {
+    needs_escape(c)
+        || matches!(
+            c,
+            '\u{ad}'
+                | '\u{34f}'
+                | '\u{115f}'..='\u{1160}'
+                | '\u{17b4}'..='\u{17b5}'
+                | '\u{180b}'..='\u{180f}'
+                | '\u{200b}'..='\u{200f}'
+                | '\u{2060}'..='\u{206f}'
+                | '\u{3164}'
+                | '\u{fe00}'..='\u{fe0f}'
+                | '\u{feff}'
+                | '\u{ffa0}'
+                | '\u{fff0}'..='\u{fff8}'
+                | '\u{1bca0}'..='\u{1bca3}'
+                | '\u{1d173}'..='\u{1d17a}'
+                | '\u{e0000}'..='\u{e0fff}'
+        )
+}
+
+/// Appends `text` to `out`, with each character for which `escape` holds
 /// shown as vim shows it, in the warning color: `^[` for ESC, `^?` for
 /// DEL, `<9b>` for a C1 character and `<202e>` for a bidi control. A tab
 /// expands to spaces up to the next multiple of 8 columns. `column` counts
 /// the columns of the line so far.
-pub fn escape_into(out: &mut Vec<Span<'static>>, text: &str, style: Style, column: &mut usize) {
+pub fn escape_into(
+    out: &mut Vec<Span<'static>>,
+    text: &str,
+    style: Style,
+    column: &mut usize,
+    escape: fn(char) -> bool,
+) {
     // A run of plain text or of escapes, and the bytes of it that `column`
     // counts already.
     let mut run = String::new();
     let mut escapes = false;
     let mut counted = 0;
     for c in text.chars() {
-        let escape = c != '\t' && needs_escape(c);
+        let escape = c != '\t' && escape(c);
         if escape != escapes && !run.is_empty() {
             *column += width(&run[counted..]);
             out.push(run_span(std::mem::take(&mut run), style, escapes));
@@ -551,12 +583,7 @@ pub fn escape_into(out: &mut Vec<Span<'static>>, text: &str, style: Style, colum
             *column += spaces;
             counted = run.len();
         } else if escape {
-            match u32::from(c) {
-                0x7f => run.push_str("^?"),
-                n @ 0..0x20 => run.extend(['^', char::from_u32(n + 0x40).unwrap_or('?')]),
-                n @ 0x80..0x100 => run.push_str(&format!("<{n:02x}>")),
-                n => run.push_str(&format!("<{n:04x}>")),
-            }
+            push_escape(&mut run, c);
         } else {
             run.push(c);
         }
@@ -567,13 +594,25 @@ pub fn escape_into(out: &mut Vec<Span<'static>>, text: &str, style: Style, colum
     }
 }
 
+fn push_escape(out: &mut String, c: char) {
+    match u32::from(c) {
+        0x7f => out.push_str("^?"),
+        n @ 0..0x20 => out.extend(['^', char::from_u32(n + 0x40).unwrap_or('?')]),
+        n @ 0x80..0x100 => out.push_str(&format!("<{n:02x}>")),
+        n => out.push_str(&format!("<{n:04x}>")),
+    }
+}
+
 fn run_span(run: String, style: Style, escapes: bool) -> Span<'static> {
     Span::styled(run, if escapes { style.patch(WARNING) } else { style })
 }
 
-/// The width of text on screen, as the ratatui buffer measures it.
+/// The width of text with no control character on screen, as the
+/// ratatui buffer measures it: grapheme by grapheme.
 pub fn width(text: &str) -> usize {
-    usize::from(text.cell_width())
+    let span = Span::raw(text);
+    let graphemes = span.styled_graphemes(Style::new());
+    graphemes.map(|g| usize::from(g.symbol.cell_width())).sum()
 }
 
 /// Text for a message outside the screen, such as an error on stderr,
@@ -588,15 +627,51 @@ pub fn escaped_text(text: &str) -> String {
 /// One line of text, with its control characters escaped.
 pub fn escaped(text: &str, style: Style) -> Vec<Span<'static>> {
     let mut out = Vec::new();
-    escape_into(&mut out, text, style, &mut 0);
+    escape_into(&mut out, text, style, &mut 0, needs_escape);
     out
 }
 
-fn escape_line(spans: &[Span]) -> Vec<Span<'static>> {
-    let mut out = Vec::new();
+/// A line of code as the view shows it. Its characters are escaped as
+/// code needs, and each grapheme sits in one span, with the style of its
+/// first character: syntect ends a token where its grammar says, and a
+/// combining mark after a closing quote would start a span of its own. A
+/// grapheme that the terminal would draw as nothing, such as a combining
+/// mark at the start of a line, is escaped too: the ratatui buffer drops
+/// a grapheme of width 0.
+pub fn code_line(spans: &[Span]) -> Vec<Span<'static>> {
+    let mut escaped = Vec::new();
     let mut column = 0;
     for span in spans {
-        escape_into(&mut out, &span.content, span.style, &mut column);
+        let (text, style) = (&span.content, span.style);
+        escape_into(&mut escaped, text, style, &mut column, needs_escape_in_code);
+    }
+    let text: String = escaped.iter().map(|s| s.content.as_ref()).collect();
+    let mut starts = Vec::new();
+    let mut offset = 0;
+    for span in &escaped {
+        starts.push((offset, span.style));
+        offset += span.content.len();
+    }
+    let mut out: Vec<Span> = Vec::new();
+    let mut offset = 0;
+    // The escaped text has no control character for styled_graphemes to
+    // drop.
+    for grapheme in Span::raw(text.as_str()).styled_graphemes(Style::new()) {
+        let mut style = starts[starts.partition_point(|(start, _)| *start <= offset) - 1].1;
+        offset += grapheme.symbol.len();
+        let mut shown = grapheme.symbol.to_string();
+        if width(&shown) == 0 {
+            shown.clear();
+            grapheme
+                .symbol
+                .chars()
+                .for_each(|c| push_escape(&mut shown, c));
+            style = style.patch(WARNING);
+        }
+        match out.last_mut() {
+            Some(last) if last.style == style => last.content.to_mut().push_str(&shown),
+            _ => out.push(Span::styled(shown, style)),
+        }
     }
     out
 }
@@ -660,36 +735,9 @@ fn highlight(code: &str) -> Vec<Vec<Span<'static>>> {
             let text = region.trim_end_matches('\n').to_string();
             spans.push(Span::styled(text, scope_style(&stack)));
         }
-        lines.push(align_to_graphemes(escape_line(&spans)));
+        lines.push(code_line(&spans));
     }
     lines
-}
-
-/// Moves each span boundary that falls inside a grapheme to the end of
-/// that grapheme, which then takes the style of its first character.
-/// syntect ends a token where its grammar says: a combining mark after a
-/// closing quote would start a span of its own, and the ratatui buffer
-/// drops a grapheme of width 0. The spans hold escaped text, which has no
-/// control character for `styled_graphemes` to drop.
-fn align_to_graphemes(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
-    let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
-    let mut starts = Vec::new();
-    let mut offset = 0;
-    for span in &spans {
-        starts.push((offset, span.style));
-        offset += span.content.len();
-    }
-    let mut out: Vec<Span> = Vec::new();
-    let mut offset = 0;
-    for grapheme in Span::raw(text.as_str()).styled_graphemes(Style::new()) {
-        let style = starts[starts.partition_point(|(start, _)| *start <= offset) - 1].1;
-        match out.last_mut() {
-            Some(last) if last.style == style => last.content.to_mut().push_str(grapheme.symbol),
-            _ => out.push(Span::styled(grapheme.symbol.to_string(), style)),
-        }
-        offset += grapheme.symbol.len();
-    }
-    out
 }
 
 fn scope_style(stack: &ScopeStack) -> Style {
@@ -914,7 +962,7 @@ mod tests {
         fn escaped_text_has_no_control_character_and_tracks_its_width(text in any::<String>()) {
             let mut column = 0;
             let mut out = Vec::new();
-            escape_into(&mut out, &text, Style::new(), &mut column);
+            escape_into(&mut out, &text, Style::new(), &mut column, needs_escape);
             prop_assert!(out.iter().all(|s| !s.content.chars().any(needs_escape)));
             prop_assert_eq!(column, out.iter().map(|s| width(&s.content)).sum::<usize>());
         }
@@ -1028,9 +1076,9 @@ mod tests {
     #[test]
     fn code_with_control_characters_gets_a_warning() {
         let warning = |code| block("bash", code).unwrap().warnings;
-        assert_eq!(warning("a\u{1b}b\n"), ["control characters in code"]);
-        assert_eq!(warning("a\u{85}\n"), ["control characters in code"]);
-        assert_eq!(warning("a\u{202e}\n"), ["control characters in code"]);
+        assert_eq!(warning("a\u{1b}b\n"), ["hidden characters in code"]);
+        assert_eq!(warning("a\u{85}\n"), ["hidden characters in code"]);
+        assert_eq!(warning("a\u{202e}\n"), ["hidden characters in code"]);
         assert!(warning("a\tb\n").is_empty());
     }
 
@@ -1051,6 +1099,62 @@ mod tests {
         assert!(!highlights(&line(1_001), 0));
         assert!(highlights("ls\n", HIGHLIGHT_BUDGET - 3));
         assert!(!highlights("ls\n", HIGHLIGHT_BUDGET - 2));
+    }
+
+    #[test]
+    fn code_escapes_the_characters_that_a_terminal_draws_as_nothing() {
+        let shown = |code: &str| -> String {
+            code_line(&[Span::raw(code)])
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        assert_eq!(shown("\"prod\u{200b}\""), "\"prod<200b>\"");
+        assert_eq!(shown("a\u{ad}\u{feff}\u{e0041}"), "a<ad><feff><e0041>");
+        assert_eq!(shown("\u{301}x"), "<0301>x");
+        assert_eq!(shown("e\u{301}"), "e\u{301}");
+        assert_eq!(escaped_text("\u{200b}\u{200d}"), "\u{200b}\u{200d}");
+        let warning = block("bash", "a\u{200b}\n").unwrap().warnings;
+        assert_eq!(warning, ["hidden characters in code"]);
+    }
+
+    fn code_text() -> impl Strategy<Value = String> {
+        let chars = prop_oneof![
+            any::<char>(),
+            Just('\n'),
+            Just('\r'),
+            Just('\t'),
+            Just('"'),
+            Just('\u{301}'),
+            Just('\u{fe0f}'),
+            Just('\u{200b}'),
+            Just('\u{1b}'),
+            Just('$'),
+        ];
+        prop::collection::vec(chars, 0..60).prop_map(|c| c.into_iter().collect())
+    }
+
+    proptest! {
+        // What runs is what the view shows: each line of a block shows its
+        // code, escaped, whether highlighted or not, and every grapheme
+        // takes room on screen.
+        #[test]
+        fn the_shown_code_is_the_code_that_runs(code in code_text()) {
+            let doc = parse(&format!("```bash\n{code}\n```\n"));
+            for item in &doc.items {
+                let Kind::Code { lines, block: Some(i) } = &item.kind else { continue };
+                let text = |spans: &[Span]| -> String { spans.iter().map(|s| s.content.as_ref()).collect() };
+                let shown: Vec<String> = lines.iter().map(|l| text(l)).collect();
+                let code = doc.blocks[*i].code.split_terminator('\n');
+                let expected: Vec<String> = code.map(|l| text(&code_line(&[Span::raw(l)]))).collect();
+                prop_assert_eq!(&shown, &expected);
+                for span in lines.iter().flatten() {
+                    for g in span.styled_graphemes(Style::new()) {
+                        prop_assert!(width(g.symbol) > 0, "{:?} in {:?}", g.symbol, span);
+                    }
+                }
+            }
+        }
     }
 
     #[test]

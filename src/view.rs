@@ -969,7 +969,7 @@ mod tests {
         assert_snapshot!(render(text, 30), @"
         ▌ «b:deploy-the-api-to-production»
         ▌ «yellow:unknown attribute 'x';»
-        ▌ «yellow:control characters in code»
+        ▌ «yellow:hidden characters in code»
         ▌ «yellow:^[»«blue:[8m»
         ");
     }
@@ -1075,7 +1075,7 @@ mod tests {
     fn control_characters_in_code_show_escaped_with_a_warning() {
         let text = "```bash\necho \u{1b}[31mred\u{7f} \u{9b}x \u{202e}y\n```";
         assert_snapshot!(render(text, 60), @"
-        ▌ «b:#1»  «yellow:control characters in code»
+        ▌ «b:#1»  «yellow:hidden characters in code»
         ▌ «blue:echo» «yellow:^[»«magenta:[»31mred«yellow:^?» «yellow:<9b>»x «yellow:<202e>»y
         ");
     }
@@ -1448,8 +1448,9 @@ mod tests {
         // "⚠️" is 1 column as a sum of chars, and 2 on screen.
         let table = "| ⚠\u{fe0f}⚠\u{fe0f}⚠\u{fe0f} | b |\n|---|---|\n";
         assert!(line_widths(table, 12).iter().all(|&w| w <= 12));
-        let code = format!("```bash\necho {}\n```", "⚠\u{fe0f}".repeat(8));
-        assert_eq!(line_widths(&code, 8), [4, 7, 8, 8, 6]);
+        // Prose keeps U+FE0F; code escapes it.
+        let text = format!("echo {}", "⚠\u{fe0f}".repeat(8));
+        assert_eq!(line_widths(&text, 8), [4, 8, 8]);
     }
 
     /// Styled text in several spans, with characters that join the
@@ -1505,9 +1506,9 @@ mod tests {
         // "*️⃣" comes in two spans: 1 and 0 columns, but 2 columns merged.
         let cell = "| *\u{fe0f}\u{20e3} or *\u{fe0f}\u{20e3} |\n|---|\n";
         assert!(line_widths(cell, 8).iter().all(|&w| w <= 8));
-        let code = format!("```bash\n: {}; rm -rf ~/data\n```", "*\u{fe0f}".repeat(18));
-        let screen = screen(&view(&code), 40, 9);
-        assert!(screen.contains("-rf ~/data"), "{screen}");
+        let text = format!("{} then ~/data", "*\u{fe0f}".repeat(36));
+        assert!(line_widths(&text, 20).iter().all(|&w| w <= 20));
+        assert!(screen(&view(&text), 40, 9).contains("then ~/data"));
     }
 
     #[test]

@@ -168,7 +168,8 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 - This applies to the text of the file, to its name, to text from a run, such as a directory name in the footer, and to the error messages on stderr.
 - A tab is not escaped. It expands to spaces, up to the next multiple of 8 columns.
 - A line feed is a line break in the text and the code of the file. In one-line text, such as a file name, it shows as `^J`.
-- If the code of a block holds a bidi control, or a control character other than a tab or a line feed, its info line shows the warning `control characters in code`. The block can still run.
+- Code also escapes the default ignorable code points of Unicode, which a terminal draws as nothing, such as U+200B (zero-width space): `"prod<U+200B>"` would look like `"prod"`. So does any other grapheme that the terminal would draw as nothing, such as a combining mark at the start of a line. Prose keeps them: emoji and some scripts need them, and there they do not change what runs.
+- If the code of a block holds a character that code escapes, other than a tab or a line feed, its info line shows the warning `hidden characters in code`. The block can still run.
 - The view and the run use the same code text, so what runs is what the view shows.
 - Program output reaches the terminal only through the vt100 screen. See 6.4.
 
@@ -472,4 +473,5 @@ This spec is the source of truth. A change of decision updates it in the same co
 | `unicode-width` is dropped. stepbook measures each grapheme with ratatui's `CellWidth`, as the ratatui buffer does: a sum of character widths gets emoji with a variation selector wrong | 2026-11-09 |
 | stepbook parses its arguments with its own code, not with clap: it has four options | 2026-11-09 |
 | Bidi controls are escaped as control characters are (6.5) | 2026-11-09 |
+| Code also escapes the default ignorable code points and the graphemes of width 0; prose keeps them (6.5). The warning becomes `hidden characters in code` | 2026-11-09 |
 | Highlighting stops at lines longer than 1,000 bytes and after 32 KB of code (5.3): syntect takes 10 s on a line of 80 KB. The largest runbook has 16 KB of bash, with lines of at most 386 bytes | 2026-11-09 |
