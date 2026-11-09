@@ -460,10 +460,12 @@ const MAX_TABLE_CELLS: usize = 200_000;
 fn options(text: &str) -> Options {
     let mut options = Options::ENABLE_TASKLISTS | Options::ENABLE_STRIKETHROUGH;
     // At most each line is a row, and a row has at most as many cells as
-    // the most `|` on one line, plus 1.
-    let (lines, pipes) = (text.lines()).fold((0, 0), |(lines, pipes), line| {
-        (lines + 1, pipes.max(line.matches('|').count()))
-    });
+    // the most `|` on one line, plus 1. A lone CR also ends a line in
+    // CommonMark; a CR LF then counts twice, which only raises the bound.
+    let (lines, pipes) = (text.split_terminator(['\n', '\r']))
+        .fold((0, 0), |(lines, pipes), line| {
+            (lines + 1, pipes.max(line.matches('|').count()))
+        });
     if lines * (pipes + 1) <= MAX_TABLE_CELLS {
         options |= Options::ENABLE_TABLES;
     }
@@ -1130,6 +1132,9 @@ mod tests {
         // 499 lines 200,099.
         assert!(is_table(&format!("{header}{}", "b\n".repeat(496))));
         assert!(!is_table(&format!("{header}{}", "b\n".repeat(497))));
+        // A lone CR ends a line too.
+        let header = header.replace('\n', "\r");
+        assert!(!is_table(&format!("{header}{}", "b\r".repeat(497))));
     }
 
     #[test]
