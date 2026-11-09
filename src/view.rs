@@ -352,13 +352,26 @@ fn table(aligns: &[Alignment], rows: &[Vec<Cell>], width: usize) -> Vec<Line<'st
     }
     // Each column takes a border and a space on each side of its text.
     let room = width.saturating_sub(3 * columns + 1);
-    while widths.iter().sum::<usize>() > room {
-        let widest = widths.iter_mut().max().unwrap();
-        if *widest == 1 {
-            break;
+    if room < columns {
+        widths.fill(1);
+    } else {
+        // No column keeps more than the room, which bounds the loop.
+        let mut total = 0;
+        for w in &mut widths {
+            *w = (*w).min(room);
+            total += *w;
         }
-        *widest -= 1;
+        while total > room {
+            *widths.iter_mut().max().unwrap() -= 1;
+            total -= 1;
+        }
     }
+    // The view would clip the columns that start past its width.
+    let shown = (widths.iter())
+        .scan(1, |start, w| Some(std::mem::replace(start, *start + w + 3)))
+        .take_while(|&start| start <= width)
+        .count();
+    widths.truncate(shown);
     let border = |left: &str, middle: &str, right: &str| {
         let parts: Vec<String> = widths.iter().map(|w| "─".repeat(w + 2)).collect();
         Line::from(Span::styled(
@@ -1342,6 +1355,19 @@ mod tests {
             let shown: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
             prop_assert_eq!(shown, spans.iter().map(|s| s.content.as_ref()).collect::<String>());
         }
+    }
+
+    #[test]
+    fn a_table_wider_than_the_view_draws_only_the_columns_in_view() {
+        let row = |cell: &str| format!("|{}\n", format!("{cell}|").repeat(1_000));
+        let text = format!("{}{}{}", row("a"), row("-"), row("b"));
+        assert_snapshot!(render(&text, 20), @"
+        «d:┌───┬───┬───┬───┬───┐»
+        «d:│» «b:a» «d:│» «b:a» «d:│» «b:a» «d:│» «b:a» «d:│» «b:a» «d:│»
+        «d:├───┼───┼───┼───┼───┤»
+        «d:│» b «d:│» b «d:│» b «d:│» b «d:│» b «d:│»
+        «d:└───┴───┴───┴───┴───┘»
+        ");
     }
 
     #[test]

@@ -260,6 +260,15 @@ impl Builder {
             }
             TagEnd::TableHead | TagEnd::TableRow => {
                 if let Some(table) = &mut self.table {
+                    // pulldown-cmark pads a short row with empty cells, up
+                    // to the columns of the header: a few bytes of input
+                    // can make thousands. The view shows a missing cell as
+                    // an empty one.
+                    if tag == TagEnd::TableRow {
+                        while table.row.last().is_some_and(Vec::is_empty) {
+                            table.row.pop();
+                        }
+                    }
                     table.rows.push(std::mem::take(&mut table.row));
                 }
             }
@@ -955,6 +964,16 @@ mod tests {
         assert_eq!(warning("a\u{85}\n"), ["control characters in code"]);
         assert_eq!(warning("a\u{202e}\n"), ["control characters in code"]);
         assert!(warning("a\tb\n").is_empty());
+    }
+
+    #[test]
+    fn body_rows_lose_their_trailing_empty_cells() {
+        let doc = parse("| a | b | c |\n|---|---|---|\n| x |\n| | y |\n");
+        let Kind::Table(_, rows) = &doc.items[0].kind else {
+            panic!("not a table: {:?}", doc.items[0]);
+        };
+        let lengths: Vec<_> = rows.iter().map(Vec::len).collect();
+        assert_eq!(lengths, [3, 1, 2]);
     }
 
     #[test]
