@@ -2,3 +2,17 @@
 # Claude Code masks some untracked files, such as .claude/, which a copy
 # cannot read.
 gitignore = true
+
+# Mutants that no test should catch. A run then shows only new gaps.
+exclude_re = [
+    # The event loop only applies the action of each key: the check in
+    # tmux covers it, and main::action has its own test.
+    "replace event_loop -> ",
+    "in event_loop$",
+    # The option flags are distinct bits: ^ gives the same value as |.
+    "replace \\| with \\^ in options",
+    # If the lines fill the view exactly, both branches give the same
+    # scroll. If top equals scroll, the result is scroll either way.
+    "view.rs:\\d+:24: replace > with >= in scroll_to",
+    "view.rs:\\d+:19: replace < with <= in scroll_to",
+]

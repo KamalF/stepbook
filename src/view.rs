@@ -659,6 +659,18 @@ mod tests {
     }
 
     #[test]
+    fn a_list_after_a_list_starts_at_the_first_level() {
+        assert_snapshot!(render("- a\n  - b\n\ntext\n\n- c", 40), @"
+        • a
+          ◦ b
+
+        text
+
+        • c
+        ");
+    }
+
+    #[test]
     fn list_items_wrap_under_their_text() {
         assert_snapshot!(render("- one two three\n\n1. four five six", 10), @"
         • one two
@@ -841,12 +853,19 @@ mod tests {
 
     #[test]
     fn raw_html_shows_dimmed_as_source() {
-        assert_snapshot!(render("<div>\n  <b>x</b>\n</div>\n\nan <i>inline</i> tag", 40), @"
+        let text = "text\n\n<div>\n  <b>x</b>\n</div>\n\nan <i>inline</i> tag\n\n<p>\nlast\n</p>\n";
+        assert_snapshot!(render(text, 40), @"
+        text
+
         «d:<div>»
         «d:  <b>x</b>»
         «d:</div>»
 
         an «d:<i>»inline«d:</i>» tag
+
+        «d:<p>»
+        «d:last»
+        «d:</p>»
         ");
     }
 
@@ -1071,6 +1090,7 @@ mod tests {
             ((0, 12, 14..20, 10), 10),
             ((0, 12, 14..30, 10), 12),
             ((0, 2, 14..30, 10), 14),
+            ((2, 5, 7..10, 6), 4),
         ];
         for ((scroll, top, block, height), expected) in cases {
             let found = scroll_to(scroll, top, &block, height);
@@ -1149,6 +1169,19 @@ mod tests {
         assert_eq!(position(&view), (Some(3), 29));
         view.scroll_pages(-9, SMALL);
         assert_eq!(position(&view), (Some(0), 0));
+    }
+
+    #[test]
+    fn page_keys_keep_the_selection_if_no_block_is_in_view() {
+        let mut view = steps();
+        // Lines 15 to 20: the code of block 1, and no info line.
+        view.scroll = 9;
+        view.scroll_pages(1, SMALL);
+        assert_eq!(position(&view), (Some(1), 15));
+        // Lines 17 to 22: no block. Block 1 ends at 17, block 2 starts at 23.
+        view.scroll = 11;
+        view.scroll_pages(1, SMALL);
+        assert_eq!(position(&view), (Some(1), 17));
     }
 
     #[test]

@@ -892,6 +892,7 @@ mod tests {
         assert_eq!(shown("\ta\tbc"), "        a       bc");
         assert_eq!(shown("日本語\tx"), "日本語  x");
         assert_eq!(shown("^\u{1b}\tx"), "^^[     x");
+        assert_eq!(shown("abc\t\tx"), format!("abc{}x", " ".repeat(13)));
     }
 
     #[test]
