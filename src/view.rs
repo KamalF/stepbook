@@ -49,6 +49,7 @@ pub fn layout(doc: &Document, width: usize) -> Vec<Line<'static>> {
             }
             Kind::Table(aligns, rows) => table(aligns, rows, width),
             Kind::Code { lines, block } => code(doc, lines, *block, width),
+            Kind::Rule => vec![Line::from(Span::styled("─".repeat(width), DIM))],
             Kind::Blank => vec![Line::default()],
         };
         lines.extend(prefixed(item, body));
@@ -581,6 +582,47 @@ mod tests {
 
           ▌ «b:s»
           ▌ «blue:ls»
+        ");
+    }
+
+    #[test]
+    fn thematic_breaks_are_dim_rules() {
+        assert_snapshot!(render("a\n\n***\n\n> b\n>\n> ---", 10), @"
+        a
+
+        «d:──────────»
+
+        «d:│ »b
+        «d:│»
+        «d:│ »«d:────────»
+        ");
+    }
+
+    #[test]
+    fn raw_html_shows_dimmed_as_source() {
+        assert_snapshot!(render("<div>\n  <b>x</b>\n</div>\n\nan <i>inline</i> tag", 40), @"
+        «d:<div>»
+        «d:  <b>x</b>»
+        «d:</div>»
+
+        an «d:<i>»inline«d:</i>» tag
+        ");
+    }
+
+    #[test]
+    fn images_show_their_alt_text() {
+        assert_snapshot!(render("see ![a *chart*](c.png) here", 40), @"see [image: a «i:chart»] here");
+    }
+
+    #[test]
+    fn frontmatter_shows_dimmed_before_the_document() {
+        assert_snapshot!(render("---\ntitle: x\n---\n# T", 20), @"
+        «d:---»
+        «d:title: x»
+        «d:---»
+
+        «b:T»
+        «d:━━━━━━━━━━━━━━━━━━━━»
         ");
     }
 

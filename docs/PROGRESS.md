@@ -48,7 +48,7 @@ Then `cargo mutants`, the check in tmux, and the review loop.
 
 ## Next
 
-1. Commit 11 of milestone 1: thematic breaks, raw HTML, images and the frontmatter.
+1. Commit 12 of milestone 1: control characters.
 
 ## Open points
 

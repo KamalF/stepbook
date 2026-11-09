@@ -48,6 +48,7 @@ pub enum Kind {
         lines: Vec<Vec<Span<'static>>>,
         block: Option<usize>,
     },
+    Rule,
     Blank,
 }
 
@@ -55,8 +56,6 @@ pub type Cell = Vec<Span<'static>>;
 
 #[derive(Debug)]
 pub struct Document {
-    #[cfg_attr(not(test), expect(dead_code, reason = "a later commit renders it"))]
-    pub frontmatter: Option<String>,
     pub items: Vec<Item>,
     pub blocks: Vec<Block>,
 }
@@ -74,12 +73,15 @@ impl Document {
 pub fn parse(text: &str) -> Document {
     let (frontmatter, body) = split_frontmatter(text);
     let mut builder = Builder::default();
+    if let Some(frontmatter) = frontmatter {
+        builder.push(&format!("---\n{frontmatter}---"), DIM);
+        builder.end_text();
+    }
     for (event, range) in Parser::new_ext(body, options()).into_offset_iter() {
         builder.event(event, &body[range]);
     }
     mark_duplicates(&mut builder.blocks);
     Document {
-        frontmatter: frontmatter.map(str::to_string),
         items: builder.items,
         blocks: builder.blocks,
     }
@@ -135,6 +137,17 @@ impl Builder {
             Event::Code(text) => self.push(&text, INLINE_CODE),
             Event::SoftBreak => self.push(" ", Style::new()),
             Event::HardBreak => self.push("\n", Style::new()),
+            Event::Html(text) | Event::InlineHtml(text) => self.push(&text, DIM),
+            Event::Rule => {
+                self.start_element();
+                let (first, rest) = self.prefixes(true);
+                self.items.push(Item {
+                    first,
+                    rest,
+                    kind: Kind::Rule,
+                });
+                self.blank = true;
+            }
             Event::TaskListMarker(done) => {
                 self.push(if done { "[x] " } else { "[ ] " }, Style::new())
             }
@@ -201,6 +214,8 @@ impl Builder {
             Tag::Link { .. } => self
                 .styles
                 .push(Style::new().add_modifier(Modifier::UNDERLINED)),
+            Tag::Image { .. } => self.push("[image: ", Style::new()),
+            Tag::HtmlBlock => self.start_element(),
             _ => {}
         }
     }
@@ -272,6 +287,18 @@ impl Builder {
             }
             TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
                 self.styles.pop();
+            }
+            TagEnd::Image => self.push("]", Style::new()),
+            TagEnd::HtmlBlock => {
+                // The last line of the block ends with a newline, which
+                // would add an empty line.
+                if let Some(last) = self.text.last_mut() {
+                    let content = last.content.to_mut();
+                    if content.ends_with('\n') {
+                        content.pop();
+                    }
+                }
+                self.end_text();
             }
             _ => {}
         }
@@ -746,9 +773,8 @@ mod tests {
 
     #[test]
     fn frontmatter_runs_from_the_first_line_to_the_next_dash_line() {
-        let doc = parse("---\ntitle: x\n---  \n```bash [name:a]\n```\n");
-        assert_eq!(doc.frontmatter.as_deref(), Some("title: x\n"));
-        assert_eq!(doc.blocks.len(), 1);
+        let text = "---\ntitle: x\n---  \n# T";
+        assert_eq!(split_frontmatter(text), (Some("title: x\n"), "# T"));
         assert_eq!(split_frontmatter("---\n---"), (Some(""), ""));
     }
 
@@ -767,7 +793,7 @@ mod tests {
         for start in blocks {
             let text = format!("{start}\n```bash [name:a]\n```\n");
             let doc = parse(&text);
-            assert_eq!(doc.frontmatter, None, "{start:?}");
+            assert_eq!(split_frontmatter(&text).0, None, "{start:?}");
             assert_eq!(doc.blocks.len(), 1, "{start:?}");
         }
     }
