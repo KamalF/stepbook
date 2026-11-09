@@ -357,7 +357,34 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 - Output goes through a bounded channel per run. A slow UI slows the program, and no output is lost.
 - Every message from a run carries its run ID. Messages from a run that is no longer current for its block are dropped (upmd issue K5, see 18).
 
-## 14. Tests
+## 14. Tests and tooling
+
+### 14.1 Tooling
+
+mise manages the repository. `mise.toml` pins the Rust toolchain, `cargo-insta` and `cargo-mutants`, and defines the tasks:
+
+| Task | Does |
+|---|---|
+| `fmt` | `cargo fmt` |
+| `lint` | `cargo clippy --all-targets -- -D warnings` |
+| `test` | `cargo test --no-fail-fast` |
+
+CI on GitHub Actions runs on Linux: `cargo fmt --check`, then `mise run lint` and `mise run test`. The actions are pinned by SHA.
+
+### 14.2 Rules
+
+Each test states one rule, and its name is that rule.
+
+- **One home per rule.** A rule is tested at the lowest layer that sees it with the real parts: real bash in a PTY, real files in a temporary directory. No mocks. Higher layers test only the wiring.
+- **Overlap needs a reason.** Two tests of one rule are allowed only if they check different things, and a comment says what.
+- **The oracle follows the input space.** Few inputs: a table of examples. Many inputs, such as info strings, Markdown or PTY output: a property test with `proptest`. Large output: an insta snapshot, but never as the only check of a security rule such as 6.5.
+- **Snapshots change on purpose.** Each changed snapshot is reviewed. Never accept all of them at once.
+- **Decisions live in pure functions.** The code that touches the terminal, the PTY or the files stays thin. Integration tests, the check in tmux or Kamal's manual checklist cover it.
+- **A test stays only if it can fail for a reason that no other test catches.** A bug fix adds a regression test only if no test caught the bug. Libraries are not tested, except for a non-obvious feature that stepbook relies on.
+- **Mutation testing measures the suite.** At the end of each milestone, `cargo mutants` runs. A surviving mutant is a rule with no test, or dead code. A mutant that no test should catch goes in `.cargo/mutants.toml`, with a comment that says why.
+- **The suite stays under 10 s.**
+
+### 14.3 Cases
 
 - **Unit tests:** attribute parsing, block extraction (frontmatter, `---` in the middle of a file, duplicate names), reload matching, state diff and merge, log line cleaning (ANSI, CR, CRLF, invalid UTF-8), a UTF-8 character split across two reads (on the screen and in the log), a file with 100,000 nested `>`.
 - **Integration tests**, which run real bash in a PTY without a terminal:
@@ -372,7 +399,6 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
   - Concurrent runs write contiguous log sections.
   - The old logging header suppresses the native log.
 - **Render tests:** snapshots with ratatui's `TestBackend` and `insta`, covering document elements, control characters (in the code, the text, the file name and a directory name), block states, the sidebar and the footer modes.
-- **CI:** `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
 
 ## 15. Migration
 
@@ -387,7 +413,7 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 
 v1 comes in five milestones, built in order. Each milestone ends with `cargo mutants` and a review loop. The next one starts after its merge into `main`.
 
-1. **Document view.** The crate and its tooling: `mise.toml` with its `fmt`, `lint` and `test` tasks, CI on GitHub Actions, and the MIT licence. This spec gains the Tooling and Testing rules sections, as in mdame. Then the arguments (4), the terminal setup and restore with the panic hook, parsing (5.1, 5.2), rendering (5.3), control characters (6.5), the layout (6.1), and the keys that move and quit (7.1).
+1. **Document view.** The crate and its tooling (14.1), and the testing rules (14.2). Then the arguments (4), the terminal setup and restore with the panic hook, parsing (5.1, 5.2), rendering (5.3), control characters (6.5), the layout (6.1), and the keys that move and quit (7.1).
    - Done when: each runbook in `~/dev/claude/runbooks/` opens with no panic. Snapshot tests cover each element of 5.3 and each case of 6.5. `q` restores the terminal.
 2. **Running blocks.** The workspace (8.3), the wrapper and the PTY (8.2), the output under each block (6.3), the block states (6.2), `Enter` and its dialog (8.1, 7.4), the session state (9), and quit with active runs (11).
    - Done when: the integration tests of 14 pass, except the log tests. In tmux, a block that runs `export` and `cd` changes what the next block sees.

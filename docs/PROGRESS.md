@@ -48,7 +48,7 @@ Then `cargo mutants`, the check in tmux, and the review loop.
 
 ## Next
 
-1. Commit 1 of milestone 1.
+1. Commit 4 of milestone 1: the arguments.
 
 ## Open points
 
