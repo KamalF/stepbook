@@ -718,8 +718,8 @@ pub fn code_line(spans: &[Span]) -> Vec<Span<'static>> {
 
 /// syntect is slow on some bash: a line of 80 KB takes 10 s, and 32 KB
 /// of heredoc about 1 s. So a block is highlighted only if its lines are
-/// at most `HIGHLIGHT_LINE` bytes long, and while the file has had less
-/// than `HIGHLIGHT_BUDGET` bytes of highlighted code. On 2026-11-09, the
+/// at most `HIGHLIGHT_LINE` bytes long, and if it does not bring the
+/// highlighted code of the file past `HIGHLIGHT_BUDGET` bytes. On 2026-11-09, the
 /// largest runbook of ~/dev/claude/runbooks had 16 KB of bash, and its
 /// longest line had 386 bytes.
 const HIGHLIGHT_LINE: usize = 1_000;

@@ -44,16 +44,34 @@ The plan, one commit per line:
 14. `feat`: the keys that move and quit (7.1).
 15. `tests`: each runbook in `~/dev/claude/runbooks/` opens with no panic.
 
-Then `cargo mutants`, the check in tmux, and the review loop.
+The 15 commits are done. Kamal decided two extensions of 6.5 on 2026-11-09: bidi controls are escaped everywhere, and invisible characters in code.
 
 The test of commit 15 is ignored, because CI has no runbooks: `cargo test --release -- --ignored` runs it on `~/dev/claude/runbooks/`, or on `$STEPBOOK_RUNBOOKS`. On 2026-11-09, the 62 runbooks opened at 3 screen sizes in 2.9 s.
 
+### After the 15 commits
+
+- `cargo mutants`: the first run caught 344 of 382 mutants, with 2 timeouts. The misses got tests, or an exclusion with its reason in `.cargo/mutants.toml`. The second run missed 4, which got the same treatment.
+- `/simplify`, with 4 cleanup agents: 8 commits. It found a panic (a table cell of emoji with a variation selector) and fixed the measure of text: ratatui measures graphemes, not characters.
+- Review loop, with a code reviewer and a security reviewer each round:
+  - Round 1: 2 blockers and 7 should-fix, all fixed, among them code hidden by graphemes across spans, prefixes wider than the view, and the quadratic bash highlighting.
+  - Round 2: 2 should-fix, fixed: a CR before an LF in plain code, and a combining mark after a token.
+  - Round 3: 1 blocker and 3 should-fix, fixed: very wide graphemes in code, the warning for escaped graphemes, padded tables, and the tests of the code escapes.
+
+### Kamal's manual checklist
+
+What tmux cannot show, in herdr in Ghostty:
+
+1. `stepbook ~/dev/claude/runbooks/<a runbook>.md`: the headings, the code highlighting, the gutters, the dimmed text and the cyan selection read well in your theme.
+2. Select text with the mouse: herdr copies it, because stepbook does not capture the mouse.
+3. `j`, `k`, `PageDown`, `End`, `Home`, then `q`: the shell prompt comes back clean.
+
 ## Next
 
-1. `cargo mutants`, the check in tmux, and the review loop of milestone 1.
+1. The next round of the review loop, until a round has nothing to fix. Then the merge of `m1-document-view` into `main`.
 
 ## Open points
 
 - Before the first push, Kamal creates `KamalF/stepbook` on GitHub and adds the remote. The sandbox cannot write `.git/config`.
 - Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
+- Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal); each key lays out the page twice. Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
 - Claude drives stepbook in tmux from the sandbox with one script per check: the script starts tmux, sends the keys and captures the pane. The sandbox stops the tmux server when a command ends. Checked on 2026-11-09.
