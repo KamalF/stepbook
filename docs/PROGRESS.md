@@ -57,6 +57,7 @@ The test of commit 15 is ignored, because CI has no runbooks: `cargo test --rele
   - Round 2: 2 should-fix, fixed: a CR before an LF in plain code, and a combining mark after a token.
   - Round 3: 1 blocker and 3 should-fix, fixed: very wide graphemes in code, the warning for escaped graphemes, padded tables, and the tests of the code escapes.
   - Round 4: 1 blocker and 5 should-fix, fixed: CR line ends past the table bound, the warning after a tab, deep quotes that make the parse quadratic, the highlight budget, and the squares of long lines. Kamal chose to escape spaces other than U+0020 in code, and a minimum terminal size of 40 by 8.
+  - Round 5: 1 blocker and 2 should-fix, fixed: a code block is now always followed by a blank line, the nesting limit counts indent, and code escapes the format characters that join the next one.
 
 ### Kamal's manual checklist
 
