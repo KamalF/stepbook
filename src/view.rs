@@ -7,7 +7,7 @@ use ratatui::layout::{Constraint, Layout, Position, Rect, Size};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::symbols::merge::MergeStrategy;
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Padding};
+use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
 
 use crate::doc::{Cell, DIM, Document, Item, Kind, WARNING, escaped};
 
@@ -40,6 +40,12 @@ impl View {
     }
 
     pub fn draw(&self, frame: &mut Frame) {
+        if too_small(frame.area().as_size()) {
+            let message = "Enlarge the terminal to at least 40 columns and 8 rows.";
+            let text = Paragraph::new(message).wrap(Wrap { trim: true });
+            frame.render_widget(text, frame.area());
+            return;
+        }
         let (sidebar, document, footer) = self.areas(frame.area());
         if let Some(sidebar) = sidebar {
             self.draw_sidebar(frame, sidebar);
@@ -195,6 +201,18 @@ impl View {
             self.selected = Some(i);
         }
     }
+}
+
+/// The smallest screen that stepbook lays the document out on. Below it,
+/// code under a list marker has no room, and the layout costs too much: a
+/// file of 1 MB of tabs in code took 2.5 GB per frame at 6 columns.
+const MIN_WIDTH: u16 = 40;
+const MIN_HEIGHT: u16 = 8;
+
+/// Whether the screen is too small for the document. stepbook then shows
+/// only a message, and the keys that move do nothing.
+pub fn too_small(size: Size) -> bool {
+    size.width < MIN_WIDTH || size.height < MIN_HEIGHT
 }
 
 fn screen(size: Size) -> Rect {
@@ -1280,7 +1298,7 @@ mod tests {
     fn the_sidebar_width_follows_the_longest_name_up_to_30() {
         let long = format!("```bash [name:{}]\n```\n", "n".repeat(40));
         let rows = |markdown: &str| {
-            screen(&view(markdown), 80, 3)
+            screen(&view(markdown), 80, 8)
                 .lines()
                 .next()
                 .unwrap()
@@ -1288,9 +1306,13 @@ mod tests {
         };
         assert_snapshot!(rows("```bash [name:a]\n```\n"), @"┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐");
         assert_snapshot!(rows("```bash [name:abcdefghijklmnop]\n```\n"), @"┌ blocks ───────────┬ run.md ──────────────────────────────────────────────────┐");
-        assert_snapshot!(screen(&view(&long), 80, 4), @"
+        assert_snapshot!(screen(&view(&long), 80, 8), @"
         ┌ blocks ─────────────────────┬ run.md ────────────────────────────────────────┐
         │«cyan,b:▶»  «cyan,b:nnnnnnnnnnnnnnnnnnnnnnnnn…»│ «cyan,b:▌ »«b:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn»     │
+        │                             │                                                │
+        │                             │                                                │
+        │                             │                                                │
+        │                             │                                                │
         └─────────────────────────────┴────────────────────────────────────────────────┘
         ");
     }
@@ -1299,20 +1321,37 @@ mod tests {
     fn the_sidebar_scrolls_to_keep_the_selection_visible() {
         let mut view = view(&"```bash\n```\n".repeat(10));
         view.selected = Some(7);
-        assert_snapshot!(screen(&view, 80, 6), @"
+        assert_snapshot!(screen(&view, 80, 8), @"
         ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
-        │   #6      │ ▌ «b:#1»                                                             │
+        │   #4      │ ▌ «b:#1»                                                             │
+        │   #5      │                                                                  │
+        │   #6      │ ▌ «b:#2»                                                             │
         │   #7      │                                                                  │
-        │«cyan,b:▶»  «cyan,b:#8»      │ ▌ «b:#2»                                                             │
+        │«cyan,b:▶»  «cyan,b:#8»      │ ▌ «b:#3»                                                             │
         └───────────┴──────────────────────────────────────────────────────────────────┘
         ");
     }
 
     #[test]
+    fn a_screen_under_40_by_8_shows_only_a_message() {
+        assert_snapshot!(screen_with_footer(&view(BLOCKS), 39, 8), @"
+        Enlarge the terminal to at least 40
+        columns and 8 rows.
+        ");
+        assert!(screen_with_footer(&view(BLOCKS), 40, 7).starts_with("Enlarge"));
+        assert!(screen_with_footer(&view(BLOCKS), 40, 8).starts_with("┌"));
+    }
+
+    #[test]
     fn the_file_name_shows_control_characters_escaped() {
         let view = View::new(parse(""), "a\u{1b}]52;c;x\u{7}\nb.md".into());
-        assert_snapshot!(screen(&view, 40, 3), @"
+        assert_snapshot!(screen(&view, 40, 8), @"
         ┌ a«yellow:^[»]52;c;x«yellow:^G^J»b.md ──────────────────┐
+        │                                      │
+        │                                      │
+        │                                      │
+        │                                      │
+        │                                      │
         └──────────────────────────────────────┘
         ");
     }

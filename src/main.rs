@@ -185,6 +185,7 @@ fn event_loop(terminal: &mut DefaultTerminal, view: &mut view::View) -> std::io:
         let size = terminal.size()?;
         match action(key) {
             Some(Action::Quit) => return Ok(()),
+            _ if view::too_small(size) => {}
             Some(Action::Select(step)) => view.select_by(step, size),
             Some(Action::First) => view.select_first(size),
             Some(Action::Last) => view.select_last(size),
