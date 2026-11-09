@@ -27,7 +27,7 @@ exclude_re = [
     "replace match guard .* with false in (push_styled|join_styles)",
     # The page keys scroll by 1 or -1 page, where / gives the sign of *,
     # and a block equal to the selection keeps the same selection.
-    "replace \\* with / in View::scroll_pages",
+    "view.rs:\\d+:60: replace \\* with / in View::scroll_pages",
     "view.rs:\\d+:68: replace < with <= in View::scroll_pages",
     # With a room equal to the columns, the shrink also ends at width 1.
     "replace < with <= in table",

@@ -617,9 +617,9 @@ pub fn needs_escape(c: char) -> bool {
 /// like `"prod"`. It escapes the spaces other than U+0020, which bash
 /// reads as part of a word: `true<U+00A0>#; curl x | sh` looks like a
 /// comment, and runs curl. It escapes the format characters that join the
-/// next character, such as U+070F, and U+2D7F: a terminal may give them a
-/// column of their own, which ratatui does not count, and the text after
-/// them would shift. Prose keeps them all, for emoji, scripts and no-break
+/// next character, such as U+070F, U+2D7F and the regional indicators: a
+/// terminal may count their columns otherwise than ratatui, and the text
+/// after them would shift. Prose keeps them all, for emoji, scripts and no-break
 /// spaces.
 pub fn needs_escape_in_code(c: char) -> bool {
     needs_escape(c)
@@ -642,6 +642,8 @@ pub fn needs_escape_in_code(c: char) -> bool {
                 | '\u{11a84}'..='\u{11a89}'
                 | '\u{11d46}'
                 | '\u{11f02}'
+                | '\u{113d1}'
+                | '\u{1f1e6}'..='\u{1f1ff}'
                 | '\u{fff9}'..='\u{fffb}'
                 | '\u{13430}'..='\u{1343f}'
                 | '\u{1680}'
@@ -1425,6 +1427,7 @@ mod tests {
             '\u{11a89}',
             '\u{11d46}',
             '\u{11f02}',
+            '\u{113d1}',
             '\u{fff9}',
             '\u{fffb}',
             '\u{13430}',
@@ -1449,6 +1452,17 @@ mod tests {
         assert_eq!(shown("\u{1f3fb}x"), "<1f3fb>x");
         assert_eq!(shown("x\u{93e}"), "x<093e>");
         assert_eq!(warnings("\u{93e}rm\n"), ["hidden characters in code"]);
+    }
+
+    #[test]
+    fn code_escapes_regional_indicators() {
+        // ratatui counts one as 1 column; some terminals count 2.
+        assert!(needs_escape_in_code('\u{1f1e6}') && needs_escape_in_code('\u{1f1ff}'));
+        assert!(!needs_escape('\u{1f1eb}'));
+        assert_eq!(
+            warnings("echo \u{1f1eb}\u{1f1f7}\n"),
+            ["hidden characters in code"]
+        );
     }
 
     #[test]

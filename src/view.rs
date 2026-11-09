@@ -1142,12 +1142,12 @@ mod tests {
 
     #[test]
     fn control_characters_in_text_show_escaped() {
-        let text = "# T\u{1b}\n\na\u{1b}]52;c;eA==\u{7}b \u{85}c\n\n| \u{1b} |\n|---|";
+        let text = "# T\u{1b}\n\na\u{1b}]52;c;eA==\u{7}b \u{85}c \u{202e}d\n\n| \u{1b} |\n|---|";
         assert_snapshot!(render(text, 60), @"
         «b:T»«yellow,b:^[»
         «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━»
 
-        a«yellow:^[»]52;c;eA==«yellow:^G»b «yellow:<85>»c
+        a«yellow:^[»]52;c;eA==«yellow:^G»b «yellow:<85>»c «yellow:<202e>»d
 
         «d:┌────┐»
         «d:│» «yellow,b:^[» «d:│»
@@ -1163,13 +1163,14 @@ mod tests {
 
     #[test]
     fn code_shows_escaped_what_a_terminal_would_not_draw() {
-        let text = "```bash\necho \"prod\u{200b}\" ok\u{fe0f}\n\u{301}ls 'x\u{ff9e}\u{ff9e}'\ntrue\u{a0}#; ls\necho a\u{70f}b\n```";
+        let text = "```bash\necho \"prod\u{200b}\" ok\u{fe0f}\n\u{301}ls 'x\u{ff9e}\u{ff9e}'\ntrue\u{a0}#; ls\necho a\u{70f}b\n\u{93e}ls\n```";
         assert_snapshot!(render(text, 60), @r#"
         ▌ «b:#1»  «yellow:hidden characters in code»
         ▌ «blue:echo» «green:"prod»«yellow:<200b>»«green:"» ok«yellow:<fe0f>»
         ▌ «yellow:<0301>»«blue:ls» «green:'x»«yellow:<ff9e><ff9e>»«green:'»
         ▌ «blue:true»«yellow:<a0>»«i:#; ls»
         ▌ «blue:echo» a«yellow:<070f>»b
+        ▌ «yellow:<093e>»«blue:ls»
         "#);
     }
 
