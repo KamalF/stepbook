@@ -5,6 +5,7 @@ use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Par
 use ratatui::buffer::CellWidth;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
+use syntect::easy::ScopeRegionIterator;
 use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 use syntect::util::LinesWithEndings;
 
@@ -608,21 +609,14 @@ fn highlight(code: &str) -> Vec<Vec<Span<'static>>> {
     let mut lines = Vec::new();
     for line in LinesWithEndings::from(code) {
         let ops = state.parse_line(line, &SYNTAXES).unwrap_or_default();
-        // The newline is not part of the text of the line.
-        let text = line.strip_suffix('\n').unwrap_or(line);
         let mut spans = Vec::new();
-        let mut start = 0;
-        for (end, op) in ops {
-            let end = end.min(text.len());
-            spans.push(Span::styled(
-                text[start..end].to_string(),
-                scope_style(&stack),
-            ));
+        for (region, op) in ScopeRegionIterator::new(&ops, line) {
             // An invalid operation only loses the colors of the rest.
-            let _ = stack.apply(&op);
-            start = end;
+            let _ = stack.apply(op);
+            // The newline is not part of the text of the line.
+            let text = region.trim_end_matches('\n').to_string();
+            spans.push(Span::styled(text, scope_style(&stack)));
         }
-        spans.push(Span::styled(text[start..].to_string(), scope_style(&stack)));
         lines.push(escape_line(&spans));
     }
     lines
