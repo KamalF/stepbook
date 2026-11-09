@@ -182,7 +182,8 @@ impl View {
 
     /// Scrolls one page down (`pages` = 1) or up (-1). The selection moves
     /// to the first block whose info line is in view, else to the first
-    /// block in view.
+    /// block in view, but never against the scroll: at the bottom, Page
+    /// Down must not select the block above, which Enter would then run.
     pub fn scroll_pages(&mut self, pages: isize, size: Size) {
         let (page, text, scroll) = self.page(screen(size));
         let height = usize::from(text.height);
@@ -198,7 +199,12 @@ impl View {
                 .position(|b| b.start < view.end && b.end > view.start)
         };
         if let Some(i) = in_view.or_else(overlap) {
-            self.selected = Some(i);
+            let backwards = self
+                .selected
+                .is_some_and(|s| (i as isize - s as isize) * pages < 0);
+            if !backwards {
+                self.selected = Some(i);
+            }
         }
     }
 }
@@ -1458,6 +1464,22 @@ mod tests {
         assert_eq!(position(&view), (Some(3), 29));
         view.scroll_pages(-9, SMALL);
         assert_eq!(position(&view), (Some(0), 0));
+    }
+
+    #[test]
+    fn page_keys_never_move_the_selection_against_the_scroll() {
+        let step = |i| format!("Step {i}.\n\n```bash [name:s{i}]\nls\n```\n\n");
+        let mut view = view(&(1..=8).map(step).collect::<String>());
+        let size = Size::new(60, 12);
+        // At the bottom, the first info line in view is that of block 6.
+        view.select_last(size);
+        view.scroll_pages(1, size);
+        assert_eq!(view.selected, Some(7));
+        // Block 0 is far above: the first info line in view is below it.
+        view.selected = Some(0);
+        view.scroll = 20;
+        view.scroll_pages(-1, size);
+        assert_eq!(view.selected, Some(0));
     }
 
     #[test]
