@@ -2,8 +2,9 @@ mod doc;
 mod run;
 mod view;
 
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal, Read};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -63,8 +64,10 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
                 Some(path) => log = Some(set_once(log, PathBuf::from(path))?),
                 None => return Err("--log needs a PATH".into()),
             },
-            _ => match text.strip_prefix("--log=") {
-                Some(path) => log = Some(set_once(log, PathBuf::from(path))?),
+            // The bytes of the argument, not its text: a path need not be
+            // UTF-8.
+            _ => match arg.as_bytes().strip_prefix(b"--log=") {
+                Some(path) => log = Some(set_once(log, PathBuf::from(OsStr::from_bytes(path)))?),
                 None => return Err(format!("unknown option '{text}'")),
             },
         }
@@ -242,6 +245,22 @@ mod tests {
         );
         assert_eq!(parse(&["r.md", "--log=x.txt"]), open("r.md", Some("x.txt")));
         assert_eq!(parse(&["--no-log", "r.md"]), open("r.md", None));
+    }
+
+    #[test]
+    fn log_paths_keep_bytes_that_are_not_utf_8() {
+        let path = OsStr::from_bytes(b"/tmp/\xff.log");
+        let joined = OsStr::from_bytes(b"--log=/tmp/\xff.log");
+        for args in [vec![OsStr::new("--log"), path], vec![joined]] {
+            let args = args
+                .into_iter()
+                .chain([OsStr::new("r.md")])
+                .map(OsString::from);
+            let Ok(Command::Open(parsed)) = parse_args(args) else {
+                panic!("not parsed");
+            };
+            assert_eq!(parsed.log.as_deref(), Some(std::path::Path::new(path)));
+        }
     }
 
     #[test]

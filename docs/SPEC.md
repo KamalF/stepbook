@@ -407,7 +407,7 @@ Each test states one rule, and its name is that rule.
 
 ## 15. Migration
 
-- All the runbooks in `~/dev/claude/runbooks/` open and run unchanged: 60 on 2026-11-09.
+- All the runbooks in `~/dev/claude/runbooks/` open and run unchanged: 62 on 2026-11-09.
 - When v1 works, update the runbook skill:
   - Drop the logging header from the block format.
   - Use `stepbook <file>` instead of `upmd <file>`.
