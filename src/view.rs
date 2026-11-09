@@ -1,11 +1,11 @@
-use pulldown_cmark::HeadingLevel;
+use pulldown_cmark::{Alignment, HeadingLevel};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
-use crate::doc::{DIM, Document, Item, Kind};
+use crate::doc::{Cell, DIM, Document, Item, Kind};
 
 pub fn draw(frame: &mut Frame, doc: &Document) {
     let [body, footer] =
@@ -41,6 +41,7 @@ pub fn layout(doc: &Document, width: usize) -> Vec<Line<'static>> {
                 }
                 body
             }
+            Kind::Table(aligns, rows) => table(aligns, rows, width),
             Kind::Blank => vec![Line::default()],
         };
         lines.extend(prefixed(item, body));
@@ -56,6 +57,85 @@ fn prefixed(item: &Item, body: Vec<Line<'static>>) -> impl Iterator<Item = Line<
         spans.extend(line.spans);
         Line::from(spans)
     })
+}
+
+/// Draws a table with box-drawing borders. If the table is wider than
+/// `width`, the widest columns shrink, and their cells end with `…`.
+fn table(aligns: &[Alignment], rows: &[Vec<Cell>], width: usize) -> Vec<Line<'static>> {
+    let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
+    let mut widths = vec![1; columns];
+    for row in rows {
+        for (cell, w) in row.iter().zip(&mut widths) {
+            *w = (*w).max(cell.iter().map(Span::width).sum());
+        }
+    }
+    // Each column takes a border and a space on each side of its text.
+    let room = width.saturating_sub(3 * columns + 1);
+    while widths.iter().sum::<usize>() > room {
+        let widest = widths.iter_mut().max().unwrap();
+        if *widest == 1 {
+            break;
+        }
+        *widest -= 1;
+    }
+    let border = |left: &str, middle: &str, right: &str| {
+        let parts: Vec<String> = widths.iter().map(|w| "─".repeat(w + 2)).collect();
+        Line::from(Span::styled(
+            format!("{left}{}{right}", parts.join(middle)),
+            DIM,
+        ))
+    };
+    let mut lines = vec![border("┌", "┬", "┐")];
+    for (i, row) in rows.iter().enumerate() {
+        let mut spans = vec![Span::styled("│", DIM)];
+        for (column, w) in widths.iter().enumerate() {
+            let mut cell = truncate(row.get(column).map_or(&[][..], Vec::as_slice), *w);
+            if i == 0 {
+                cell = cell
+                    .into_iter()
+                    .map(|s| s.patch_style(Modifier::BOLD))
+                    .collect();
+            }
+            let gap = w - cell.iter().map(Span::width).sum::<usize>();
+            let before = match aligns.get(column) {
+                Some(Alignment::Center) => gap / 2,
+                Some(Alignment::Right) => gap,
+                _ => 0,
+            };
+            spans.push(Span::raw(" ".repeat(before + 1)));
+            spans.extend(cell);
+            spans.push(Span::raw(" ".repeat(gap - before + 1)));
+            spans.push(Span::styled("│", DIM));
+        }
+        lines.push(Line::from(spans));
+        if i == 0 {
+            lines.push(border("├", "┼", "┤"));
+        }
+    }
+    lines.push(border("└", "┴", "┘"));
+    lines
+}
+
+/// Cuts styled text to `width` columns. Cut text ends with `…`.
+fn truncate(text: &[Span], width: usize) -> Vec<Span<'static>> {
+    let mut chars: Vec<Styled> = text
+        .iter()
+        .flat_map(|s| s.content.chars().map(|c| (c, s.style)))
+        .collect();
+    if chars.iter().map(|(c, _)| char_width(*c)).sum::<usize>() > width {
+        let mut used = 0;
+        let keep = chars
+            .iter()
+            .take_while(|(c, _)| {
+                used += char_width(*c);
+                used < width
+            })
+            .count();
+        let style = chars.get(keep).map_or_else(Style::new, |(_, s)| *s);
+        chars.truncate(keep);
+        chars.push(('…', style));
+    }
+    join_styles(chars)
 }
 
 /// Word-wraps styled text to `width` columns. A `\n` starts a new line.
@@ -351,6 +431,31 @@ mod tests {
             .map(|i| format!("{}- a\n", "  ".repeat(i)))
             .collect();
         assert_eq!(layout(&parse(&list), 80).len(), 1_000);
+    }
+
+    #[test]
+    fn tables_have_borders_a_bold_header_and_aligned_columns() {
+        let text = "| Left | Center | Right |\n|:--|:-:|--:|\n| a | b | c |\n| long cell | `x` |";
+        assert_snapshot!(render(text, 60), @"
+        «d:┌───────────┬────────┬───────┐»
+        «d:│» «b:Left»      «d:│» «b:Center» «d:│» «b:Right» «d:│»
+        «d:├───────────┼────────┼───────┤»
+        «d:│» a         «d:│»   b    «d:│»     c «d:│»
+        «d:│» long cell «d:│»   «cyan:x»    «d:│»       «d:│»
+        «d:└───────────┴────────┴───────┘»
+        ");
+    }
+
+    #[test]
+    fn wide_tables_shrink_their_widest_columns() {
+        let text = "| key | a long value here |\n|---|---|\n| k | 日本語のテキスト |";
+        assert_snapshot!(render(text, 20), @"
+        «d:┌─────┬────────────┐»
+        «d:│» «b:key» «d:│» «b:a long va…» «d:│»
+        «d:├─────┼────────────┤»
+        «d:│» k   «d:│» 日本語の…  «d:│»
+        «d:└─────┴────────────┘»
+        ");
     }
 
     #[test]

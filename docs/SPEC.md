@@ -90,7 +90,7 @@ systemctl --user restart api
 | Link | The link text, underlined. |
 | List, task list | Bullets `•` and `◦`, which alternate by level, or numbers. A nested list starts under the text of its item, so bullet lists indent 2 columns per level. Task items show `[ ]` or `[x]`. No Nerd Font glyphs. |
 | Blockquote | A `│ ` prefix per level. |
-| Table | Box-drawing borders. Columns shrink to fit and truncate with `…`. |
+| Table | Box-drawing borders and a bold header. If the table is too wide, its widest columns shrink, and their cells end with `…`. |
 | Thematic break | A dimmed rule. |
 | Raw HTML | Shown dimmed, as source. |
 | Image | `[image: <alt text>]`. |

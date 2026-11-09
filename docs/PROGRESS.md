@@ -48,7 +48,7 @@ Then `cargo mutants`, the check in tmux, and the review loop.
 
 ## Next
 
-1. Commit 9 of milestone 1: tables.
+1. Commit 10 of milestone 1: code blocks and blocks.
 
 ## Open points
 

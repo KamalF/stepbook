@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 
@@ -37,8 +37,12 @@ pub enum Kind {
     /// Styled text. A `\n` is a hard line break.
     Text(Vec<Span<'static>>),
     Heading(HeadingLevel, Vec<Span<'static>>),
+    /// The first row is the header.
+    Table(Vec<Alignment>, Vec<Vec<Cell>>),
     Blank,
 }
+
+pub type Cell = Vec<Span<'static>>;
 
 #[derive(Debug)]
 pub struct Document {
@@ -80,6 +84,14 @@ struct Builder {
     containers: Vec<Container>,
     /// The number of open lists.
     lists: usize,
+    table: Option<Table>,
+}
+
+/// The table being read.
+struct Table {
+    aligns: Vec<Alignment>,
+    rows: Vec<Vec<Cell>>,
+    row: Vec<Cell>,
 }
 
 enum Container {
@@ -115,6 +127,14 @@ impl Builder {
     fn start(&mut self, tag: Tag, source: &str) {
         match tag {
             Tag::Paragraph => self.start_element(),
+            Tag::Table(aligns) => {
+                self.start_element();
+                self.table = Some(Table {
+                    aligns,
+                    rows: Vec::new(),
+                    row: Vec::new(),
+                });
+            }
             Tag::BlockQuote(_) => {
                 self.start_element();
                 self.containers.push(Container::Quote);
@@ -170,6 +190,24 @@ impl Builder {
     fn end(&mut self, tag: TagEnd) {
         match tag {
             TagEnd::Paragraph => self.end_text(),
+            TagEnd::TableCell => {
+                if let Some(table) = &mut self.table {
+                    table.row.push(std::mem::take(&mut self.text));
+                }
+            }
+            TagEnd::TableHead | TagEnd::TableRow => {
+                if let Some(table) = &mut self.table {
+                    table.rows.push(std::mem::take(&mut table.row));
+                }
+            }
+            TagEnd::Table => {
+                if let Some(table) = self.table.take() {
+                    let (first, rest) = self.prefixes(true);
+                    let kind = Kind::Table(table.aligns, table.rows);
+                    self.items.push(Item { first, rest, kind });
+                }
+                self.blank = true;
+            }
             TagEnd::BlockQuote(_) => {
                 self.end_text();
                 self.containers.pop();
