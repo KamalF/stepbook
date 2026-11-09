@@ -321,17 +321,27 @@ impl Builder {
                         self.blocks.push(block);
                         self.blocks.len() - 1
                     });
+                    let mut hidden = false;
                     let lines = match block {
                         Some(_) if highlights(&code, self.highlighted) => {
                             self.highlighted += code.len();
-                            highlight(&code)
+                            highlight(&code, &mut hidden)
                         }
                         // Split on LF only: str::lines would drop a CR
                         // before an LF, which bash still gets.
                         _ => (code.split_terminator('\n'))
-                            .map(|l| code_line(&[Span::raw(l)]))
+                            .map(|l| code_line(&[Span::raw(l)], &mut hidden))
                             .collect(),
                     };
+                    // The warning follows what the view shows: a tab
+                    // makes spaces that a mark after it can join.
+                    if let Some(i) = block
+                        && hidden
+                    {
+                        self.blocks[i]
+                            .warnings
+                            .push("hidden characters in code".into());
+                    }
                     self.push_item(Kind::Code { lines, block });
                 }
                 self.blank = true;
@@ -527,9 +537,6 @@ fn block(info: &str, code: &str) -> Option<Block> {
         }
     }
     block.warnings.extend(error);
-    if has_hidden_characters(code) {
-        block.warnings.push("hidden characters in code".into());
-    }
     Some(block)
 }
 
@@ -567,17 +574,6 @@ pub fn needs_escape_in_code(c: char) -> bool {
         )
 }
 
-/// Whether code that `code_line` shows has an escape other than a tab.
-fn has_hidden_characters(code: &str) -> bool {
-    code.chars()
-        .any(|c| needs_escape_in_code(c) && !matches!(c, '\t' | '\n'))
-        || (code.split('\n')).any(|line| {
-            let span = Span::raw(line);
-            let mut graphemes = span.styled_graphemes(Style::new());
-            graphemes.any(|g| hides(g.symbol))
-        })
-}
-
 /// Appends `text` to `out`, with each character for which `escape` holds
 /// shown as vim shows it, in the warning color: `^[` for ESC, `^?` for
 /// DEL, `<9b>` for a C1 character and `<202e>` for a bidi control. A tab
@@ -589,11 +585,12 @@ pub fn escape_into(
     style: Style,
     column: &mut usize,
     escape: fn(char) -> bool,
-) {
+) -> bool {
     // A run of plain text or of escapes, and the bytes of it that `column`
     // counts already.
     let mut run = String::new();
     let mut escapes = false;
+    let mut escaped = false;
     let mut counted = 0;
     for c in text.chars() {
         let escape = c != '\t' && escape(c);
@@ -611,6 +608,7 @@ pub fn escape_into(
             counted = run.len();
         } else if escape {
             push_escape(&mut run, c);
+            escaped = true;
         } else {
             run.push(c);
         }
@@ -619,6 +617,7 @@ pub fn escape_into(
     if !run.is_empty() {
         out.push(run_span(run, style, escapes));
     }
+    escaped
 }
 
 fn push_escape(out: &mut String, c: char) {
@@ -679,12 +678,13 @@ fn push_styled(out: &mut Vec<Span<'static>>, text: &str, style: Style) {
 /// first character: syntect ends a token where its grammar says, and a
 /// combining mark after a closing quote would start a span of its own. The
 /// graphemes that the buffer would not draw are escaped too (see `hides`).
-pub fn code_line(spans: &[Span]) -> Vec<Span<'static>> {
+/// Sets `hidden` if the line shows an escape, other than a tab.
+pub fn code_line(spans: &[Span], hidden: &mut bool) -> Vec<Span<'static>> {
     let mut escaped = Vec::new();
     let mut column = 0;
     for span in spans {
         let (text, style) = (&span.content, span.style);
-        escape_into(&mut escaped, text, style, &mut column, needs_escape_in_code);
+        *hidden |= escape_into(&mut escaped, text, style, &mut column, needs_escape_in_code);
     }
     let text: String = escaped.iter().map(|s| s.content.as_ref()).collect();
     let mut starts = Vec::new();
@@ -702,6 +702,7 @@ pub fn code_line(spans: &[Span]) -> Vec<Span<'static>> {
         offset += grapheme.symbol.len();
         let mut chars = grapheme.symbol.chars().peekable();
         if hides(grapheme.symbol) {
+            *hidden = true;
             // A wide grapheme keeps its base character, if the terminal
             // draws it alone, and shows its marks escaped.
             if let Some(base) = chars.next_if(|c| !hides(c.encode_utf8(&mut [0; 4]))) {
@@ -760,7 +761,7 @@ static SCOPE_STYLES: LazyLock<Vec<(Scope, Style)>> = LazyLock::new(|| {
 
 /// Highlights bash code, one entry per line. The innermost scope of each
 /// token that has a style gives the token's style.
-fn highlight(code: &str) -> Vec<Vec<Span<'static>>> {
+fn highlight(code: &str, hidden: &mut bool) -> Vec<Vec<Span<'static>>> {
     let syntax = SYNTAXES
         .find_syntax_by_token("bash")
         .expect("syntect has a bash syntax");
@@ -777,7 +778,7 @@ fn highlight(code: &str) -> Vec<Vec<Span<'static>>> {
             let text = region.trim_end_matches('\n').to_string();
             spans.push(Span::styled(text, scope_style(&stack)));
         }
-        lines.push(code_line(&spans));
+        lines.push(code_line(&spans, hidden));
     }
     lines
 }
@@ -1115,9 +1116,17 @@ mod tests {
         assert_eq!(shown("abc\t\tx"), format!("abc{}x", " ".repeat(13)));
     }
 
+    /// The warnings of a bash block of `code`.
+    fn warnings(code: &str) -> Vec<String> {
+        parse(&format!("```bash\n{code}```\n"))
+            .blocks
+            .remove(0)
+            .warnings
+    }
+
     #[test]
     fn code_with_control_characters_gets_a_warning() {
-        let warning = |code| block("bash", code).unwrap().warnings;
+        let warning = warnings;
         assert_eq!(warning("a\u{1b}b\n"), ["hidden characters in code"]);
         assert_eq!(warning("a\u{85}\n"), ["hidden characters in code"]);
         assert_eq!(warning("a\u{202e}\n"), ["hidden characters in code"]);
@@ -1159,7 +1168,7 @@ mod tests {
     #[test]
     fn code_escapes_the_characters_that_a_terminal_draws_as_nothing() {
         let shown = |code: &str| -> String {
-            code_line(&[Span::raw(code)])
+            code_line(&[Span::raw(code)], &mut false)
                 .iter()
                 .map(|s| s.content.as_ref())
                 .collect()
@@ -1174,15 +1183,17 @@ mod tests {
         assert_eq!(shown("e\u{301}"), "e\u{301}");
         assert_eq!(escaped_text("\u{200b}\u{200d}"), "\u{200b}\u{200d}");
         for code in ["a\u{200b}\n", "\u{301}a\n", "'\u{ff9e}\u{ff9e}'\n"] {
-            let warnings = block("bash", code).unwrap().warnings;
-            assert_eq!(warnings, ["hidden characters in code"], "{code:?}");
+            assert_eq!(warnings(code), ["hidden characters in code"], "{code:?}");
         }
-        assert!(
-            block("bash", "e\u{301}\t\u{1f600}\n")
-                .unwrap()
-                .warnings
-                .is_empty()
-        );
+        assert!(warnings("e\u{301}\t\u{1f600}\n").is_empty());
+    }
+
+    #[test]
+    fn the_warning_follows_the_escapes_after_a_tab() {
+        // The last space of a tab and U+FF9E make one grapheme of 3 columns.
+        assert_eq!(warnings("echo\t\u{ff9e}\n"), ["hidden characters in code"]);
+        // U+0301 joins the last space of the tab, and shows on it.
+        assert!(warnings("echo\t\u{301}x\n").is_empty());
     }
 
     #[test]
@@ -1251,7 +1262,8 @@ mod tests {
                 let text = |spans: &[Span]| -> String { spans.iter().map(|s| s.content.as_ref()).collect() };
                 let shown: Vec<String> = lines.iter().map(|l| text(l)).collect();
                 let code = doc.blocks[*i].code.split_terminator('\n');
-                let expected: Vec<String> = code.map(|l| text(&code_line(&[Span::raw(l)]))).collect();
+                let expected: Vec<String> =
+                    code.map(|l| text(&code_line(&[Span::raw(l)], &mut false))).collect();
                 prop_assert_eq!(&shown, &expected);
                 for span in lines.iter().flatten() {
                     for g in span.styled_graphemes(Style::new()) {
@@ -1265,7 +1277,7 @@ mod tests {
     #[test]
     fn a_highlighted_grapheme_keeps_its_combining_mark() {
         // syntect ends the string at the quote, before the U+0301.
-        let lines = highlight("cd \"/tmp/x\"\u{301}\n");
+        let lines = highlight("cd \"/tmp/x\"\u{301}\n", &mut false);
         let spans: Vec<_> = lines[0].iter().map(|s| s.content.as_ref()).collect();
         assert!(!spans.iter().any(|s| s.starts_with('\u{301}')), "{spans:?}");
     }
