@@ -48,10 +48,10 @@ Then `cargo mutants`, the check in tmux, and the review loop.
 
 ## Next
 
-1. Commit 5 of milestone 1: the terminal setup.
+1. Commit 6 of milestone 1: the blocks and their attributes.
 
 ## Open points
 
 - Before the first push, Kamal creates `KamalF/stepbook` on GitHub and adds the remote. The sandbox cannot write `.git/config`.
 - Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
-- To check in milestone 1: how Claude drives stepbook in tmux from the sandbox. If a sandboxed command stops its child processes when it ends, one script must start tmux, send the keys and capture the pane.
+- Claude drives stepbook in tmux from the sandbox with one script per check: the script starts tmux, sends the keys and captures the pane. The sandbox stops the tmux server when a command ends. Checked on 2026-11-09.

@@ -1,9 +1,13 @@
 mod run;
+mod view;
 
 use std::ffi::OsString;
 use std::io::IsTerminal;
 use std::path::PathBuf;
 use std::process::ExitCode;
+
+use ratatui::DefaultTerminal;
+use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 
 const USAGE: &str = "Usage: stepbook [--log PATH | --no-log] FILE";
 
@@ -128,7 +132,28 @@ fn open(args: &Args) -> Result<(), String> {
     if !std::io::stdout().is_terminal() {
         return Err("run stepbook in a terminal: its output is not a terminal".into());
     }
-    Ok(())
+    // try_init also installs a panic hook that restores the terminal.
+    let mut terminal = ratatui::try_init()
+        .map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
+    let result = event_loop(&mut terminal);
+    ratatui::restore();
+    result.map_err(|e| format!("terminal error: {}", io_message(&e)))
+}
+
+fn event_loop(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+    loop {
+        terminal.draw(view::draw)?;
+        if let Event::Key(key) = event::read()?
+            && key.kind == KeyEventKind::Press
+        {
+            let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+            match key.code {
+                KeyCode::Char('q') => return Ok(()),
+                KeyCode::Char('c') if ctrl => return Ok(()),
+                _ => {}
+            }
+        }
+    }
 }
 
 #[cfg(test)]
