@@ -1117,11 +1117,12 @@ mod tests {
 
     #[test]
     fn code_shows_escaped_what_a_terminal_would_not_draw() {
-        let text = "```bash\necho \"prod\u{200b}\" ok\u{fe0f}\n\u{301}ls 'x\u{ff9e}\u{ff9e}'\n```";
+        let text = "```bash\necho \"prod\u{200b}\" ok\u{fe0f}\n\u{301}ls 'x\u{ff9e}\u{ff9e}'\ntrue\u{a0}#; ls\n```";
         assert_snapshot!(render(text, 60), @r#"
         ▌ «b:#1»  «yellow:hidden characters in code»
         ▌ «blue:echo» «green:"prod»«yellow:<200b>»«green:"» ok«yellow:<fe0f>»
         ▌ «yellow:<0301>»«blue:ls» «green:'x»«yellow:<ff9e><ff9e>»«green:'»
+        ▌ «blue:true»«yellow:<a0>»«d:#; ls»
         "#);
     }
 

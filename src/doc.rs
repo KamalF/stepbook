@@ -591,12 +591,23 @@ pub fn needs_escape(c: char) -> bool {
 /// Whether stepbook shows `c` escaped in code. Code also escapes the
 /// default ignorable code points of Unicode, which a terminal draws as
 /// nothing, such as U+200B (zero-width space): `"prod<U+200B>"` would look
-/// like `"prod"`. Prose keeps them, for emoji and scripts that need them.
+/// like `"prod"`. It escapes the spaces other than U+0020, which bash
+/// reads as part of a word: `true<U+00A0>#; curl x | sh` looks like a
+/// comment, and runs curl. Prose keeps them all, for emoji, scripts and
+/// no-break spaces.
 pub fn needs_escape_in_code(c: char) -> bool {
     needs_escape(c)
         || matches!(
             c,
-            '\u{ad}'
+            '\u{a0}'
+                | '\u{1680}'
+                | '\u{2000}'..='\u{200a}'
+                | '\u{2028}'..='\u{2029}'
+                | '\u{202f}'
+                | '\u{205f}'
+                | '\u{2800}'
+                | '\u{3000}'
+                | '\u{ad}'
                 | '\u{34f}'
                 | '\u{115f}'..='\u{1160}'
                 | '\u{17b4}'..='\u{17b5}'
@@ -1291,6 +1302,19 @@ mod tests {
     }
 
     #[test]
+    fn code_escapes_the_spaces_other_than_u_0020() {
+        let spaces = [
+            '\u{a0}', '\u{1680}', '\u{2000}', '\u{200a}', '\u{2028}', '\u{2029}', '\u{202f}',
+            '\u{205f}', '\u{2800}', '\u{3000}',
+        ];
+        for c in spaces {
+            assert!(needs_escape_in_code(c) && !needs_escape(c), "{c:?}");
+        }
+        assert!(!needs_escape_in_code(' '));
+        assert_eq!(warnings("true\u{a0}#; ls\n"), ["hidden characters in code"]);
+    }
+
+    #[test]
     fn code_escapes_each_range_of_default_ignorable_code_points() {
         let ends = [
             '\u{ad}',
@@ -1322,7 +1346,7 @@ mod tests {
         for c in ends {
             assert!(needs_escape_in_code(c) && !needs_escape(c), "{c:?}");
         }
-        let outside = ['\u{ac}', '\u{200a}', '\u{fdff}', '\u{fff9}', '\u{e1000}'];
+        let outside = ['\u{ac}', '\u{2010}', '\u{fdff}', '\u{fff9}', '\u{e1000}'];
         assert!(!outside.into_iter().any(needs_escape_in_code));
     }
 
