@@ -10,8 +10,11 @@ use std::process::ExitCode;
 
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::crossterm::execute;
-use ratatui::crossterm::terminal::{DisableLineWrap, EnableLineWrap};
+use ratatui::crossterm::terminal::{
+    BeginSynchronizedUpdate, Clear, ClearType, DisableLineWrap, EnableLineWrap,
+    EndSynchronizedUpdate,
+};
+use ratatui::crossterm::{execute, queue};
 
 const USAGE: &str = "Usage: stepbook [--log PATH | --no-log] FILE";
 
@@ -199,7 +202,19 @@ fn read_runbook(path: &Path) -> Result<String, String> {
 
 fn event_loop(terminal: &mut DefaultTerminal, view: &mut view::View) -> std::io::Result<()> {
     loop {
+        // A terminal can draw a grapheme of prose wider than ratatui counts
+        // it, and shift the rest of its row. ratatui sends only the cells
+        // that changed, so the shift would stay on later frames, where a
+        // line of code can take that row. Each frame clears the screen and
+        // draws every cell, in a synchronized update that does not flicker.
+        queue!(
+            terminal.backend_mut(),
+            BeginSynchronizedUpdate,
+            Clear(ClearType::All)
+        )?;
+        terminal.swap_buffers();
         terminal.draw(|frame| view.draw(frame))?;
+        execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
         let Event::Key(key) = event::read()? else {
             continue;
         };

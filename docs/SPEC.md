@@ -175,6 +175,7 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 - If the code of a block holds a character that code escapes, other than a tab or a line feed, its info line shows the warning `hidden characters in code`. The block can still run.
 - The view and the run use the same code text, so what runs is what the view shows.
 - Program output reaches the terminal only through the vt100 screen. See 6.4.
+- Each frame clears the screen and draws every cell, in a synchronized update (mode 2026) that does not flicker. ratatui alone sends only the cells that changed, so a row that a terminal drew shifted would stay shifted, and a line of code could later take that row.
 
 ## 7. Keys
 
@@ -484,6 +485,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | A blank line always follows a code block (5.3): in a tight list item, text under a block could draw a gutter with ▌ and pass for code that does not run | 2026-11-09 |
 | Warnings never quote free text of the info string, and at most 20 characters of a key (5.2): a value of spaces and "cd /tmp/x" made a wrapped info line that passed for code | 2026-11-09 |
 | Comments in code show in italic, not dimmed (5.3): syntect took `#; curl x | sh` after a line ending with `\` for a comment, and bash ran it | 2026-11-09 |
+| Each frame repaints the whole screen, in a synchronized update (6.5): a prose row that tmux drew shifted stayed on screen, and after Page Down a line of code showed `good.example.com` where its code had `evil.example.com` | 2026-11-09 |
 | Autowrap is off while stepbook runs (11): a line of prose that a terminal draws wider than ratatui counts wrapped into the rows below, and scrolled the screen | 2026-11-09 |
 | In code, a grapheme of several code points shows escaped after its first character (6.5): terminals count their columns otherwise than ratatui. This replaces the rule of 2026-11-09 for graphemes wider than 2 columns | 2026-11-09 |
 | Code also escapes the format characters that join the next character, U+2D7F, U+FFF9 to U+FFFB and U+13430 to U+1343F (6.5): a terminal may give them a column that ratatui does not count | 2026-11-09 |
