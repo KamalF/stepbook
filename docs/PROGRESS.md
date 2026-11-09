@@ -46,7 +46,7 @@ The plan, one commit per line:
 
 The 15 commits are done. Kamal decided two extensions of 6.5 on 2026-11-09: bidi controls are escaped everywhere, and invisible characters in code.
 
-The test of commit 15 is ignored, because CI has no runbooks: `cargo test --release -- --ignored` runs it on `~/dev/claude/runbooks/`, or on `$STEPBOOK_RUNBOOKS`. On 2026-11-09, the 62 runbooks opened at 3 screen sizes in 2.9 s.
+The test of commit 15 is ignored, because CI has no runbooks: `cargo test --release -- --ignored` runs it on `~/dev/claude/runbooks/`, or on `$STEPBOOK_RUNBOOKS`. It opens each runbook at 40 by 8, the smallest screen, at 79 by 24 and at 120 by 40. On 2026-11-09, the 62 runbooks opened in 2.9 s.
 
 ### After the 15 commits
 

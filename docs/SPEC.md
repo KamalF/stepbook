@@ -60,7 +60,7 @@ stepbook [--log PATH | --no-log] FILE
 
 - stepbook parses CommonMark with GFM tables, task lists and strikethrough (pulldown-cmark).
 - The metadata-block extensions stay off. If the file starts with a `---` line, stepbook shows the lines up to the next `---` line as dimmed frontmatter. Without that closing line, the file has no frontmatter. A `---` anywhere else is a thematic break or a setext heading, as in CommonMark. This avoids upmd issue K1 (see 18).
-- If the file could make more than 200,000 table cells, stepbook shows its tables as text. The bound is its lines, ended by LF or by CR, times the most `|` on one line, plus 1. pulldown-cmark pads each short row up to the columns of its header, so 1 MB of crafted tables takes gigabytes.
+- If the file could make more than 200,000 table cells, stepbook shows its tables as text. The bound is its lines, ended by LF or by CR, times one more than the most `|` on one line. pulldown-cmark pads each short row up to the columns of its header, so 1 MB of crafted tables takes gigabytes.
 - A fenced code block with the language token `bash` or `sh` is a block. Both run with bash.
 - Other code blocks, including indented ones, are shown as code and cannot run.
 

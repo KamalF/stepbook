@@ -1498,7 +1498,7 @@ mod tests {
                 continue;
             }
             let text = String::from_utf8_lossy(&std::fs::read(&path).unwrap()).into_owned();
-            for (width, height) in [(20, 5), (79, 24), (120, 40)] {
+            for (width, height) in [(40, 8), (79, 24), (120, 40)] {
                 let size = Size::new(width, height);
                 let mut view = View::new(parse(&text), path.display().to_string());
                 screen_with_footer(&view, width, height);
