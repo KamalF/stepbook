@@ -5,10 +5,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthChar;
 
-use crate::doc::{Cell, DIM, Document, Item, Kind};
+use crate::doc::{Cell, DIM, Document, Item, Kind, WARNING, escaped};
 
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
-const WARNING: Style = Style::new().fg(Color::Yellow);
 const ERROR: Style = Style::new().fg(Color::Red);
 const BLOCK_GUTTER: Style = Style::new();
 const GUTTER: &str = "▌ ";
@@ -86,7 +85,8 @@ fn code(
         }
         let warnings = &doc.blocks[i].warnings;
         if !warnings.is_empty() {
-            info.extend([Span::raw("  "), Span::styled(warnings.join("; "), WARNING)]);
+            info.push(Span::raw("  "));
+            info.extend(escaped(&warnings.join("; "), WARNING));
         }
         out.push(Line::from(
             [vec![gutter.clone()], truncate(&info, width)].concat(),
@@ -301,6 +301,7 @@ mod tests {
     use super::*;
     use crate::doc::parse;
     use insta::assert_snapshot;
+    use proptest::prelude::*;
 
     /// The lines as text, with each styled span as «style:text». Trailing
     /// spaces are trimmed.
@@ -624,6 +625,76 @@ mod tests {
         «b:T»
         «d:━━━━━━━━━━━━━━━━━━━━»
         ");
+    }
+
+    #[test]
+    fn control_characters_in_code_show_escaped_with_a_warning() {
+        let text = "```bash\necho \u{1b}[31mred\u{7f} \u{9b}x\n```";
+        assert_snapshot!(render(text, 60), @"
+        ▌ «b:#1»  «yellow:control characters in code»
+        ▌ «blue:echo» «yellow:^[»«magenta:[»31mred«yellow:^?» «yellow:<9b>»x
+        ");
+    }
+
+    #[test]
+    fn control_characters_in_text_show_escaped() {
+        let text = "# T\u{1b}\n\na\u{1b}]52;c;eA==\u{7}b \u{85}c\n\n| \u{1b} |\n|---|";
+        assert_snapshot!(render(text, 60), @"
+        «b:T»«yellow,b:^[»
+        «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━»
+
+        a«yellow:^[»]52;c;eA==«yellow:^G»b «yellow:<85>»c
+
+        «d:┌────┐»
+        «d:│» «yellow,b:^[» «d:│»
+        «d:├────┤»
+        «d:└────┘»
+        ");
+    }
+
+    #[test]
+    fn control_characters_in_attributes_show_escaped() {
+        assert_snapshot!(render("```bash [name:\"x\u{1b}y\"]\n```", 60), @"▌ «b:#1»  «yellow:invalid name 'x^[y'»");
+    }
+
+    #[test]
+    fn tabs_in_code_expand_to_8_columns() {
+        assert_snapshot!(render("```\na\tb\n\tc\n```", 40), @"
+        «d:▌ »a       b
+        «d:▌ »        c
+        ");
+    }
+
+    fn markdown() -> impl Strategy<Value = String> {
+        let parts = prop_oneof![
+            any::<String>(),
+            Just("\n".to_string()),
+            Just("```bash [name:\"a\u{1b}\"]\n".to_string()),
+            Just("```\n".to_string()),
+            Just("> ".to_string()),
+            Just("- ".to_string()),
+            Just("| a | b |\n|---|---|\n".to_string()),
+            Just("# ".to_string()),
+            Just("<b>".to_string()),
+            Just("\t".to_string()),
+            Just("\u{1b}[2K\r".to_string()),
+            Just("\u{9b}".to_string()),
+            Just("---\n".to_string()),
+            Just("    ".to_string()),
+            Just("![a](b)".to_string()),
+        ];
+        prop::collection::vec(parts, 0..20).prop_map(|parts| parts.concat())
+    }
+
+    proptest! {
+        #[test]
+        fn no_control_character_reaches_the_view(text in markdown(), width in 1..60usize) {
+            for line in layout(&parse(&text), width) {
+                for span in &line.spans {
+                    prop_assert!(!span.content.chars().any(char::is_control), "{:?}", span);
+                }
+            }
+        }
     }
 
     #[test]

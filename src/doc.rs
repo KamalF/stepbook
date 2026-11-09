@@ -6,9 +6,11 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use syntect::parsing::{ParseState, Scope, ScopeStack, SyntaxSet};
 use syntect::util::LinesWithEndings;
+use unicode_width::UnicodeWidthChar;
 
 pub const INLINE_CODE: Style = Style::new().fg(Color::Cyan);
 pub const DIM: Style = Style::new().add_modifier(Modifier::DIM);
+pub const WARNING: Style = Style::new().fg(Color::Yellow);
 
 /// Prefixes show only the innermost levels of quotes and list items, so
 /// that the text keeps room in the view.
@@ -104,6 +106,8 @@ struct Builder {
     containers: Vec<Container>,
     /// The number of open lists.
     lists: usize,
+    /// The columns of text since the last line break, for tab stops.
+    column: usize,
     table: Option<Table>,
 }
 
@@ -227,6 +231,7 @@ impl Builder {
                 if let Some(table) = &mut self.table {
                     table.row.push(std::mem::take(&mut self.text));
                 }
+                self.column = 0;
             }
             TagEnd::TableHead | TagEnd::TableRow => {
                 if let Some(table) = &mut self.table {
@@ -273,10 +278,7 @@ impl Builder {
                             }
                         }
                         None => Kind::Code {
-                            lines: code
-                                .lines()
-                                .map(|l| vec![Span::raw(l.to_string())])
-                                .collect(),
+                            lines: code.lines().map(|l| escape_line(&[Span::raw(l)])).collect(),
                             block: None,
                         },
                     };
@@ -310,7 +312,13 @@ impl Builder {
             .iter()
             .fold(Style::new(), |a, s| a.patch(*s))
             .patch(style);
-        self.text.push(Span::styled(text.to_string(), style));
+        for (i, part) in text.split('\n').enumerate() {
+            if i > 0 {
+                self.text.push(Span::styled("\n", style));
+                self.column = 0;
+            }
+            escape_into(&mut self.text, part, style, &mut self.column);
+        }
     }
 
     /// Ends the text before a new element, and adds the blank line that
@@ -373,6 +381,7 @@ impl Builder {
 
     fn flush_text(&mut self) {
         let heading = self.heading.take();
+        self.column = 0;
         if self.text.is_empty() {
             return;
         }
@@ -430,10 +439,7 @@ fn block(info: &str, code: &str) -> Option<Block> {
         warnings: Vec::new(),
         problem: None,
     };
-    let Some(section) = section else {
-        return Some(block);
-    };
-    let (pairs, error) = parse_attributes(section);
+    let (pairs, error) = section.map_or_else(Default::default, parse_attributes);
     for (key, value) in pairs {
         if key != "name" {
             block.warnings.push(format!("unknown attribute '{key}'"));
@@ -446,7 +452,61 @@ fn block(info: &str, code: &str) -> Option<Block> {
         }
     }
     block.warnings.extend(error);
+    if code
+        .chars()
+        .any(|c| c.is_control() && !matches!(c, '\t' | '\n'))
+    {
+        block.warnings.push("control characters in code".into());
+    }
     Some(block)
+}
+
+/// Appends `text` to `out`, with each control character shown as vim
+/// shows it, in the warning color: `^[` for ESC, `^?` for DEL and `<9b>`
+/// for a C1 character (spec 6.5). A tab expands to spaces up to the next
+/// multiple of 8 columns. `column` counts the columns of the line so far.
+pub fn escape_into(out: &mut Vec<Span<'static>>, text: &str, style: Style, column: &mut usize) {
+    let mut plain = String::new();
+    for c in text.chars() {
+        if c == '\t' {
+            let spaces = 8 - *column % 8;
+            plain.extend(std::iter::repeat_n(' ', spaces));
+            *column += spaces;
+        } else if c.is_control() {
+            if !plain.is_empty() {
+                out.push(Span::styled(std::mem::take(&mut plain), style));
+            }
+            let shown = match u32::from(c) {
+                0x7f => "^?".to_string(),
+                n @ 0..0x20 => format!("^{}", char::from_u32(n + 0x40).unwrap_or('?')),
+                n => format!("<{n:02x}>"),
+            };
+            *column += shown.len();
+            out.push(Span::styled(shown, style.patch(WARNING)));
+        } else {
+            plain.push(c);
+            *column += c.width().unwrap_or(0);
+        }
+    }
+    if !plain.is_empty() {
+        out.push(Span::styled(plain, style));
+    }
+}
+
+/// One line of text, with its control characters escaped.
+pub fn escaped(text: &str, style: Style) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    escape_into(&mut out, text, style, &mut 0);
+    out
+}
+
+fn escape_line(spans: &[Span]) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut column = 0;
+    for span in spans {
+        escape_into(&mut out, &span.content, span.style, &mut column);
+    }
+    out
 }
 
 static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
@@ -500,8 +560,7 @@ fn highlight(code: &str) -> Vec<Vec<Span<'static>>> {
             start = end;
         }
         spans.push(Span::styled(text[start..].to_string(), scope_style(&stack)));
-        spans.retain(|s| !s.content.is_empty());
-        lines.push(spans);
+        lines.push(escape_line(&spans));
     }
     lines
 }
@@ -721,6 +780,15 @@ mod tests {
         }
 
         #[test]
+        fn escaped_text_has_no_control_character_and_tracks_its_width(text in any::<String>()) {
+            let mut column = 0;
+            let mut out = Vec::new();
+            escape_into(&mut out, &text, Style::new(), &mut column);
+            prop_assert!(out.iter().all(|s| !s.content.chars().any(char::is_control)));
+            prop_assert_eq!(column, out.iter().map(Span::width).sum::<usize>());
+        }
+
+        #[test]
         fn any_info_string_parses_without_panic(text in any::<String>()) {
             block(&format!("bash [{text}"), "");
         }
@@ -769,6 +837,55 @@ mod tests {
             problems,
             [Some("duplicate name"), None, Some("duplicate name")]
         );
+    }
+
+    fn shown(text: &str) -> String {
+        escaped(text, Style::new())
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
+    fn control_characters_show_as_vim_shows_them() {
+        let cases = [
+            ("a\u{1b}[2K\rb", "a^[[2K^Mb"),
+            ("\0\u{1f}\n", "^@^_^J"),
+            ("\u{7f}", "^?"),
+            ("\u{80}\u{9b}\u{9f}", "<80><9b><9f>"),
+            ("é\u{a0}日", "é\u{a0}日"),
+        ];
+        for (text, expected) in cases {
+            assert_eq!(shown(text), expected, "{text:?}");
+        }
+    }
+
+    #[test]
+    fn escapes_use_the_warning_color() {
+        let spans = escaped("a\u{1b}", Style::new().add_modifier(Modifier::BOLD));
+        assert_eq!(
+            spans[0],
+            Span::styled("a", Style::new().add_modifier(Modifier::BOLD))
+        );
+        assert_eq!(
+            spans[1].style,
+            Style::new().add_modifier(Modifier::BOLD).fg(Color::Yellow)
+        );
+    }
+
+    #[test]
+    fn tabs_expand_to_the_next_multiple_of_8_columns() {
+        assert_eq!(shown("\ta\tbc"), "        a       bc");
+        assert_eq!(shown("日本語\tx"), "日本語  x");
+        assert_eq!(shown("^\u{1b}\tx"), "^^[     x");
+    }
+
+    #[test]
+    fn code_with_control_characters_gets_a_warning() {
+        let warning = |code| block("bash", code).unwrap().warnings;
+        assert_eq!(warning("a\u{1b}b\n"), ["control characters in code"]);
+        assert_eq!(warning("a\u{85}\n"), ["control characters in code"]);
+        assert!(warning("a\tb\n").is_empty());
     }
 
     #[test]

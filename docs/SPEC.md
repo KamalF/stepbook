@@ -165,6 +165,7 @@ stepbook never sends a control character from the file or from a run to the term
 - stepbook shows each control character as vim does: `^[` for ESC, `^M` for a carriage return, `^?` for DEL, and `<9b>` for a C1 character. The escapes use the warning color.
 - This applies to the text of the file, to its name, and to text from a run, such as a directory name in the footer.
 - A tab is not escaped. It expands to spaces, up to the next multiple of 8 columns.
+- A line feed is a line break in the text and the code of the file. In one-line text, such as a file name, it shows as `^J`.
 - If the code of a block holds a control character other than a tab, its info line shows the warning `control characters in code`. The block can still run.
 - The view and the run use the same code text, so what runs is what the view shows.
 - Program output reaches the terminal only through the vt100 screen. See 6.4.

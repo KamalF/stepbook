@@ -48,7 +48,7 @@ Then `cargo mutants`, the check in tmux, and the review loop.
 
 ## Next
 
-1. Commit 12 of milestone 1: control characters.
+1. Commit 13 of milestone 1: the layout.
 
 ## Open points
 
