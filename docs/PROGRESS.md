@@ -59,6 +59,7 @@ The test of commit 15 is ignored, because CI has no runbooks: `cargo test --rele
   - Round 4: 1 blocker and 5 should-fix, fixed: CR line ends past the table bound, the warning after a tab, deep quotes that make the parse quadratic, the highlight budget, and the squares of long lines. Kamal chose to escape spaces other than U+0020 in code, and a minimum terminal size of 40 by 8.
   - Round 5: 1 blocker and 2 should-fix, fixed: a code block is now always followed by a blank line, the nesting limit counts indent, and code escapes the format characters that join the next one.
   - Round 6: the code reviewer found no defect. The security reviewer found 1 blocker and 2 should-fix, fixed: code escapes each grapheme of several code points after its first character, autowrap is off while stepbook runs, and warnings no longer quote free text of the info string.
+  - Round 7: 2 should-fix, fixed: Page Down no longer selects an earlier block, and comments in code show in italic, not dimmed, since the highlighting can take running code for a comment.
 
 ### Kamal's manual checklist
 
