@@ -116,6 +116,8 @@ struct Builder {
     table: Option<Table>,
     /// The source of the HTML block being read.
     html: Option<String>,
+    /// The bytes of code highlighted so far.
+    highlighted: usize,
 }
 
 /// The table being read.
@@ -318,8 +320,11 @@ impl Builder {
                         self.blocks.len() - 1
                     });
                     let lines = match block {
-                        Some(_) => highlight(&code),
-                        None => code.lines().map(|l| escaped(l, Style::new())).collect(),
+                        Some(_) if highlights(&code, self.highlighted) => {
+                            self.highlighted += code.len();
+                            highlight(&code)
+                        }
+                        _ => code.lines().map(|l| escaped(l, Style::new())).collect(),
                     };
                     self.push_item(Kind::Code { lines, block });
                 }
@@ -590,6 +595,21 @@ fn escape_line(spans: &[Span]) -> Vec<Span<'static>> {
         escape_into(&mut out, &span.content, span.style, &mut column);
     }
     out
+}
+
+/// syntect is slow on some bash: a line of 80 KB takes 10 s, and 32 KB
+/// of heredoc about 1 s. So a block is highlighted only if its lines are
+/// at most `HIGHLIGHT_LINE` bytes long, and while the file has had less
+/// than `HIGHLIGHT_BUDGET` bytes of highlighted code. On 2026-11-09, the
+/// largest runbook of ~/dev/claude/runbooks had 16 KB of bash, and its
+/// longest line had 386 bytes.
+const HIGHLIGHT_LINE: usize = 1_000;
+const HIGHLIGHT_BUDGET: usize = 32 * 1024;
+
+/// Whether to highlight the code of a block, after `used` bytes of
+/// highlighted code.
+fn highlights(code: &str, used: usize) -> bool {
+    used + code.len() <= HIGHLIGHT_BUDGET && code.lines().all(|l| l.len() <= HIGHLIGHT_LINE)
 }
 
 static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
@@ -991,6 +1011,15 @@ mod tests {
         };
         let lengths: Vec<_> = rows.iter().map(Vec::len).collect();
         assert_eq!(lengths, [3, 1, 2]);
+    }
+
+    #[test]
+    fn highlighting_stops_at_long_lines_and_at_the_budget() {
+        let line = |n| format!("{}\n", "a".repeat(n));
+        assert!(highlights(&line(1_000), 0));
+        assert!(!highlights(&line(1_001), 0));
+        assert!(highlights("ls\n", HIGHLIGHT_BUDGET - 3));
+        assert!(!highlights("ls\n", HIGHLIGHT_BUDGET - 2));
     }
 
     #[test]

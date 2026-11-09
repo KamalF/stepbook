@@ -94,7 +94,7 @@ systemctl --user restart api
 | Thematic break | A dimmed rule. |
 | Raw HTML | Shown dimmed, as source. An HTML block keeps its lines, which wrap at any character. A line end in inline HTML is a space. |
 | Image | `[image: <alt text>]`. |
-| Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted. Long lines wrap at any character, so the view shows all the code that runs. A long info line wraps too, so its warnings always show. |
+| Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted, except in a block with a line longer than 1,000 bytes, and after 32 KB of highlighted code in the file. Long lines wrap at any character, so the view shows all the code that runs. A long info line wraps too, so its warnings always show. |
 | Other code block | The code with a dimmed gutter, not highlighted. Long lines wrap as in a block. |
 
 All colors come from the terminal's 16-color palette, so they follow the terminal's theme. stepbook sets no background color.
@@ -472,3 +472,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | `unicode-width` is dropped. stepbook measures each grapheme with ratatui's `CellWidth`, as the ratatui buffer does: a sum of character widths gets emoji with a variation selector wrong | 2026-11-09 |
 | stepbook parses its arguments with its own code, not with clap: it has four options | 2026-11-09 |
 | Bidi controls are escaped as control characters are (6.5) | 2026-11-09 |
+| Highlighting stops at lines longer than 1,000 bytes and after 32 KB of code (5.3): syntect takes 10 s on a line of 80 KB. The largest runbook has 16 KB of bash, with lines of at most 386 bytes | 2026-11-09 |

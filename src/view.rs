@@ -935,6 +935,16 @@ mod tests {
     }
 
     #[test]
+    fn a_block_with_a_long_line_is_not_highlighted() {
+        let text = format!("```bash\nls\necho {}\n```", "a".repeat(1_000));
+        let lines = markup(&layout(&parse(&text), 2_000, None).lines);
+        assert_eq!(
+            lines,
+            format!("▌ «b:#1»\n▌ ls\n▌ echo {}", "a".repeat(1_000))
+        );
+    }
+
+    #[test]
     fn other_code_blocks_have_a_dim_gutter_and_no_highlighting() {
         assert_snapshot!(render("```python\nif x: 'a'\n```\n\n    ls '$x'", 40), @"
         «d:▌ »if x: 'a'
