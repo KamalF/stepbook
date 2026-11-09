@@ -95,7 +95,7 @@ systemctl --user restart api
 | Thematic break | A dimmed rule. |
 | Raw HTML | Shown dimmed, as source. An HTML block keeps its lines, which wrap at any character. A line end in inline HTML is a space. |
 | Image | `[image: <alt text>]`. |
-| Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted, except in a block with a line longer than 1,000 bytes, or in a block that would bring the highlighted code of the file past 32 KB, or past 4,000,000 for the sum of the squares of its line lengths. Long lines wrap at any character, so the view shows all the code that runs. A long info line wraps too, so its warnings always show. |
+| Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted, except in a block with a line longer than 1,000 bytes, or in a block that would bring the highlighted code of the file past 32 KB, or past 4,000,000 for the sum of the squares of its line lengths. Long lines wrap at any character, so the view shows all the code that runs. A long info line wraps too, so its warnings always show. A blank line always follows a code block, even in a tight list: text right under it could pass for code. |
 | Other code block | The code with a dimmed gutter, not highlighted. Long lines wrap as in a block. |
 
 All colors come from the terminal's 16-color palette, so they follow the terminal's theme. stepbook sets no background color.
@@ -479,6 +479,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | A line of FILE must start with at most 100 quote or list markers (4): pulldown-cmark rescans every open container on each line, and 600 KB of deep quotes and lazy lines took 30 s | 2026-11-09 |
 | FILE must be a regular file of at most 1 MB (4): a link to /dev/zero filled the memory, and the view lays out the whole file on each frame. The largest runbook has 22 KB | 2026-11-09 |
 | The minimum terminal size is 40 columns and 8 rows (6.1), at Kamal's choice: at 6 columns, 1 MB of tabs in code took 2.5 GB per frame | 2026-11-09 |
+| A blank line always follows a code block (5.3): in a tight list item, text under a block could draw a gutter with ▌ and pass for code that does not run | 2026-11-09 |
 | Code also escapes the spaces other than U+0020 (6.5), at Kamal's choice: bash reads them as part of a word | 2026-11-09 |
 | Code also escapes the default ignorable code points and the graphemes of width 0; prose keeps them (6.5). The warning becomes `hidden characters in code` | 2026-11-09 |
 | Highlighting stops at lines longer than 1,000 bytes and after 32 KB of code (5.3): syntect takes 10 s on a line of 80 KB. The largest runbook has 16 KB of bash, with lines of at most 386 bytes | 2026-11-09 |

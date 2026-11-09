@@ -384,21 +384,19 @@ impl Builder {
     fn start_element(&mut self) {
         self.flush_text();
         if std::mem::take(&mut self.blank) {
-            // The prefix of a blank line keeps its quote bars, with no
-            // trailing spaces.
-            let (_, mut rest) = self.prefixes(false);
-            while rest.last().is_some_and(|s| s.content.trim().is_empty()) {
-                rest.pop();
-            }
-            if let Some(last) = rest.last_mut() {
-                *last = Span::styled(last.content.trim_end().to_string(), last.style);
-            }
-            self.items.push(Item {
-                first: rest.clone(),
-                rest,
-                kind: Kind::Blank,
-            });
+            self.push_blank();
         }
+    }
+
+    /// Adds a blank line. Its prefix has as many levels as the lines
+    /// around it, so that the view cuts the same outer levels.
+    fn push_blank(&mut self) {
+        let (_, rest) = self.prefixes(false);
+        self.items.push(Item {
+            first: rest.clone(),
+            rest,
+            kind: Kind::Blank,
+        });
     }
 
     /// The prefixes of the first line and of the other lines of the next
@@ -453,6 +451,18 @@ impl Builder {
 
     /// Adds an item, with the prefixes of the containers around it.
     fn push_item(&mut self, kind: Kind) {
+        // A code block always ends with a blank line, or with the end of
+        // the file. Text right under it would look like more code: the
+        // text of a tight list item can draw a gutter with "▌".
+        if matches!(
+            self.items.last(),
+            Some(Item {
+                kind: Kind::Code { .. },
+                ..
+            })
+        ) {
+            self.push_blank();
+        }
         let (first, rest) = self.prefixes(true);
         self.items.push(Item { first, rest, kind });
     }
@@ -1417,6 +1427,23 @@ mod tests {
         for (text, expected) in cases {
             assert_eq!(nesting(text), expected, "{text:?}");
         }
+    }
+
+    #[test]
+    fn a_code_block_is_followed_by_a_blank_line() {
+        let text =
+            "- Dry run first:\n  ```bash\n  ls \\\n  ```\n  ▌ --dry-run\n- ```\n  x\n  ```\n- next";
+        let kinds: Vec<_> = (parse(text).items.iter())
+            .map(|item| match item.kind {
+                Kind::Code { .. } => "code",
+                Kind::Blank => "blank",
+                _ => "other",
+            })
+            .collect();
+        assert_eq!(
+            kinds,
+            ["other", "code", "blank", "other", "code", "blank", "other"]
+        );
     }
 
     #[test]

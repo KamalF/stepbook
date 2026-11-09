@@ -787,6 +787,7 @@ mod tests {
         assert_snapshot!(render("1. a\n2. ```\n   ```\n3. c", 40), @"
         1. a
         2. «d:▌ »
+
         3. c
         ");
     }
@@ -824,12 +825,13 @@ mod tests {
     }
 
     #[test]
-    fn a_tight_item_that_ends_with_code_has_no_blank_line_after_it() {
+    fn a_block_at_the_end_of_a_tight_item_keeps_a_blank_line_after_it() {
         let text = "1. Do x:\n   ```bash\n   ls\n   ```\n2. Next\n\nafter";
         assert_snapshot!(render(text, 40), @"
         1. Do x:
            ▌ «b:#1»
            ▌ «blue:ls»
+
         2. Next
 
         after
@@ -853,7 +855,7 @@ mod tests {
         • item
 
           «d:│ »a
-          «d:│»
+          «d:│ »
           «d:│ »b
         ");
     }
@@ -864,9 +866,9 @@ mod tests {
         assert_snapshot!(render(text, 12), @"
         «d:│ »one two
         «d:│ »three
-        «d:│»
+        «d:│ »
         «d:│ │ »nested
-        «d:│»
+        «d:│ »
         «d:│ »• item
 
         after
@@ -1046,7 +1048,7 @@ mod tests {
         «d:──────────»
 
         «d:│ »b
-        «d:│»
+        «d:│ »
         «d:│ ────────»
         ");
     }
@@ -1175,6 +1177,17 @@ mod tests {
     }
 
     proptest! {
+        // Text right under a code block would look like more code.
+        #[test]
+        fn a_code_block_never_touches_the_next_item(text in markdown()) {
+            let items = parse(&text).items;
+            for pair in items.windows(2) {
+                if matches!(pair[0].kind, Kind::Code { .. }) {
+                    prop_assert!(matches!(pair[1].kind, Kind::Blank), "{:?}", pair[1]);
+                }
+            }
+        }
+
         // The layout test below checks every path of the text; this one
         // checks the wiring of the screen: the title, the sidebar and the
         // drawing of the lines.
