@@ -48,7 +48,7 @@ Then `cargo mutants`, the check in tmux, and the review loop.
 
 ## Next
 
-1. Commit 6 of milestone 1: the blocks and their attributes.
+1. Commit 7 of milestone 1: paragraphs, headings and inline styles.
 
 ## Open points
 

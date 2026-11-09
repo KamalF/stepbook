@@ -59,7 +59,7 @@ stepbook [--log PATH | --no-log] FILE
 ### 5.1 Parsing
 
 - stepbook parses CommonMark with GFM tables, task lists and strikethrough (pulldown-cmark).
-- The metadata-block extensions stay off. If the file starts with a `---` line, stepbook shows the lines up to the next `---` line as dimmed frontmatter. A `---` anywhere else is a thematic break or a setext heading, as in CommonMark. This avoids upmd issue K1 (see 18).
+- The metadata-block extensions stay off. If the file starts with a `---` line, stepbook shows the lines up to the next `---` line as dimmed frontmatter. Without that closing line, the file has no frontmatter. A `---` anywhere else is a thematic break or a setext heading, as in CommonMark. This avoids upmd issue K1 (see 18).
 - A fenced code block with the language token `bash` or `sh` is a block. Both run with bash.
 - Other code blocks, including indented ones, are shown as code and cannot run.
 
@@ -74,9 +74,10 @@ systemctl --user restart api
 ````
 
 - The language token is the text before the first `[`.
-- The attribute section is `key:value` pairs, separated by commas or spaces. A value is either unquoted (`[A-Za-z0-9_+#/.~-]+`) or double-quoted. In quoted values, `\"` and `\\` are decoded.
-- `name` is the only recognized key. A name must match `[A-Za-z0-9_.-]+`.
-- An unknown key, a syntax error or an invalid name shows a warning on the block's info line, in the warning color. The block can still run.
+- The attribute section is `key:value` pairs between `[` and `]`, separated by commas or spaces. A key matches `[A-Za-z0-9_-]+`. A value is either unquoted (`[A-Za-z0-9_+#/.~-]+`) or double-quoted. In quoted values, `\"` and `\\` are decoded.
+- stepbook reads the info string as written in the file. CommonMark decodes backslash escapes and entities in info strings, which would change quoted values.
+- `name` is the only recognized key. A name must match `[A-Za-z0-9_.-]+`. If `name` is given twice, the first one counts.
+- An unknown key, a syntax error or an invalid name shows a warning on the block's info line, in the warning color. The block can still run. After a syntax error, the pairs before it still count.
 - If several blocks have the same name, all of them show `duplicate name` and cannot run until the file is fixed.
 
 ### 5.3 Rendering

@@ -1,3 +1,8 @@
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the layout commit of milestone 1 uses it")
+)]
+mod doc;
 mod run;
 mod view;
 
