@@ -1,0 +1,4 @@
+# Copy only the files that git tracks or would track: the sandbox of
+# Claude Code masks some untracked files, such as .claude/, which a copy
+# cannot read.
+gitignore = true

@@ -537,7 +537,7 @@ fn join_styles(chars: Vec<Styled>) -> Vec<Span<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::doc::parse;
+    use crate::doc::{needs_escape, parse};
     use insta::assert_snapshot;
     use proptest::prelude::*;
     use ratatui::Terminal;
@@ -869,10 +869,10 @@ mod tests {
 
     #[test]
     fn control_characters_in_code_show_escaped_with_a_warning() {
-        let text = "```bash\necho \u{1b}[31mred\u{7f} \u{9b}x\n```";
+        let text = "```bash\necho \u{1b}[31mred\u{7f} \u{9b}x \u{202e}y\n```";
         assert_snapshot!(render(text, 60), @"
         ▌ «b:#1»  «yellow:control characters in code»
-        ▌ «blue:echo» «yellow:^[»«magenta:[»31mred«yellow:^?» «yellow:<9b>»x
+        ▌ «blue:echo» «yellow:^[»«magenta:[»31mred«yellow:^?» «yellow:<9b>»x «yellow:<202e>»y
         ");
     }
 
@@ -919,6 +919,7 @@ mod tests {
             Just("\t".to_string()),
             Just("\u{1b}[2K\r".to_string()),
             Just("\u{9b}".to_string()),
+            Just("\u{202e}".to_string()),
             Just("---\n".to_string()),
             Just("    ".to_string()),
             Just("![a](b)".to_string()),
@@ -931,7 +932,7 @@ mod tests {
         fn no_control_character_reaches_the_view(text in markdown(), width in 1..60usize) {
             for line in layout(&parse(&text), width, None).lines {
                 for span in &line.spans {
-                    prop_assert!(!span.content.chars().any(char::is_control), "{:?}", span);
+                    prop_assert!(!span.content.chars().any(needs_escape), "{:?}", span);
                 }
             }
         }

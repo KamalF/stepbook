@@ -454,16 +454,24 @@ fn block(info: &str, code: &str) -> Option<Block> {
     block.warnings.extend(error);
     if code
         .chars()
-        .any(|c| c.is_control() && !matches!(c, '\t' | '\n'))
+        .any(|c| needs_escape(c) && !matches!(c, '\t' | '\n'))
     {
         block.warnings.push("control characters in code".into());
     }
     Some(block)
 }
 
-/// Appends `text` to `out`, with each control character shown as vim
-/// shows it, in the warning color: `^[` for ESC, `^?` for DEL and `<9b>`
-/// for a C1 character (spec 6.5). A tab expands to spaces up to the next
+/// Whether stepbook shows `c` escaped: a control character, or a bidi
+/// control, which can reorder text in terminals that support right-to-left
+/// scripts (spec 6.5).
+pub fn needs_escape(c: char) -> bool {
+    c.is_control()
+        || matches!(c, '\u{61c}' | '\u{200e}' | '\u{200f}' | '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+}
+
+/// Appends `text` to `out`, with each character that needs an escape
+/// shown as vim shows it, in the warning color: `^[` for ESC, `^?` for
+/// DEL, `<9b>` for a C1 character and `<202e>` for a bidi control. A tab expands to spaces up to the next
 /// multiple of 8 columns. `column` counts the columns of the line so far.
 pub fn escape_into(out: &mut Vec<Span<'static>>, text: &str, style: Style, column: &mut usize) {
     let mut plain = String::new();
@@ -472,14 +480,15 @@ pub fn escape_into(out: &mut Vec<Span<'static>>, text: &str, style: Style, colum
             let spaces = 8 - *column % 8;
             plain.extend(std::iter::repeat_n(' ', spaces));
             *column += spaces;
-        } else if c.is_control() {
+        } else if needs_escape(c) {
             if !plain.is_empty() {
                 out.push(Span::styled(std::mem::take(&mut plain), style));
             }
             let shown = match u32::from(c) {
                 0x7f => "^?".to_string(),
                 n @ 0..0x20 => format!("^{}", char::from_u32(n + 0x40).unwrap_or('?')),
-                n => format!("<{n:02x}>"),
+                n @ 0x80..0x100 => format!("<{n:02x}>"),
+                n => format!("<{n:04x}>"),
             };
             *column += shown.len();
             out.push(Span::styled(shown, style.patch(WARNING)));
@@ -784,7 +793,7 @@ mod tests {
             let mut column = 0;
             let mut out = Vec::new();
             escape_into(&mut out, &text, Style::new(), &mut column);
-            prop_assert!(out.iter().all(|s| !s.content.chars().any(char::is_control)));
+            prop_assert!(out.iter().all(|s| !s.content.chars().any(needs_escape)));
             prop_assert_eq!(column, out.iter().map(Span::width).sum::<usize>());
         }
 
@@ -853,6 +862,11 @@ mod tests {
             ("\0\u{1f}\n", "^@^_^J"),
             ("\u{7f}", "^?"),
             ("\u{80}\u{9b}\u{9f}", "<80><9b><9f>"),
+            ("a\u{202e}b\u{2066}", "a<202e>b<2066>"),
+            (
+                "\u{61c}\u{200e}\u{200f}\u{202a}\u{2069}",
+                "<061c><200e><200f><202a><2069>",
+            ),
             ("é\u{a0}日", "é\u{a0}日"),
         ];
         for (text, expected) in cases {
@@ -885,6 +899,7 @@ mod tests {
         let warning = |code| block("bash", code).unwrap().warnings;
         assert_eq!(warning("a\u{1b}b\n"), ["control characters in code"]);
         assert_eq!(warning("a\u{85}\n"), ["control characters in code"]);
+        assert_eq!(warning("a\u{202e}\n"), ["control characters in code"]);
         assert!(warning("a\tb\n").is_empty());
     }
 

@@ -160,13 +160,15 @@ To keep this working, stepbook never interferes with the mouse:
 
 ### 6.5 Control characters
 
-stepbook never sends a control character from the file or from a run to the terminal. Otherwise a runbook could hide part of a command, or write to the clipboard (upmd issue S1, see 18).
+stepbook never sends a control character or a bidi control from the file or from a run to the terminal. Otherwise a runbook could hide part of a command, or write to the clipboard (upmd issue S1, see 18). A bidi control can reorder text in terminals that support right-to-left scripts.
 
-- stepbook shows each control character as vim does: `^[` for ESC, `^M` for a carriage return, `^?` for DEL, and `<9b>` for a C1 character. The escapes use the warning color.
+In this section, control characters are the C0 characters, DEL and the C1 characters. Bidi controls are U+061C, U+200E, U+200F, U+202A to U+202E and U+2066 to U+2069.
+
+- stepbook shows each control character as vim does: `^[` for ESC, `^M` for a carriage return, `^?` for DEL, and `<9b>` for a C1 character. It shows a bidi control as its code point, such as `<202e>`. The escapes use the warning color.
 - This applies to the text of the file, to its name, and to text from a run, such as a directory name in the footer.
 - A tab is not escaped. It expands to spaces, up to the next multiple of 8 columns.
 - A line feed is a line break in the text and the code of the file. In one-line text, such as a file name, it shows as `^J`.
-- If the code of a block holds a control character other than a tab, its info line shows the warning `control characters in code`. The block can still run.
+- If the code of a block holds a bidi control, or a control character other than a tab, its info line shows the warning `control characters in code`. The block can still run.
 - The view and the run use the same code text, so what runs is what the view shows.
 - Program output reaches the terminal only through the vt100 screen. See 6.4.
 
@@ -468,3 +470,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | stepbook installs with mise from the GitHub repository, and from releases on crates.io | 2026-11-09 |
 | New dependency: `unicode-width`, for the word wrap. ratatui already depends on it | 2026-11-09 |
 | stepbook parses its arguments with its own code, not with clap: it has four options | 2026-11-09 |
+| Bidi controls are escaped as control characters are (6.5) | 2026-11-09 |
