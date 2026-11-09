@@ -481,8 +481,8 @@ fn source_lines(text: &str) -> Vec<Vec<Span<'static>>> {
 pub const MAX_NESTING: usize = 1_000;
 
 /// The deepest nesting at the start of a line of `text`: its quote and
-/// list markers, and each 2 columns of indent before or between them, with
-/// a tab as 4 columns. A list item stays open through the indent of the
+/// list markers, and each 2 columns of the whitespace around them, with a
+/// tab as 4 columns. A list item stays open through the indent of the
 /// lines after it, so the indent counts too.
 pub fn nesting(text: &str) -> usize {
     let lines = text.split_terminator(['\n', '\r']);

@@ -46,7 +46,7 @@ stepbook [--log PATH | --no-log] FILE
 
 | Option | Effect |
 |---|---|
-| `FILE` | The Markdown runbook: a regular file of at most 1 MB, whose lines nest at most 1,000 levels. A level is a quote or list marker at the start of a line, or 2 columns of indent before or between them, with a tab as 4 columns. Required. |
+| `FILE` | The Markdown runbook: a regular file of at most 1 MB, whose lines nest at most 1,000 levels. A level is a quote or list marker at the start of a line, or 2 columns of the whitespace at the start of the line, around the markers, with a tab as 4 columns. Required. |
 | `--log PATH`, `--log=PATH` | Log file. The default is `FILE` with its extension replaced by `.log`. |
 | `--no-log` | Writes no log. |
 | `-h`, `--help` / `-V`, `--version` | Prints help or the version. |

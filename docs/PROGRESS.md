@@ -58,6 +58,7 @@ The test of commit 15 is ignored, because CI has no runbooks: `cargo test --rele
   - Round 3: 1 blocker and 3 should-fix, fixed: very wide graphemes in code, the warning for escaped graphemes, padded tables, and the tests of the code escapes.
   - Round 4: 1 blocker and 5 should-fix, fixed: CR line ends past the table bound, the warning after a tab, deep quotes that make the parse quadratic, the highlight budget, and the squares of long lines. Kamal chose to escape spaces other than U+0020 in code, and a minimum terminal size of 40 by 8.
   - Round 5: 1 blocker and 2 should-fix, fixed: a code block is now always followed by a blank line, the nesting limit counts indent, and code escapes the format characters that join the next one.
+  - Round 6: the code reviewer found no defect. The security reviewer found 1 blocker and 2 should-fix, fixed: code escapes each grapheme of several code points after its first character, autowrap is off while stepbook runs, and warnings no longer quote free text of the info string.
 
 ### Kamal's manual checklist
 
@@ -76,4 +77,5 @@ What tmux cannot show, in herdr in Ghostty:
 - Before the first push, Kamal creates `KamalF/stepbook` on GitHub and adds the remote. The sandbox cannot write `.git/config`.
 - Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
 - Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal); each key lays out the page twice, and each frame lays out the whole document: 1 MB of tabs in code takes about 0.9 s per frame. Milestone 2 needs a layout cache per width to redraw output, which removes both. Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
+- Before milestone 4 writes the log: the default log of a FILE named `x.log` is the runbook itself. Spec 4 needs a rule.
 - Claude drives stepbook in tmux from the sandbox with one script per check: the script starts tmux, sends the keys and captures the pane. The sandbox stops the tmux server when a command ends. Checked on 2026-11-09.
