@@ -660,9 +660,36 @@ fn highlight(code: &str) -> Vec<Vec<Span<'static>>> {
             let text = region.trim_end_matches('\n').to_string();
             spans.push(Span::styled(text, scope_style(&stack)));
         }
-        lines.push(escape_line(&spans));
+        lines.push(align_to_graphemes(escape_line(&spans)));
     }
     lines
+}
+
+/// Moves each span boundary that falls inside a grapheme to the end of
+/// that grapheme, which then takes the style of its first character.
+/// syntect ends a token where its grammar says: a combining mark after a
+/// closing quote would start a span of its own, and the ratatui buffer
+/// drops a grapheme of width 0. The spans hold escaped text, which has no
+/// control character for `styled_graphemes` to drop.
+fn align_to_graphemes(spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+    let mut starts = Vec::new();
+    let mut offset = 0;
+    for span in &spans {
+        starts.push((offset, span.style));
+        offset += span.content.len();
+    }
+    let mut out: Vec<Span> = Vec::new();
+    let mut offset = 0;
+    for grapheme in Span::raw(text.as_str()).styled_graphemes(Style::new()) {
+        let style = starts[starts.partition_point(|(start, _)| *start <= offset) - 1].1;
+        match out.last_mut() {
+            Some(last) if last.style == style => last.content.to_mut().push_str(grapheme.symbol),
+            _ => out.push(Span::styled(grapheme.symbol.to_string(), style)),
+        }
+        offset += grapheme.symbol.len();
+    }
+    out
 }
 
 fn scope_style(stack: &ScopeStack) -> Style {
@@ -1024,6 +1051,14 @@ mod tests {
         assert!(!highlights(&line(1_001), 0));
         assert!(highlights("ls\n", HIGHLIGHT_BUDGET - 3));
         assert!(!highlights("ls\n", HIGHLIGHT_BUDGET - 2));
+    }
+
+    #[test]
+    fn a_highlighted_grapheme_keeps_its_combining_mark() {
+        // syntect ends the string at the quote, before the U+0301.
+        let lines = highlight("cd \"/tmp/x\"\u{301}\n");
+        let spans: Vec<_> = lines[0].iter().map(|s| s.content.as_ref()).collect();
+        assert!(!spans.iter().any(|s| s.starts_with('\u{301}')), "{spans:?}");
     }
 
     #[test]
