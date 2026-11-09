@@ -16,7 +16,9 @@ const ERROR: Style = Style::new().fg(Color::Red);
 const BLOCK_GUTTER: Style = Style::new();
 const SELECTED: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 const GUTTER: &str = "▌ ";
-const WRAP_MARK: &str = "↪ ";
+/// The second column of the gutter on a row that goes on from a wrapped
+/// line of code. Code text never reaches the gutter, so it cannot fake it.
+const WRAP_MARK: &str = "↪";
 /// The sidebar shows on terminals at least this wide.
 const SIDEBAR_SCREEN_WIDTH: u16 = 80;
 
@@ -291,9 +293,7 @@ pub fn layout(doc: &Document, width: usize, selected: Option<usize>) -> Page {
             }
             Kind::Table(aligns, rows) => table(aligns, rows, width),
             Kind::Code { lines, block } => code(doc, lines, *block, selected, width),
-            Kind::Source(lines) => (lines.iter())
-                .flat_map(|l| hard_wrap(l, width, width))
-                .collect(),
+            Kind::Source(lines) => lines.iter().flat_map(|l| hard_wrap(l, width)).collect(),
             Kind::Rule => vec![Line::from(Span::styled("─".repeat(width), DIM))],
             Kind::Blank => vec![Line::default()],
         };
@@ -373,15 +373,17 @@ fn code(
             out.push(Line::from([vec![gutter.clone()], line.spans].concat()));
         }
     }
-    // A row that goes on from a wrapped line starts with a mark: without
-    // it, a part of a line that starts with "#" would pass for a comment.
-    let rest = width.saturating_sub(WRAP_MARK.chars().count()).max(1);
+    // A row that goes on from a wrapped line has a mark in its gutter:
+    // without it, a part of a line that starts with "#" would pass for a
+    // comment.
+    let wrapped = [Span::styled("▌", style), Span::styled(WRAP_MARK, DIM)];
     for line in lines {
-        for (i, part) in hard_wrap(line, width, rest).into_iter().enumerate() {
-            let mut spans = vec![gutter.clone()];
-            if i > 0 {
-                spans.push(Span::styled(WRAP_MARK, DIM));
-            }
+        for (i, part) in hard_wrap(line, width).into_iter().enumerate() {
+            let mut spans = if i == 0 {
+                vec![gutter.clone()]
+            } else {
+                wrapped.to_vec()
+            };
             spans.extend(part.spans);
             out.push(Line::from(spans));
         }
@@ -497,9 +499,8 @@ fn truncate(text: &[Span], width: usize) -> Vec<Span<'static>> {
 }
 
 /// Wraps styled text at `width` columns, at any grapheme.
-fn hard_wrap(text: &[Span], first: usize, rest: usize) -> Vec<Line<'static>> {
-    let mut wrapper = Wrapper::new(first);
-    wrapper.rest_width = rest;
+fn hard_wrap(text: &[Span], width: usize) -> Vec<Line<'static>> {
+    let mut wrapper = Wrapper::new(width);
     for glyph in glyphs(text).flatten() {
         wrapper.push(glyph);
     }
@@ -519,7 +520,11 @@ fn wrap(text: &[Span], width: usize) -> Vec<Line<'static>> {
             }
             Some(glyph) if glyph.text == " " => {
                 wrapper.end_word();
-                wrapper.spaces.push(glyph);
+                // More spaces than the width never show: keep no more, so
+                // that 1 MB of tabs does not fill the memory.
+                if wrapper.spaces.len() < wrapper.width {
+                    wrapper.spaces.push(glyph);
+                }
             }
             Some(glyph) => wrapper.word.push(glyph),
         }
@@ -565,8 +570,6 @@ fn text_width(text: &[Span]) -> usize {
 #[derive(Default)]
 struct Wrapper<'a> {
     width: usize,
-    /// The width of the lines after the first one.
-    rest_width: usize,
     lines: Vec<Line<'static>>,
     line: Vec<Glyph<'a>>,
     line_width: usize,
@@ -579,7 +582,6 @@ impl<'a> Wrapper<'a> {
     fn new(width: usize) -> Self {
         Wrapper {
             width,
-            rest_width: width,
             ..Default::default()
         }
     }
@@ -612,7 +614,6 @@ impl<'a> Wrapper<'a> {
     fn break_line(&mut self) {
         let glyphs = std::mem::take(&mut self.line);
         self.line_width = 0;
-        self.width = self.rest_width;
         self.lines.push(Line::from(join_styles(&glyphs)));
     }
 
@@ -1058,8 +1059,8 @@ mod tests {
         assert_snapshot!(render("```bash\nrm -rf build/output/folder\n```", 12), @"
         ▌ «b:#1»
         ▌ «blue:rm» -rf bui
-        ▌ «d:↪ »ld/outpu
-        ▌ «d:↪ »t/folder
+        ▌«d:↪»ld/output/
+        ▌«d:↪»folder
         ");
     }
 
@@ -1224,7 +1225,48 @@ mod tests {
         prop::collection::vec(parts, 0..20).prop_map(|parts| parts.concat())
     }
 
+    fn code_text() -> impl Strategy<Value = String> {
+        let words = prop_oneof![
+            Just("ls".to_string()),
+            Just("#".to_string()),
+            Just("↪".to_string()),
+            Just("echo".to_string()),
+            Just("\"aaaaaaaa\"#;".to_string()),
+            "[a-z]{1,30}",
+        ];
+        let line = prop::collection::vec(words, 0..12).prop_map(|w| w.join(" "));
+        prop::collection::vec(line, 1..6).prop_map(|lines| lines.join("\n"))
+    }
+
     proptest! {
+        // The mark of a wrapped row is a security rule: a part of a line
+        // that starts with "#" would pass for a comment, and a line that
+        // starts with "↪" for the rest of the one above.
+        #[test]
+        fn only_the_rows_that_go_on_from_a_line_have_the_mark(
+            code in code_text(),
+            width in 40..100usize,
+        ) {
+            let doc = parse(&format!("```bash\n{code}\n```\n"));
+            let page = layout(&doc, width, None);
+            let rows = &page.lines[page.blocks[0].start + 1..page.blocks[0].end];
+            let mut lines: Vec<String> = Vec::new();
+            for row in rows {
+                let text: String = row.spans[1..].iter().map(|s| s.content.as_ref()).collect();
+                match row.spans[0].content.as_ref() {
+                    "▌ " => lines.push(text),
+                    "▌" => {
+                        prop_assert_eq!(&row.spans[1], &Span::styled(WRAP_MARK, DIM));
+                        let rest: String = row.spans[2..].iter().map(|s| s.content.as_ref()).collect();
+                        lines.last_mut().unwrap().push_str(&rest);
+                    }
+                    other => prop_assert!(false, "gutter {:?}", other),
+                }
+            }
+            let code = &doc.blocks[0].code;
+            prop_assert_eq!(lines.join("\n"), code.strip_suffix('\n').unwrap_or(code));
+        }
+
         // Text right under a code block would look like more code.
         #[test]
         fn a_code_block_never_touches_the_next_item(text in markdown()) {
@@ -1627,13 +1669,8 @@ mod tests {
         fn wrapped_lines_stay_within_the_width_as_the_buffer_measures_them(
             text in spans(),
             width in 1..12usize,
-            rest in 1..12usize,
         ) {
-            // The first line of hard_wrap takes `width`, the others `rest`.
-            let hard = hard_wrap(&text, width, rest).into_iter().enumerate();
-            let hard = hard.map(|(i, line)| (line, if i == 0 { width } else { rest }));
-            let words = wrap(&text, width).into_iter().map(|line| (line, width));
-            for (line, width) in hard.chain(words) {
+            for line in hard_wrap(&text, width).into_iter().chain(wrap(&text, width)) {
                 // text_width splits each span into graphemes, as the buffer
                 // does. Only a glyph wider than the width passes it, alone.
                 let glyphs = glyphs(&line.spans).count();
@@ -1643,7 +1680,7 @@ mod tests {
 
         #[test]
         fn hard_wrap_keeps_each_glyph(text in spans(), width in 1..12usize) {
-            let lines = hard_wrap(&text, width, width);
+            let lines = hard_wrap(&text, width);
             let shown: String = lines.iter().flat_map(|l| l.spans.iter().map(|s| s.content.as_ref())).collect();
             prop_assert_eq!(shown, text.iter().map(|s| s.content.as_ref()).collect::<String>());
         }
