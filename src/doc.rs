@@ -324,7 +324,11 @@ impl Builder {
                             self.highlighted += code.len();
                             highlight(&code)
                         }
-                        _ => code.lines().map(|l| escaped(l, Style::new())).collect(),
+                        // Split on LF only: str::lines would drop a CR
+                        // before an LF, which bash still gets.
+                        _ => (code.split_terminator('\n'))
+                            .map(|l| escaped(l, Style::new()))
+                            .collect(),
                     };
                     self.push_item(Kind::Code { lines, block });
                 }

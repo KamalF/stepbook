@@ -945,6 +945,16 @@ mod tests {
     }
 
     #[test]
+    fn a_carriage_return_before_a_line_feed_shows_in_plain_code() {
+        // pulldown-cmark turns CR LF into LF, but CR CR LF keeps one CR.
+        let text = "```\ncd /tmp/x\r\r\nrm -rf *\n```";
+        assert_snapshot!(render(text, 40), @"
+        «d:▌ »cd /tmp/x«yellow:^M»
+        «d:▌ »rm -rf *
+        ");
+    }
+
+    #[test]
     fn other_code_blocks_have_a_dim_gutter_and_no_highlighting() {
         assert_snapshot!(render("```python\nif x: 'a'\n```\n\n    ls '$x'", 40), @"
         «d:▌ »if x: 'a'
