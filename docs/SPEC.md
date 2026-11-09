@@ -95,7 +95,7 @@ systemctl --user restart api
 | Thematic break | A dimmed rule. |
 | Raw HTML | Shown dimmed, as source. An HTML block keeps its lines, which wrap at any character. A line end in inline HTML is a space. |
 | Image | `[image: <alt text>]`. |
-| Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted, except in a block with a line longer than 1,000 bytes, or in a block that would bring the highlighted code of the file past 32 KB. Long lines wrap at any character, so the view shows all the code that runs. A long info line wraps too, so its warnings always show. |
+| Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted, except in a block with a line longer than 1,000 bytes, or in a block that would bring the highlighted code of the file past 32 KB, or past 4,000,000 for the sum of the squares of its line lengths. Long lines wrap at any character, so the view shows all the code that runs. A long info line wraps too, so its warnings always show. |
 | Other code block | The code with a dimmed gutter, not highlighted. Long lines wrap as in a block. |
 
 All colors come from the terminal's 16-color palette, so they follow the terminal's theme. stepbook sets no background color.
@@ -479,3 +479,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | FILE must be a regular file of at most 1 MB (4): a link to /dev/zero filled the memory, and the view lays out the whole file on each frame. The largest runbook has 22 KB | 2026-11-09 |
 | Code also escapes the default ignorable code points and the graphemes of width 0; prose keeps them (6.5). The warning becomes `hidden characters in code` | 2026-11-09 |
 | Highlighting stops at lines longer than 1,000 bytes and after 32 KB of code (5.3): syntect takes 10 s on a line of 80 KB. The largest runbook has 16 KB of bash, with lines of at most 386 bytes | 2026-11-09 |
+| Highlighting also stops past 4,000,000 for the sum of the squares of the line lengths (5.3): syntect took 10 s on 32 lines of 1,000 spaces. The runbooks reach 2,000,000 | 2026-11-09 |

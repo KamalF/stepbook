@@ -77,8 +77,11 @@ impl Document {
 }
 
 pub fn parse(text: &str) -> Document {
+    parse_with(Builder::default(), text)
+}
+
+fn parse_with(mut builder: Builder, text: &str) -> Document {
     let (frontmatter, body) = split_frontmatter(text);
-    let mut builder = Builder::default();
     if let Some(frontmatter) = frontmatter {
         let lines = source_lines(&format!("---\n{frontmatter}---"));
         builder.push_item(Kind::Source(lines));
@@ -116,8 +119,7 @@ struct Builder {
     table: Option<Table>,
     /// The source of the HTML block being read.
     html: Option<String>,
-    /// The bytes of code highlighted so far.
-    highlighted: usize,
+    highlighted: Highlighted,
 }
 
 /// The table being read.
@@ -322,9 +324,10 @@ impl Builder {
                         self.blocks.len() - 1
                     });
                     let mut hidden = false;
-                    let lines = match block {
-                        Some(_) if highlights(&code, self.highlighted) => {
-                            self.highlighted += code.len();
+                    let total = block.and_then(|_| self.highlighted.with(&code));
+                    let lines = match total {
+                        Some(total) => {
+                            self.highlighted = total;
                             highlight(&code, &mut hidden)
                         }
                         // Split on LF only: str::lines would drop a CR
@@ -756,19 +759,40 @@ pub fn code_line(spans: &[Span], hidden: &mut bool) -> Vec<Span<'static>> {
     out
 }
 
-/// syntect is slow on some bash: a line of 80 KB takes 10 s, and 32 KB
-/// of heredoc about 1 s. So a block is highlighted only if its lines are
-/// at most `HIGHLIGHT_LINE` bytes long, and if it does not bring the
-/// highlighted code of the file past `HIGHLIGHT_BUDGET` bytes. On 2026-11-09, the
-/// largest runbook of ~/dev/claude/runbooks had 16 KB of bash, and its
-/// longest line had 386 bytes.
+/// syntect is slow on some bash. Its time grows with the bytes, and with
+/// the square of the length of each line: 32 KB of heredoc takes about
+/// 1 s, 32 lines of 1,000 spaces 10 s, and a line of 80 KB 10 s. So a
+/// block is highlighted only if its lines are at most `HIGHLIGHT_LINE`
+/// bytes long, and if the highlighted code of the file stays within
+/// `HIGHLIGHT_BYTES` and `HIGHLIGHT_SQUARES`, the sum of the squares of
+/// its line lengths. On 2026-11-09, the runbooks of ~/dev/claude/runbooks
+/// had at most 16 KB of bash, lines of at most 386 bytes, and a sum of
+/// squares of at most 2,000,000.
 const HIGHLIGHT_LINE: usize = 1_000;
-const HIGHLIGHT_BUDGET: usize = 32 * 1024;
+const HIGHLIGHT_BYTES: usize = 32 * 1024;
+const HIGHLIGHT_SQUARES: usize = 4_000_000;
 
-/// Whether to highlight the code of a block, after `used` bytes of
-/// highlighted code.
-fn highlights(code: &str, used: usize) -> bool {
-    used + code.len() <= HIGHLIGHT_BUDGET && code.lines().all(|l| l.len() <= HIGHLIGHT_LINE)
+/// The code highlighted so far.
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
+struct Highlighted {
+    bytes: usize,
+    squares: usize,
+}
+
+impl Highlighted {
+    /// The total with `code`, if `code` can be highlighted.
+    fn with(self, code: &str) -> Option<Highlighted> {
+        let mut squares = self.squares;
+        for line in code.lines() {
+            if line.len() > HIGHLIGHT_LINE {
+                return None;
+            }
+            squares += line.len() * line.len();
+        }
+        let bytes = self.bytes + code.len();
+        (bytes <= HIGHLIGHT_BYTES && squares <= HIGHLIGHT_SQUARES)
+            .then_some(Highlighted { bytes, squares })
+    }
 }
 
 static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_newlines);
@@ -1194,12 +1218,45 @@ mod tests {
     }
 
     #[test]
-    fn highlighting_stops_at_long_lines_and_at_the_budget() {
+    fn highlighting_stops_at_long_lines_and_at_the_budgets() {
         let line = |n| format!("{}\n", "a".repeat(n));
-        assert!(highlights(&line(1_000), 0));
-        assert!(!highlights(&line(1_001), 0));
-        assert!(highlights("ls\n", HIGHLIGHT_BUDGET - 3));
-        assert!(!highlights("ls\n", HIGHLIGHT_BUDGET - 2));
+        let none = Highlighted::default();
+        let total = |bytes, squares| Some(Highlighted { bytes, squares });
+        assert_eq!(none.with(&line(1_000)), total(1_001, 1_000_000));
+        assert_eq!(none.with(&line(1_001)), None);
+        let bytes = Highlighted {
+            bytes: HIGHLIGHT_BYTES - 3,
+            squares: 0,
+        };
+        assert_eq!(bytes.with("ls\n"), total(HIGHLIGHT_BYTES, 4));
+        let bytes = Highlighted {
+            bytes: HIGHLIGHT_BYTES - 2,
+            squares: 0,
+        };
+        assert_eq!(bytes.with("ls\n"), None);
+        let squares = Highlighted {
+            bytes: 0,
+            squares: HIGHLIGHT_SQUARES - 4,
+        };
+        assert_eq!(squares.with("ls\n"), total(3, HIGHLIGHT_SQUARES));
+        assert_eq!(squares.with("lsx\n"), None);
+    }
+
+    #[test]
+    fn the_highlight_budget_adds_up_over_the_blocks_of_a_file() {
+        let mut builder = Builder::default();
+        builder.highlighted.bytes = HIGHLIGHT_BYTES - 6;
+        let doc = parse_with(
+            builder,
+            "```bash\nls\n```\n\n```bash\nls\n```\n\n```bash\nls\n```\n",
+        );
+        let highlighted: Vec<bool> = (doc.items.iter())
+            .filter_map(|item| match &item.kind {
+                Kind::Code { lines, .. } => Some(lines[0][0].style != Style::new()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(highlighted, [true, true, false]);
     }
 
     #[test]
