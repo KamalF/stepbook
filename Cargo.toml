@@ -1,0 +1,11 @@
+[package]
+name = "stepbook"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Run the bash blocks of a Markdown runbook one at a time, in a terminal UI"
+repository = "https://github.com/KamalF/stepbook"
+keywords = ["runbook", "markdown", "tui", "bash", "terminal"]
+categories = ["command-line-utilities"]
+
+[dependencies]
