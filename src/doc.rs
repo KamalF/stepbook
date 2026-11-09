@@ -138,6 +138,8 @@ enum Container {
     Item {
         marker: Option<String>,
         indent: usize,
+        /// The number of items before the content of the item.
+        start: usize,
     },
 }
 
@@ -222,6 +224,7 @@ impl Builder {
                 self.containers.push(Container::Item {
                     marker: Some(marker),
                     indent,
+                    start: self.items.len(),
                 });
             }
             Tag::Heading { level, .. } => {
@@ -290,6 +293,12 @@ impl Builder {
             }
             TagEnd::Item => {
                 self.flush_text();
+                // An empty item still shows its marker, on an empty line.
+                if let Some(Container::Item { start, .. }) = self.containers.last()
+                    && *start == self.items.len()
+                {
+                    self.push_item(Kind::Text(Vec::new()));
+                }
                 self.containers.pop();
                 // Whatever ends the item, only a loose list puts a blank
                 // line before the next item.
@@ -386,7 +395,7 @@ impl Builder {
                     first.push(Span::styled("│ ", DIM));
                     rest.push(Span::styled("│ ", DIM));
                 }
-                Container::Item { marker, indent } => {
+                Container::Item { marker, indent, .. } => {
                     let spaces = Span::raw(" ".repeat(*indent));
                     match marker.take_if(|_| show_marker) {
                         Some(marker) => first.push(Span::raw(marker)),

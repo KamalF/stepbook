@@ -744,6 +744,19 @@ mod tests {
     }
 
     #[test]
+    fn empty_items_keep_their_marker() {
+        assert_snapshot!(render("1. a\n2.\n3. c\n\n- d\n-\n- e", 40), @"
+        1. a
+        2.
+        3. c
+
+        • d
+        •
+        • e
+        ");
+    }
+
+    #[test]
     fn task_items_show_their_box() {
         assert_snapshot!(render("- [ ] todo\n- [x] done", 40), @"
         • [ ] todo
