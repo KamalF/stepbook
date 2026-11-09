@@ -632,6 +632,8 @@ pub fn needs_escape_in_code(c: char) -> bool {
                 | '\u{2d7f}'
                 | '\u{110bd}'
                 | '\u{110cd}'
+                | '\u{fff9}'..='\u{fffb}'
+                | '\u{13430}'..='\u{1343f}'
                 | '\u{1680}'
                 | '\u{2000}'..='\u{200a}'
                 | '\u{2028}'..='\u{2029}'
@@ -740,13 +742,14 @@ pub fn escaped(text: &str, style: Style) -> Vec<Span<'static>> {
     out
 }
 
-/// Whether the ratatui buffer would not draw a grapheme in code: it drops
-/// a grapheme of width 0, such as a combining mark at the start of a line,
-/// and one wider than the room left. A base character with many marks
-/// (U+FF9E, U+093E) makes one grapheme of any width, and only those wider
-/// than 2 columns are not a character that a terminal draws.
+/// Whether code shows a grapheme escaped, after its first character. The
+/// ratatui buffer drops a grapheme of width 0, such as a combining mark at
+/// the start of a line. A grapheme of several code points is a risk too:
+/// a terminal may count its columns otherwise than ratatui, by code point
+/// or with other tables, and then shift the rest of the line over a space.
+/// "k" and 8 × U+302E is 1 column for ratatui, and 17 in tmux.
 fn hides(grapheme: &str) -> bool {
-    !(1..=2).contains(&width(grapheme))
+    grapheme.chars().nth(1).is_some() || width(grapheme) == 0
 }
 
 fn push_styled(out: &mut Vec<Span<'static>>, text: &str, style: Style) {
@@ -786,8 +789,8 @@ pub fn code_line(spans: &[Span], hidden: &mut bool) -> Vec<Span<'static>> {
         let mut chars = grapheme.symbol.chars().peekable();
         if hides(grapheme.symbol) {
             *hidden = true;
-            // A wide grapheme keeps its base character, if the terminal
-            // draws it alone, and shows its marks escaped.
+            // The grapheme keeps its first character, if the terminal
+            // draws it alone, and shows the others escaped.
             if let Some(base) = chars.next_if(|c| !hides(c.encode_utf8(&mut [0; 4]))) {
                 push_styled(&mut out, &base.to_string(), style);
             }
@@ -1317,20 +1320,22 @@ mod tests {
         // ratatui counts a halfwidth sound mark twice: 3 columns here.
         assert_eq!(shown("\u{ff76}\u{ff9e}"), "\u{ff76}<ff9e>");
         assert_eq!(shown("\u{301}\u{ff9e}\u{ff9e}"), "<0301><ff9e><ff9e>");
-        assert_eq!(shown("e\u{301}"), "e\u{301}");
+        assert_eq!(shown("e\u{301}"), "e<0301>");
+        assert_eq!(shown("k\u{302e}\u{302e}"), "k<302e><302e>");
+        assert_eq!(shown("\u{e9}\u{1f600}"), "\u{e9}\u{1f600}");
         assert_eq!(escaped_text("\u{200b}\u{200d}"), "\u{200b}\u{200d}");
         for code in ["a\u{200b}\n", "\u{301}a\n", "'\u{ff9e}\u{ff9e}'\n"] {
             assert_eq!(warnings(code), ["hidden characters in code"], "{code:?}");
         }
-        assert!(warnings("e\u{301}\t\u{1f600}\n").is_empty());
+        assert!(warnings("\u{e9}\t\u{1f600}\n").is_empty());
     }
 
     #[test]
     fn the_warning_follows_the_escapes_after_a_tab() {
         // The last space of a tab and U+FF9E make one grapheme of 3 columns.
         assert_eq!(warnings("echo\t\u{ff9e}\n"), ["hidden characters in code"]);
-        // U+0301 joins the last space of the tab, and shows on it.
-        assert!(warnings("echo\t\u{301}x\n").is_empty());
+        // U+0301 joins the last space of the tab into one grapheme.
+        assert_eq!(warnings("echo\t\u{301}x\n"), ["hidden characters in code"]);
     }
 
     #[test]
@@ -1346,6 +1351,10 @@ mod tests {
             '\u{2d7f}',
             '\u{110bd}',
             '\u{110cd}',
+            '\u{fff9}',
+            '\u{fffb}',
+            '\u{13430}',
+            '\u{1343f}',
         ];
         for c in joiners {
             assert!(needs_escape_in_code(c) && !needs_escape(c), "{c:?}");
@@ -1399,7 +1408,7 @@ mod tests {
         for c in ends {
             assert!(needs_escape_in_code(c) && !needs_escape(c), "{c:?}");
         }
-        let outside = ['\u{ac}', '\u{2010}', '\u{fdff}', '\u{fff9}', '\u{e1000}'];
+        let outside = ['\u{ac}', '\u{2010}', '\u{fdff}', '\u{fffc}', '\u{e1000}'];
         assert!(!outside.into_iter().any(needs_escape_in_code));
     }
 
