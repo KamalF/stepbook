@@ -1,7 +1,10 @@
 use std::collections::HashMap;
-use std::ops::Range;
 
-use pulldown_cmark::{CodeBlockKind, Event, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Span;
+
+pub const INLINE_CODE: Style = Style::new().fg(Color::Cyan);
 
 /// A fenced code block with the language `bash` or `sh` (spec 3).
 #[derive(Debug, PartialEq)]
@@ -14,38 +17,152 @@ pub struct Block {
     pub problem: Option<&'static str>,
 }
 
+/// One element of the rendered runbook. The view wraps it to its width.
+#[derive(Debug, PartialEq)]
+pub enum Item {
+    /// Styled text. A `\n` is a hard line break.
+    Text(Vec<Span<'static>>),
+    Heading(HeadingLevel, Vec<Span<'static>>),
+    Blank,
+}
+
 #[derive(Debug)]
 pub struct Document {
+    #[cfg_attr(not(test), expect(dead_code, reason = "a later commit renders it"))]
     pub frontmatter: Option<String>,
+    pub items: Vec<Item>,
+    #[cfg_attr(not(test), expect(dead_code, reason = "a later commit renders them"))]
     pub blocks: Vec<Block>,
 }
 
 pub fn parse(text: &str) -> Document {
     let (frontmatter, body) = split_frontmatter(text);
-    let mut blocks = Vec::new();
-    let mut code: Option<(String, Range<usize>)> = None;
+    let mut builder = Builder::default();
     for (event, range) in Parser::new_ext(body, options()).into_offset_iter() {
+        builder.event(event, &body[range]);
+    }
+    mark_duplicates(&mut builder.blocks);
+    Document {
+        frontmatter: frontmatter.map(str::to_string),
+        items: builder.items,
+        blocks: builder.blocks,
+    }
+}
+
+/// Turns the events of pulldown-cmark into items. It keeps its own stacks
+/// and never recurses, so no nesting depth can overflow the call stack.
+#[derive(Default)]
+struct Builder {
+    items: Vec<Item>,
+    blocks: Vec<Block>,
+    /// The text of the paragraph or heading being read.
+    text: Vec<Span<'static>>,
+    styles: Vec<Style>,
+    heading: Option<HeadingLevel>,
+    /// The code and info string of the code block being read.
+    code: Option<(String, String)>,
+    /// A blank line goes before the next element.
+    blank: bool,
+}
+
+impl Builder {
+    fn event(&mut self, event: Event, source: &str) {
         match event {
-            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(_))) => {
-                code = Some((String::new(), range));
+            Event::Start(tag) => self.start(tag, source),
+            Event::End(tag) => self.end(tag),
+            Event::Text(text) => match &mut self.code {
+                Some((code, _)) => code.push_str(&text),
+                None => self.push(&text, Style::new()),
+            },
+            Event::Code(text) => self.push(&text, INLINE_CODE),
+            Event::SoftBreak => self.push(" ", Style::new()),
+            Event::HardBreak => self.push("\n", Style::new()),
+            _ => {}
+        }
+    }
+
+    fn start(&mut self, tag: Tag, source: &str) {
+        match tag {
+            Tag::Paragraph => self.start_element(),
+            Tag::Heading { level, .. } => {
+                self.start_element();
+                self.heading = Some(level);
+                self.styles.push(Style::new().add_modifier(Modifier::BOLD));
             }
-            Event::Text(text) => {
-                if let Some((code, _)) = &mut code {
-                    code.push_str(&text);
-                }
+            Tag::CodeBlock(kind) => {
+                self.start_element();
+                let info = match kind {
+                    CodeBlockKind::Fenced(_) => raw_info(source).to_string(),
+                    CodeBlockKind::Indented => String::new(),
+                };
+                self.code = Some((String::new(), info));
             }
-            Event::End(TagEnd::CodeBlock) => {
-                if let Some((code, range)) = code.take() {
-                    blocks.extend(block(raw_info(&body[range]), code));
+            Tag::Emphasis => self
+                .styles
+                .push(Style::new().add_modifier(Modifier::ITALIC)),
+            Tag::Strong => self.styles.push(Style::new().add_modifier(Modifier::BOLD)),
+            Tag::Strikethrough => self
+                .styles
+                .push(Style::new().add_modifier(Modifier::CROSSED_OUT)),
+            Tag::Link { .. } => self
+                .styles
+                .push(Style::new().add_modifier(Modifier::UNDERLINED)),
+            _ => {}
+        }
+    }
+
+    fn end(&mut self, tag: TagEnd) {
+        match tag {
+            TagEnd::Paragraph => self.end_text(),
+            TagEnd::Heading(_) => {
+                self.styles.pop();
+                self.end_text();
+            }
+            TagEnd::CodeBlock => {
+                if let Some((code, info)) = self.code.take() {
+                    self.blocks.extend(block(&info, code));
                 }
+                self.blank = true;
+            }
+            TagEnd::Emphasis | TagEnd::Strong | TagEnd::Strikethrough | TagEnd::Link => {
+                self.styles.pop();
             }
             _ => {}
         }
     }
-    mark_duplicates(&mut blocks);
-    Document {
-        frontmatter: frontmatter.map(str::to_string),
-        blocks,
+
+    fn push(&mut self, text: &str, style: Style) {
+        let style = self
+            .styles
+            .iter()
+            .fold(Style::new(), |a, s| a.patch(*s))
+            .patch(style);
+        self.text.push(Span::styled(text.to_string(), style));
+    }
+
+    /// Ends the text before a new element, and adds the blank line that
+    /// separates them.
+    fn start_element(&mut self) {
+        self.flush_text();
+        if std::mem::take(&mut self.blank) {
+            self.items.push(Item::Blank);
+        }
+    }
+
+    fn end_text(&mut self) {
+        self.flush_text();
+        self.blank = true;
+    }
+
+    fn flush_text(&mut self) {
+        if self.text.is_empty() {
+            return;
+        }
+        let text = std::mem::take(&mut self.text);
+        self.items.push(match self.heading.take() {
+            Some(level) => Item::Heading(level, text),
+            None => Item::Text(text),
+        });
     }
 }
 

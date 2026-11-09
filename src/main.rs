@@ -1,7 +1,3 @@
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the layout commit of milestone 1 uses it")
-)]
 mod doc;
 mod run;
 mod view;
@@ -129,7 +125,7 @@ fn main() -> ExitCode {
 fn open(args: &Args) -> Result<(), String> {
     let bytes = std::fs::read(&args.file)
         .map_err(|e| format!("cannot read {}: {}", args.file.display(), io_message(&e)))?;
-    let _text = String::from_utf8_lossy(&bytes);
+    let doc = doc::parse(&String::from_utf8_lossy(&bytes));
     let path = std::env::var_os("PATH").unwrap_or_default();
     if run::find_in_path("bash", &path).is_none() {
         return Err("cannot find bash on the PATH".into());
@@ -140,14 +136,14 @@ fn open(args: &Args) -> Result<(), String> {
     // try_init also installs a panic hook that restores the terminal.
     let mut terminal = ratatui::try_init()
         .map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
-    let result = event_loop(&mut terminal);
+    let result = event_loop(&mut terminal, &doc);
     ratatui::restore();
     result.map_err(|e| format!("terminal error: {}", io_message(&e)))
 }
 
-fn event_loop(terminal: &mut DefaultTerminal) -> std::io::Result<()> {
+fn event_loop(terminal: &mut DefaultTerminal, doc: &doc::Document) -> std::io::Result<()> {
     loop {
-        terminal.draw(view::draw)?;
+        terminal.draw(|frame| view::draw(frame, doc))?;
         if let Event::Key(key) = event::read()?
             && key.kind == KeyEventKind::Press
         {

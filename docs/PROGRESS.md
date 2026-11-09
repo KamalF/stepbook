@@ -34,7 +34,7 @@ The plan, one commit per line:
 4. `feat`: the arguments and the startup errors (4).
 5. `feat`: the terminal setup and restore, with the panic hook. `q` and `ctrl-c` quit.
 6. `feat`: the blocks, their attributes and the frontmatter (5.1, 5.2).
-7. `feat`: paragraphs, headings and inline styles, with word wrap (5.3).
+7. `feat`: paragraphs, headings and inline styles, with word wrap (5.3). The document view fills the frame, so that each later commit shows its elements.
 8. `feat`: lists, task lists and blockquotes, with the cap at 10 levels (5.3).
 9. `feat`: tables (5.3).
 10. `feat`: code blocks and blocks, with bash highlighting (5.3).
@@ -48,7 +48,7 @@ Then `cargo mutants`, the check in tmux, and the review loop.
 
 ## Next
 
-1. Commit 7 of milestone 1: paragraphs, headings and inline styles.
+1. Commit 8 of milestone 1: lists, task lists and blockquotes.
 
 ## Open points
 
