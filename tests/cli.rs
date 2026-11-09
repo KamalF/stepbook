@@ -75,6 +75,14 @@ fn a_file_that_nests_more_than_1000_levels_exits_with_1() {
     assert_eq!(output.status.code(), Some(1));
     let message = ": a line nests more than 1,000 levels of quotes, lists or indent\n";
     assert!(stderr(&output).ends_with(message));
+    // 1,000 quote markers pass the read, and stop at the check for a
+    // terminal; 1,001 do not.
+    std::fs::write(file.path(), format!("{} x\n", ">".repeat(1_000))).unwrap();
+    let output = stepbook(&[file.path().to_str().unwrap()], None);
+    assert!(stderr(&output).contains("run stepbook in a terminal"));
+    std::fs::write(file.path(), format!("{} x\n", ">".repeat(1_001))).unwrap();
+    let output = stepbook(&[file.path().to_str().unwrap()], None);
+    assert!(stderr(&output).ends_with(message));
 }
 
 #[test]
