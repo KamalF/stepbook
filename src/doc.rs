@@ -120,8 +120,13 @@ struct Table {
 
 enum Container {
     Quote,
-    /// The number of the next item, in an ordered list.
-    List(Option<u64>),
+    List {
+        /// The number of the next item, in an ordered list.
+        next: Option<u64>,
+        /// pulldown-cmark wraps the text of an item in a paragraph only in
+        /// a loose list, which has blank lines between its items.
+        loose: bool,
+    },
     /// A list item. Its marker shows on the first line of its content.
     Item {
         marker: Option<String>,
@@ -156,7 +161,14 @@ impl Builder {
 
     fn start(&mut self, tag: Tag, source: &str) {
         match tag {
-            Tag::Paragraph => self.start_element(),
+            Tag::Paragraph => {
+                self.start_element();
+                if let [.., Container::List { loose, .. }, Container::Item { .. }] =
+                    &mut self.containers[..]
+                {
+                    *loose = true;
+                }
+            }
             Tag::Table(aligns) => {
                 self.start_element();
                 self.table = Some(Table {
@@ -171,13 +183,16 @@ impl Builder {
             }
             Tag::List(first) => {
                 self.start_element();
-                self.containers.push(Container::List(first));
+                self.containers.push(Container::List {
+                    next: first,
+                    loose: false,
+                });
                 self.lists += 1;
             }
             Tag::Item => {
                 self.start_element();
                 let marker = match self.containers.last_mut() {
-                    Some(Container::List(Some(n))) => {
+                    Some(Container::List { next: Some(n), .. }) => {
                         *n += 1;
                         format!("{}. ", *n - 1)
                     }
@@ -238,17 +253,19 @@ impl Builder {
                 self.containers.pop();
             }
             TagEnd::List(_) => {
-                self.flush_text();
+                self.end_text();
                 self.containers.pop();
                 self.lists -= 1;
-                // A list nested in an item ends with the item, with no blank.
-                if !matches!(self.containers.last(), Some(Container::Item { .. })) {
-                    self.blank = true;
-                }
             }
             TagEnd::Item => {
                 self.flush_text();
                 self.containers.pop();
+                // Whatever ends the item, only a loose list puts a blank
+                // line before the next item.
+                self.blank = matches!(
+                    self.containers.last(),
+                    Some(Container::List { loose: true, .. })
+                );
             }
             TagEnd::Heading(_) => {
                 self.styles.pop();
@@ -314,17 +331,18 @@ impl Builder {
     fn start_element(&mut self) {
         self.flush_text();
         if std::mem::take(&mut self.blank) {
-            let (_, rest) = self.prefixes(false);
-            let mut bars: Vec<Span> = rest
-                .into_iter()
-                .filter(|s| !s.content.trim().is_empty())
-                .collect();
-            if let Some(last) = bars.last_mut() {
+            // The prefix of a blank line keeps its quote bars, with no
+            // trailing spaces.
+            let (_, mut rest) = self.prefixes(false);
+            while rest.last().is_some_and(|s| s.content.trim().is_empty()) {
+                rest.pop();
+            }
+            if let Some(last) = rest.last_mut() {
                 *last = Span::styled(last.content.trim_end().to_string(), last.style);
             }
             self.items.push(Item {
-                first: bars.clone(),
-                rest: bars,
+                first: rest.clone(),
+                rest,
                 kind: Kind::Blank,
             });
         }
@@ -338,7 +356,7 @@ impl Builder {
         // From the inside out, so that deep nesting costs no more than 10
         // levels. The markers of hidden outer items stay pending.
         let mut levels: Vec<_> = (self.containers.iter_mut().rev())
-            .filter(|c| !matches!(c, Container::List(_)))
+            .filter(|c| !matches!(c, Container::List { .. }))
             .take(MAX_DEPTH)
             .collect();
         levels.reverse();
@@ -356,7 +374,7 @@ impl Builder {
                     }
                     rest.push(spaces);
                 }
-                Container::List(_) => {}
+                Container::List { .. } => {}
             }
         }
         (first, rest)

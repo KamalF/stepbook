@@ -735,6 +735,41 @@ mod tests {
     }
 
     #[test]
+    fn a_tight_item_that_ends_with_code_has_no_blank_line_after_it() {
+        let text = "1. Do x:\n   ```bash\n   ls\n   ```\n2. Next\n\nafter";
+        assert_snapshot!(render(text, 40), @"
+        1. Do x:
+           ▌ «b:#1»
+           ▌ «blue:ls»
+        2. Next
+
+        after
+        ");
+    }
+
+    #[test]
+    fn a_loose_item_that_ends_with_a_list_keeps_its_blank_line() {
+        assert_snapshot!(render("- a\n\n  - b\n\n- c", 40), @"
+        • a
+
+          ◦ b
+
+        • c
+        ");
+    }
+
+    #[test]
+    fn a_quote_in_a_list_keeps_the_indent_on_its_blank_lines() {
+        assert_snapshot!(render("- item\n\n  > a\n  >\n  > b", 40), @"
+        • item
+
+          «d:│ »a
+          «d:│»
+          «d:│ »b
+        ");
+    }
+
+    #[test]
     fn blockquotes_have_a_bar_per_level() {
         let text = "> one two three\n>\n> > nested\n>\n> - item\n\nafter";
         assert_snapshot!(render(text, 12), @"
