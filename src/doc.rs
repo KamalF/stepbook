@@ -486,10 +486,11 @@ fn block(info: &str, code: &str) -> Option<Block> {
         problem: None,
     };
     let (pairs, error) = section.map_or_else(Default::default, parse_attributes);
+    let mut named = false;
     for (key, value) in pairs {
         if key != "name" {
             block.warnings.push(format!("unknown attribute '{key}'"));
-        } else if block.name.is_some() {
+        } else if std::mem::replace(&mut named, true) {
             block.warnings.push("name is given twice".into());
         } else if is_valid_name(&value) {
             block.name = Some(value);
@@ -782,6 +783,10 @@ mod tests {
             (
                 "bash [name:a, name:b]",
                 named("a", &["name is given twice"]),
+            ),
+            (
+                "bash [name:a/b, name:c]",
+                named("", &["invalid name 'a/b'", "name is given twice"]),
             ),
             ("bash [name:a/b]", named("", &["invalid name 'a/b'"])),
             ("bash [name:\"a b\"]", named("", &["invalid name 'a b'"])),
