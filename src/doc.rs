@@ -1098,6 +1098,10 @@ mod tests {
                 named("a", &["unknown attribute 'abcdefghijklmnopqrst…'"]),
             ),
             (
+                "bash [name:a abcdefghijklmnopqrst:1]",
+                named("a", &["unknown attribute 'abcdefghijklmnopqrst'"]),
+            ),
+            (
                 "bash [:a]",
                 named("", &["unexpected ':' where a key starts"]),
             ),
@@ -1337,6 +1341,15 @@ mod tests {
         };
         assert_eq!(squares.with("ls\n"), total(3, HIGHLIGHT_SQUARES));
         assert_eq!(squares.with("lsx\n"), None);
+    }
+
+    #[test]
+    fn a_block_of_2_kb_is_highlighted() {
+        let doc = parse(&format!("```bash\n{}```\n", "ls\n".repeat(700)));
+        let Kind::Code { lines, .. } = &doc.items[0].kind else {
+            panic!("not code: {:?}", doc.items[0]);
+        };
+        assert_ne!(lines[0][0].style, Style::new());
     }
 
     #[test]

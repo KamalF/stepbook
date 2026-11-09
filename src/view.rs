@@ -909,6 +909,26 @@ mod tests {
     }
 
     #[test]
+    fn fitted_prefixes_keep_the_innermost_level_and_half_the_view() {
+        let item = |levels: usize| Item {
+            first: vec![Span::raw("123456789. "); levels],
+            rest: vec![Span::raw(" ".repeat(11)); levels],
+            kind: Kind::Blank,
+        };
+        let kept = |levels, width| fitted_prefixes(&item(levels), width).1.len();
+        // One level of 11 columns stays, even past half of 20 columns.
+        assert_eq!(kept(1, 20), 1);
+        // Two levels of 11 columns take exactly half of 44.
+        assert_eq!(kept(2, 44), 2);
+        assert_eq!(kept(2, 43), 1);
+    }
+
+    #[test]
+    fn truncate_to_no_column_shows_nothing() {
+        assert!(truncate(&[Span::raw("abc")], 0).is_empty());
+    }
+
+    #[test]
     fn deep_nesting_does_not_overflow_the_stack() {
         let quotes = layout(&parse(&format!("{} x\n", ">".repeat(100_000))), 80, None);
         assert_eq!(quotes.lines.len(), 1);
