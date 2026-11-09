@@ -92,7 +92,7 @@ systemctl --user restart api
 | Blockquote | A `│ ` prefix per level. |
 | Table | Box-drawing borders and a bold header. If the table is too wide, its widest columns shrink, and their cells end with `…`. |
 | Thematic break | A dimmed rule. |
-| Raw HTML | Shown dimmed, as source. |
+| Raw HTML | Shown dimmed, as source. An HTML block keeps its lines, which wrap at any character. A line end in inline HTML is a space. |
 | Image | `[image: <alt text>]`. |
 | Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted. Long lines wrap at any character, so the view shows all the code that runs. |
 | Other code block | The code with a dimmed gutter, not highlighted. Long lines wrap as in a block. |

@@ -39,7 +39,7 @@ pub struct Item {
 
 #[derive(Debug, PartialEq)]
 pub enum Kind {
-    /// Styled text. A `\n` is a hard line break.
+    /// Styled text. A span `\n` alone is a hard line break.
     Text(Vec<Span<'static>>),
     Heading(HeadingLevel, Vec<Span<'static>>),
     /// The first row is the header.
@@ -50,6 +50,9 @@ pub enum Kind {
         lines: Vec<Vec<Span<'static>>>,
         block: Option<usize>,
     },
+    /// Lines shown as written, such as raw HTML. They wrap at any
+    /// grapheme.
+    Source(Vec<Vec<Span<'static>>>),
     Rule,
     Blank,
 }
@@ -76,8 +79,9 @@ pub fn parse(text: &str) -> Document {
     let (frontmatter, body) = split_frontmatter(text);
     let mut builder = Builder::default();
     if let Some(frontmatter) = frontmatter {
-        builder.push(&format!("---\n{frontmatter}---"), DIM);
-        builder.end_text();
+        let lines = source_lines(&format!("---\n{frontmatter}---"));
+        builder.push_item(Kind::Source(lines));
+        builder.blank = true;
     }
     for (event, range) in Parser::new_ext(body, options()).into_offset_iter() {
         builder.event(event, &body[range]);
@@ -109,6 +113,8 @@ struct Builder {
     /// The columns of text since the last line break, for tab stops.
     column: usize,
     table: Option<Table>,
+    /// The source of the HTML block being read.
+    html: Option<String>,
 }
 
 /// The table being read.
@@ -145,8 +151,20 @@ impl Builder {
             },
             Event::Code(text) => self.push(&text, INLINE_CODE),
             Event::SoftBreak => self.push(" ", Style::new()),
-            Event::HardBreak => self.push("\n", Style::new()),
-            Event::Html(text) | Event::InlineHtml(text) => self.push(&text, DIM),
+            Event::HardBreak => {
+                self.text.push(Span::raw("\n"));
+                self.column = 0;
+            }
+            Event::Html(text) => {
+                if let Some(html) = &mut self.html {
+                    html.push_str(&text);
+                }
+            }
+            // A line end in inline HTML is a soft break, as in the text
+            // around it.
+            Event::InlineHtml(text) => {
+                self.push(&text.replace("\r\n", " ").replace(['\r', '\n'], " "), DIM)
+            }
             Event::Rule => {
                 self.start_element();
                 self.push_item(Kind::Rule);
@@ -223,7 +241,10 @@ impl Builder {
             Tag::Strikethrough => self.push_style(Style::new().add_modifier(Modifier::CROSSED_OUT)),
             Tag::Link { .. } => self.push_style(Style::new().add_modifier(Modifier::UNDERLINED)),
             Tag::Image { .. } => self.push("[image: ", Style::new()),
-            Tag::HtmlBlock => self.start_element(),
+            Tag::HtmlBlock => {
+                self.start_element();
+                self.html = Some(String::new());
+            }
             _ => {}
         }
     }
@@ -290,15 +311,10 @@ impl Builder {
             }
             TagEnd::Image => self.push("]", Style::new()),
             TagEnd::HtmlBlock => {
-                // The last line of the block ends with a newline, which
-                // would add an empty line.
-                if let Some(last) = self.text.last_mut() {
-                    let content = last.content.to_mut();
-                    if content.ends_with('\n') {
-                        content.pop();
-                    }
+                if let Some(html) = self.html.take() {
+                    self.push_item(Kind::Source(source_lines(&html)));
                 }
-                self.end_text();
+                self.blank = true;
             }
             _ => {}
         }
@@ -317,13 +333,7 @@ impl Builder {
 
     fn push(&mut self, text: &str, style: Style) {
         let style = self.style().patch(style);
-        for (i, part) in text.split('\n').enumerate() {
-            if i > 0 {
-                self.text.push(Span::styled("\n", style));
-                self.column = 0;
-            }
-            escape_into(&mut self.text, part, style, &mut self.column);
-        }
+        escape_into(&mut self.text, text, style, &mut self.column);
     }
 
     /// Ends the text before a new element, and adds the blank line that
@@ -403,6 +413,12 @@ impl Builder {
         let (first, rest) = self.prefixes(true);
         self.items.push(Item { first, rest, kind });
     }
+}
+
+/// The dimmed lines of verbatim text, such as an HTML block. `lines` also
+/// ends a line at a CRLF, which pulldown-cmark leaves in the frontmatter.
+fn source_lines(text: &str) -> Vec<Vec<Span<'static>>> {
+    text.lines().map(|line| escaped(line, DIM)).collect()
 }
 
 fn options() -> Options {

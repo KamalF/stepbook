@@ -268,6 +268,7 @@ pub fn layout(doc: &Document, width: usize, selected: Option<usize>) -> Page {
             }
             Kind::Table(aligns, rows) => table(aligns, rows, width),
             Kind::Code { lines, block } => code(doc, lines, *block, selected, width),
+            Kind::Source(lines) => lines.iter().flat_map(|l| hard_wrap(l, width)).collect(),
             Kind::Rule => vec![Line::from(Span::styled("─".repeat(width), DIM))],
             Kind::Blank => vec![Line::default()],
         };
@@ -930,6 +931,23 @@ mod tests {
         «d:<p>»
         «d:last»
         «d:</p>»
+        ");
+    }
+
+    #[test]
+    fn a_line_end_in_inline_html_is_a_space() {
+        assert_snapshot!(render("a <span\nclass=x>b</span>\r\nc <i\r\nx>d", 40), @"a «d:<span class=x>»b«d:</span>» c «d:<i x>»d");
+    }
+
+    #[test]
+    fn frontmatter_with_crlf_line_ends_shows_no_carriage_return() {
+        assert_snapshot!(render("---\r\ntitle: x\r\n---\r\n# T\r\n", 20), @"
+        «d:---»
+        «d:title: x»
+        «d:---»
+
+        «b:T»
+        «d:━━━━━━━━━━━━━━━━━━━━»
         ");
     }
 
