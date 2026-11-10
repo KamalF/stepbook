@@ -8,8 +8,9 @@ use std::io::{IsTerminal, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::{Duration, Instant};
 
-use crossbeam_channel::{Receiver, Sender};
+use crossbeam_channel::{Receiver, RecvError, Select, Sender};
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -192,14 +193,24 @@ fn open(args: &Args) -> Result<Exit, String> {
         format!("cannot create the workspace {dir}: {}", io_message(&e))
     };
     let workspace = run::Workspace::create(&parent).map_err(fail)?;
+    // The runs get absolute paths (spec 8.2).
+    let file = dir.join(&args.file);
+    let log = args.log.as_ref().map(|log| dir.join(log));
     let state = run::State::new(dir, std::env::vars_os());
     let session = run::Session::new(workspace, bash, state).map_err(fail)?;
     let mut terminal = set_up_terminal(session.workspace())
         .map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
     let title = args.file.file_name().unwrap_or(args.file.as_os_str());
-    let mut view = view::View::new(doc, title.to_string_lossy().into_owned());
+    let view = view::View::new(doc, title.to_string_lossy().into_owned());
+    let mut app = App {
+        ran: (0..view.doc.blocks.len()).map(|_| None).collect(),
+        view,
+        session,
+        file,
+        log,
+    };
     std::thread::spawn(move || read_terminal(sender));
-    let result = event_loop(&mut terminal, &mut view, &control);
+    let result = event_loop(&mut terminal, &mut app, &control);
     restore_terminal();
     result.map_err(|e| format!("terminal error: {}", io_message(&e)))
 }
@@ -296,9 +307,158 @@ fn read_terminal(control: Sender<Control>) {
     }
 }
 
+/// A block that has run: its terminal, and its run while it runs.
+struct Ran {
+    terminal: term::Terminal,
+    run: Option<run::Run>,
+}
+
+/// The state that the event loop owns.
+struct App {
+    view: view::View,
+    session: run::Session,
+    /// The blocks that have run, by index.
+    ran: Vec<Option<Ran>>,
+    /// The absolute paths of the runbook and of the log.
+    file: PathBuf,
+    log: Option<PathBuf>,
+}
+
+/// An event of the loop: a control event, or a message from the run of a
+/// block.
+enum Incoming {
+    Control(Control),
+    Run(usize, run::Event),
+}
+
+/// After output, the loop reads the next events for this long before it
+/// draws: a program that prints a lot redraws the view at most this often.
+const FRAME: Duration = Duration::from_millis(16);
+
+impl App {
+    /// The next event, a control event first, until `deadline`, or with no
+    /// end. An error means that the thread that reads the keys stopped.
+    fn next(
+        &self,
+        control: &Receiver<Control>,
+        deadline: Option<Instant>,
+    ) -> Option<Result<Incoming, RecvError>> {
+        if let Ok(event) = control.try_recv() {
+            return Some(Ok(Incoming::Control(event)));
+        }
+        let runs: Vec<_> = (self.ran.iter().enumerate())
+            .filter_map(|(i, ran)| Some((i, &ran.as_ref()?.run.as_ref()?.events)))
+            .collect();
+        // Not biased among the runs, so that no run's output waits for
+        // another's.
+        let mut select = Select::new();
+        select.recv(control);
+        for (_, events) in &runs {
+            select.recv(events);
+        }
+        let operation = match deadline {
+            Some(deadline) => select.select_deadline(deadline).ok()?,
+            None => select.select(),
+        };
+        Some(match operation.index() {
+            0 => operation.recv(control).map(Incoming::Control),
+            n => {
+                let (i, events) = runs[n - 1];
+                let event = operation.recv(events);
+                let event = event.expect("a reader sends the exit status before it stops");
+                Ok(Incoming::Run(i, event))
+            }
+        })
+    }
+
+    /// Applies a terminal event, and returns how the loop ends, if it does.
+    fn handle(&mut self, event: &Event, size: Size) -> Option<Exit> {
+        if let Event::Resize(..) = event {
+            self.resize(size);
+        }
+        match action(event, size)? {
+            Action::Quit => return Some(Exit::Quit),
+            Action::Select(step) => self.view.select_by(step, size),
+            Action::First => self.view.select_first(size),
+            Action::Last => self.view.select_last(size),
+            Action::Page(pages) => self.view.scroll_pages(pages, size),
+            Action::Run => {
+                if self.view.reveal(size)
+                    && let Some(i) = self.view.selected
+                {
+                    self.start(i, size);
+                }
+            }
+        }
+        None
+    }
+
+    /// Starts a run of block `i`, unless it runs or cannot run.
+    fn start(&mut self, i: usize, size: Size) {
+        let block = &self.view.doc.blocks[i];
+        let running = self.ran[i].as_ref().is_some_and(|ran| ran.run.is_some());
+        if block.problem.is_some() || running {
+            return;
+        }
+        let (columns, rows) = self.view.pty_size(i, size);
+        let label = self.view.doc.label(i);
+        let env = run::Env {
+            file: &self.file,
+            log: self.log.as_deref(),
+            block: &label,
+        };
+        if let Ok(run) = self.session.start(&block.code, &env, columns, rows) {
+            let terminal = term::Terminal::new(columns, rows);
+            self.ran[i] = Some(Ran {
+                terminal,
+                run: Some(run),
+            });
+            self.view.set_output(i, Vec::new(), size);
+        }
+    }
+
+    /// Reads a message from the run of block `i`.
+    fn read(&mut self, i: usize, event: run::Event, size: Size) {
+        let Some(ran) = &mut self.ran[i] else {
+            return;
+        };
+        match event {
+            run::Event::Output(bytes) => ran.terminal.process(&bytes),
+            run::Event::Exit(_) => {
+                if let Some(run) = ran.run.take() {
+                    self.session.finish(&run);
+                }
+            }
+        }
+        let lines = ran.terminal.last_rows(term::OUTPUT_ROWS, ran.run.is_some());
+        self.view.set_output(i, lines, size);
+    }
+
+    /// Gives each running block a PTY of its new size (spec 6.3).
+    fn resize(&mut self, size: Size) {
+        if view::too_small(size) {
+            return;
+        }
+        for i in 0..self.ran.len() {
+            let Some(Ran {
+                terminal,
+                run: Some(run),
+            }) = &mut self.ran[i]
+            else {
+                continue;
+            };
+            let (columns, rows) = self.view.pty_size(i, size);
+            let _ = run.resize(columns, rows);
+            terminal.resize(columns, rows);
+            let lines = terminal.last_rows(term::OUTPUT_ROWS, true);
+            self.view.set_output(i, lines, size);
+        }
+    }
+}
+
 fn event_loop(
     terminal: &mut DefaultTerminal,
-    view: &mut view::View,
+    app: &mut App,
     control: &Receiver<Control>,
 ) -> std::io::Result<Exit> {
     loop {
@@ -313,28 +473,31 @@ fn event_loop(
             Clear(ClearType::All)
         )?;
         terminal.swap_buffers();
-        terminal.draw(|frame| view.draw(frame))?;
+        terminal.draw(|frame| app.view.draw(frame))?;
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
-        let event = match control.recv() {
-            Ok(Control::Terminal(event)) => event?,
-            Ok(Control::Signal(signal)) => return Ok(Exit::Signal(signal)),
-            Err(_) => {
-                return Err(std::io::Error::other(
-                    "the thread that reads the keys stopped",
-                ));
-            }
-        };
-        let size = terminal.size()?;
-        match action(&event, size) {
-            Some(Action::Quit) => return Ok(Exit::Quit),
-            Some(Action::Select(step)) => view.select_by(step, size),
-            Some(Action::First) => view.select_first(size),
-            Some(Action::Last) => view.select_last(size),
-            Some(Action::Page(pages)) => view.scroll_pages(pages, size),
-            Some(Action::Run) => {
-                view.reveal(size);
-            }
-            None => {}
+        // The events of one frame: after a key, those that wait; after
+        // output, those of the next FRAME.
+        let mut deadline = None;
+        while let Some(incoming) = app.next(control, deadline) {
+            let Ok(incoming) = incoming else {
+                let error = "the thread that reads the keys stopped";
+                return Err(std::io::Error::other(error));
+            };
+            let size = terminal.size()?;
+            let wait = match incoming {
+                Incoming::Control(Control::Terminal(event)) => {
+                    if let Some(exit) = app.handle(&event?, size) {
+                        return Ok(exit);
+                    }
+                    Duration::ZERO
+                }
+                Incoming::Control(Control::Signal(signal)) => return Ok(Exit::Signal(signal)),
+                Incoming::Run(i, event) => {
+                    app.read(i, event, size);
+                    FRAME
+                }
+            };
+            deadline.get_or_insert(Instant::now() + wait);
         }
     }
 }
@@ -519,5 +682,98 @@ mod tests {
     fn io_messages_lose_the_os_error_number() {
         let error = std::io::Error::from_raw_os_error(2);
         assert_eq!(io_message(&error), "No such file or directory");
+    }
+
+    fn app(markdown: &str, tmp: &Path) -> App {
+        let workspace = run::Workspace::create(tmp).unwrap();
+        let path = std::env::var_os("PATH").unwrap();
+        let bash = run::find_in_path("bash", &path).unwrap();
+        let state = run::State::new(tmp.into(), [("PATH".into(), path)]);
+        let session = run::Session::new(workspace, bash, state).unwrap();
+        let view = view::View::new(doc::parse(markdown), "run.md".into());
+        App {
+            ran: (0..view.doc.blocks.len()).map(|_| None).collect(),
+            view,
+            session,
+            file: tmp.join("run.md"),
+            log: None,
+        }
+    }
+
+    fn enter(app: &mut App, size: Size) {
+        let key = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.handle(&key, size), None);
+    }
+
+    fn running(app: &App) -> bool {
+        app.ran.iter().flatten().any(|ran| ran.run.is_some())
+    }
+
+    /// Reads the messages of the runs until `done`.
+    fn read_until(app: &mut App, size: Size, done: impl Fn(&App) -> bool) {
+        let (_sender, control) = crossbeam_channel::unbounded();
+        while !done(app) {
+            let Some(Ok(Incoming::Run(i, event))) = app.next(&control, None) else {
+                panic!("not a message of a run");
+            };
+            app.read(i, event, size);
+        }
+    }
+
+    fn output(app: &App, i: usize) -> String {
+        view::tests::markup(app.view.output(i))
+    }
+
+    #[test]
+    fn enter_runs_the_selected_block_and_shows_its_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\necho hi\nexport A=1\n```\n", tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        assert_eq!(output(&app, 0), "hi");
+        let a = app.session.state.vars.get(OsStr::new("A"));
+        assert_eq!(a.map(|a| a.to_str().unwrap()), Some("1"));
+    }
+
+    #[test]
+    fn enter_on_a_running_block_starts_no_second_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\necho ready\nread\n```\n", tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        enter(&mut app, SIZE);
+        assert!(!app.session.workspace().join("run-2.sh").exists());
+        let ran = app.ran[0].as_ref().unwrap();
+        ran.run.as_ref().unwrap().write(b"\n").unwrap();
+        read_until(&mut app, SIZE, |app| !running(app));
+    }
+
+    #[test]
+    fn a_block_that_cannot_run_does_not_start() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app(
+            "```bash [name:a]\n```\n\n```bash [name:a]\n```\n",
+            tmp.path(),
+        );
+        enter(&mut app, SIZE);
+        assert!(app.ran[0].is_none());
+    }
+
+    #[test]
+    fn a_resize_gives_a_running_block_a_pty_of_its_new_size() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\necho ready\nread\nstty size\n```\n", tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        let size = Size::new(100, 30);
+        assert_eq!(app.handle(&Event::Resize(100, 30), size), None);
+        let ran = app.ran[0].as_ref().unwrap();
+        ran.run.as_ref().unwrap().write(b"\n").unwrap();
+        read_until(&mut app, size, |app| !running(app));
+        let (columns, rows) = app.view.pty_size(0, size);
+        assert_eq!(
+            output(&app, 0).lines().last(),
+            Some(&*format!("{rows} {columns}"))
+        );
     }
 }

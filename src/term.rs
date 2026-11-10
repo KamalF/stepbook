@@ -1,9 +1,5 @@
 //! The terminal of a run: a vt100 screen, and its rows as lines of the
 //! view (spec 6.3).
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Enter starts runs in the next commit")
-)]
 use std::num::NonZeroU16;
 
 use ratatui::style::{Color, Modifier, Style};
@@ -13,6 +9,9 @@ use crate::doc::escaped;
 
 /// The lines of scrollback of a run (spec 6.3).
 const SCROLLBACK: usize = 5_000;
+
+/// The rows of output under a block (spec 6.3).
+pub const OUTPUT_ROWS: usize = 15;
 
 /// The screen of a run. Program output reaches the outer terminal only
 /// through it, as text and styles: never as escape sequences (spec 6.4).
@@ -178,7 +177,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn rows(terminal: &mut Terminal, cursor: bool) -> String {
-        markup(&terminal.last_rows(15, cursor))
+        markup(&terminal.last_rows(OUTPUT_ROWS, cursor))
     }
 
     fn after(bytes: &[u8], columns: u16, rows: u16) -> Terminal {

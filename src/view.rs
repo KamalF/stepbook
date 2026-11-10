@@ -28,13 +28,15 @@ const WRAP_MARK: &str = "↪";
 /// The sidebar shows on terminals at least this wide.
 const SIDEBAR_SCREEN_WIDTH: u16 = 80;
 
-/// The state of the screen: the document, its file name and the
-/// selection.
+/// The state of the screen: the document, its file name, the selection,
+/// and the output of the blocks.
 pub struct View {
     pub doc: Document,
     pub title: String,
     pub selected: Option<usize>,
     pub scroll: usize,
+    /// The output under each block: the last rows of its terminal.
+    outputs: Vec<Vec<Line<'static>>>,
     /// The layout of the document at the last width: each key and each
     /// frame needs it, and 1 MB of tabs in code takes 0.9 s to lay out.
     page: RefCell<Option<Rc<Page>>>,
@@ -44,6 +46,7 @@ impl View {
     pub fn new(doc: Document, title: String) -> Self {
         let selected = (!doc.blocks.is_empty()).then_some(0);
         View {
+            outputs: vec![Vec::new(); doc.blocks.len()],
             doc,
             title,
             selected,
@@ -64,16 +67,26 @@ impl View {
             self.draw_sidebar(frame, sidebar);
         }
         frame.render_widget(self.document_block(), document);
-        let (page, text, scroll) = self.page(frame.area());
-        let visible = page.lines.iter().enumerate().skip(scroll);
-        for (y, (i, line)) in (text.y..text.bottom()).zip(visible) {
-            let line = match self.selected {
-                Some(block) if page.blocks[block].contains(&i) => {
-                    let mut line = line.clone();
-                    line.spans[page.gutters[block]].style = SELECTED;
-                    line
+        let (shown, text, scroll) = self.shown(frame.area());
+        let page = &shown.page;
+        for (y, row) in (text.y..text.bottom()).zip(scroll..shown.len()) {
+            let line = match shown.row(row) {
+                Row::Page(i) => match self.selected {
+                    Some(block) if page.blocks[block].contains(&i) => {
+                        let mut line = page.lines[i].clone();
+                        line.spans[page.prefixes[block].len()].style = SELECTED;
+                        line
+                    }
+                    _ => page.lines[i].clone(),
+                },
+                // Output takes the column of the code, and no gutter: code
+                // rows always have one.
+                Row::Output(block, i) => {
+                    let mut spans = page.prefixes[block].clone();
+                    spans.push(Span::raw(" ".repeat(GUTTER.chars().count())));
+                    spans.extend(self.outputs[block][i].spans.iter().cloned());
+                    Line::from(spans)
                 }
-                _ => line.clone(),
             };
             frame.buffer_mut().set_line(text.x, y, &line, text.width);
         }
@@ -106,10 +119,10 @@ impl View {
         (Some(sidebar), document, footer)
     }
 
-    /// The page of the document view on `screen`, the area of its text, and
+    /// The rows of the document view on `screen`, the area of its text, and
     /// the scroll, no more than the largest one. The keys and the drawing
     /// both use it, so that they agree on the height of the view.
-    fn page(&self, screen: Rect) -> (Rc<Page>, Rect, usize) {
+    fn shown(&self, screen: Rect) -> (Shown, Rect, usize) {
         let (_, document, _) = self.areas(screen);
         let text = self.document_block().inner(document);
         let width = usize::from(text.width);
@@ -118,8 +131,38 @@ impl View {
             Some(page) if page.width == width => page.clone(),
             _ => cache.insert(Rc::new(layout(&self.doc, width))).clone(),
         };
-        let scroll = self.scroll.min(max_scroll(&page, usize::from(text.height)));
-        (page, text, scroll)
+        let shown = Shown::new(page, &self.outputs);
+        let scroll = self.scroll.min(shown.max_scroll(usize::from(text.height)));
+        (shown, text, scroll)
+    }
+
+    /// The size of the PTY of block `i` on a screen of `size`: the columns
+    /// of its code, by the height of the screen without the footer (spec
+    /// 6.3).
+    pub fn pty_size(&self, i: usize, size: Size) -> (u16, u16) {
+        let (shown, text, _) = self.shown(screen(size));
+        let prefix = text_width(&shown.page.prefixes[i]) + GUTTER.chars().count();
+        let columns = usize::from(text.width).saturating_sub(prefix).max(1);
+        (columns as u16, size.height.saturating_sub(1).max(1))
+    }
+
+    #[cfg(test)]
+    pub fn output(&self, i: usize) -> &[Line<'static>] {
+        &self.outputs[i]
+    }
+
+    /// Sets the output under block `i`. If the block is selected, and its
+    /// output grows past the bottom of the view, the view scrolls to keep
+    /// its last row visible (spec 6.3).
+    pub fn set_output(&mut self, i: usize, lines: Vec<Line<'static>>, size: Size) {
+        let grew = lines.len() > self.outputs[i].len();
+        self.outputs[i] = lines;
+        if !grew || self.selected != Some(i) || too_small(size) {
+            return;
+        }
+        let (shown, text, scroll) = self.shown(screen(size));
+        let end = shown.block(i).end + self.outputs[i].len();
+        self.scroll = scroll.max(end.saturating_sub(usize::from(text.height)));
     }
 
     fn document_block(&self) -> Block<'static> {
@@ -192,8 +235,8 @@ impl View {
     pub fn select_last(&mut self, size: Size) {
         match self.doc.blocks.len() {
             0 => {
-                let (page, text, _) = self.page(screen(size));
-                self.scroll = max_scroll(&page, usize::from(text.height));
+                let (shown, text, _) = self.shown(screen(size));
+                self.scroll = shown.max_scroll(usize::from(text.height));
             }
             n => self.select(n - 1, size),
         }
@@ -212,9 +255,9 @@ impl View {
         let Some(i) = self.selected else {
             return false;
         };
-        let (page, text, scroll) = self.page(screen(size));
+        let (shown, text, scroll) = self.shown(screen(size));
         let height = usize::from(text.height);
-        self.scroll = scroll_to(scroll, page.tops[i], &page.blocks[i], height);
+        self.scroll = scroll_to(scroll, shown.top(i), &shown.block(i), height);
         self.scroll == scroll
     }
 
@@ -223,13 +266,13 @@ impl View {
     /// block in view, but never against the scroll: at the bottom, Page
     /// Down must not select the block above, which Enter would then run.
     pub fn scroll_pages(&mut self, pages: isize, size: Size) {
-        let (page, text, scroll) = self.page(screen(size));
+        let (shown, text, scroll) = self.shown(screen(size));
         let height = usize::from(text.height);
         self.scroll = scroll
             .saturating_add_signed(pages * height as isize)
-            .min(max_scroll(&page, height));
+            .min(shown.max_scroll(height));
         let view = self.scroll..self.scroll + height;
-        let blocks = &page.blocks;
+        let blocks: Vec<_> = (0..self.doc.blocks.len()).map(|i| shown.block(i)).collect();
         let in_view = blocks.iter().position(|b| view.contains(&b.start));
         let overlap = || {
             blocks
@@ -263,9 +306,64 @@ fn screen(size: Size) -> Rect {
     Rect::from((Position::ORIGIN, size))
 }
 
-/// The largest scroll: the last line of the page at the bottom of the view.
-fn max_scroll(page: &Page, height: usize) -> usize {
-    page.lines.len().saturating_sub(height)
+/// The rows of the document view: the lines of the page, with the output
+/// of each block under its code.
+struct Shown {
+    page: Rc<Page>,
+    /// The rows of output above each block, then the rows of all output.
+    above: Vec<usize>,
+}
+
+/// A row of the document view.
+enum Row {
+    /// A line of the page.
+    Page(usize),
+    /// A row of the output of a block.
+    Output(usize, usize),
+}
+
+impl Shown {
+    fn new(page: Rc<Page>, outputs: &[Vec<Line<'static>>]) -> Shown {
+        let mut above = vec![0];
+        for output in outputs {
+            above.push(above[above.len() - 1] + output.len());
+        }
+        Shown { page, above }
+    }
+
+    fn len(&self) -> usize {
+        self.page.lines.len() + self.above[self.above.len() - 1]
+    }
+
+    /// The largest scroll: the last row at the bottom of the view.
+    fn max_scroll(&self, height: usize) -> usize {
+        self.len().saturating_sub(height)
+    }
+
+    /// The rows of the info line and the code of block `i`.
+    fn block(&self, i: usize) -> Range<usize> {
+        let block = &self.page.blocks[i];
+        block.start + self.above[i]..block.end + self.above[i]
+    }
+
+    /// The row of the paragraph above block `i`.
+    fn top(&self, i: usize) -> usize {
+        self.page.tops[i] + self.above[i]
+    }
+
+    fn row(&self, row: usize) -> Row {
+        // The blocks whose output starts at or above `row`.
+        let blocks = &self.page.blocks;
+        let n = (0..blocks.len())
+            .take_while(|&i| blocks[i].end + self.above[i] <= row)
+            .count();
+        match n.checked_sub(1) {
+            Some(i) if row < blocks[i].end + self.above[i + 1] => {
+                Row::Output(i, row - blocks[i].end - self.above[i])
+            }
+            _ => Row::Page(row - self.above[n]),
+        }
+    }
 }
 
 /// The scroll closest to `scroll` that shows the lines from `top` to the
@@ -299,10 +397,11 @@ pub struct Page {
     /// The first line of the paragraph above each block, or the first line
     /// of the block if no paragraph is right above it.
     pub tops: Vec<usize>,
-    /// The index of the gutter's span in the lines of each block, after the
-    /// prefixes. The view draws the gutter of the selected block in the
-    /// style of the selection.
-    pub gutters: Vec<usize>,
+    /// The prefix of the rows of each block after its first: its output
+    /// takes it too. The gutter's span comes right after it, and the view
+    /// draws the gutter of the selected block in the style of the
+    /// selection.
+    pub prefixes: Vec<Vec<Span<'static>>>,
 }
 
 /// The lines of the document view at `width` columns.
@@ -310,7 +409,7 @@ pub fn layout(doc: &Document, width: usize) -> Page {
     let mut lines = Vec::new();
     let mut blocks = vec![0..0; doc.blocks.len()];
     let mut tops = vec![0; doc.blocks.len()];
-    let mut gutters = vec![0; doc.blocks.len()];
+    let mut prefixes = vec![Vec::new(); doc.blocks.len()];
     // The first line of the last item that is not blank, if it is text.
     let mut paragraph = None;
     for item in &doc.items {
@@ -342,7 +441,7 @@ pub fn layout(doc: &Document, width: usize) -> Page {
             Kind::Code { block: Some(i), .. } => {
                 blocks[i] = start..lines.len();
                 tops[i] = paragraph.unwrap_or(start);
-                gutters[i] = rest.len();
+                prefixes[i] = rest.to_vec();
             }
             Kind::Blank => continue,
             _ => {}
@@ -354,7 +453,7 @@ pub fn layout(doc: &Document, width: usize) -> Page {
         lines,
         blocks,
         tops,
-        gutters,
+        prefixes,
     }
 }
 
@@ -1715,6 +1814,64 @@ pub(crate) mod tests {
         let shorter = Size::new(60, 8);
         assert!(!view.reveal(shorter));
         assert_eq!(view.scroll, 12);
+    }
+
+    fn output(rows: &[&str]) -> Vec<Line<'static>> {
+        rows.iter().map(|row| Line::from(row.to_string())).collect()
+    }
+
+    #[test]
+    fn output_shows_under_its_code_after_the_prefixes_and_without_a_gutter() {
+        let mut view = view("- item\n\n  ```bash\n  ls\n  ```\n\n```bash\nls\n```\n");
+        view.set_output(0, output(&["one", "two"]), SMALL);
+        view.set_output(1, output(&["\u{2590} three"]), SMALL);
+        assert_snapshot!(screen(&view, 60, 13), @"
+        ┌ run.md ──────────────────────────────────────────────────┐
+        │ • item                                                   │
+        │                                                          │
+        │   «cyan,b:▐ »«b:#1»                                                   │
+        │   «cyan,b:▐ »«blue:ls»                                                   │
+        │     one                                                  │
+        │     two                                                  │
+        │                                                          │
+        │ ▐ «b:#2»                                                     │
+        │ ▐ «blue:ls»                                                     │
+        │   ▐ three                                                │
+        └──────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn the_keys_count_the_rows_of_output() {
+        let mut view = steps();
+        view.set_output(0, output(&["o"; 4]), SMALL);
+        view.select_by(1, SMALL);
+        assert_eq!(position(&view), (Some(1), 15));
+        view.select_last(SMALL);
+        assert_eq!(position(&view), (Some(3), 33));
+    }
+
+    #[test]
+    fn the_view_follows_the_output_of_the_selected_block_when_it_grows() {
+        let mut view = steps();
+        // Block 0 ends at line 8, and the view shows 6 lines.
+        view.set_output(1, output(&["o"; 10]), SMALL);
+        assert_eq!(view.scroll, 0);
+        view.set_output(0, output(&["o"; 3]), SMALL);
+        assert_eq!(view.scroll, 5);
+        view.scroll = 0;
+        view.set_output(0, output(&["p"; 3]), SMALL);
+        assert_eq!(view.scroll, 0);
+        view.set_output(0, output(&["o"; 4]), SMALL);
+        assert_eq!(view.scroll, 6);
+    }
+
+    #[test]
+    fn the_pty_of_a_block_takes_the_columns_of_its_code() {
+        let view = view("- item\n\n  ```bash\n  ls\n  ```\n\n```bash\nls\n```\n");
+        // The text of the view is 65 columns wide, beside the sidebar.
+        assert_eq!(view.pty_size(0, Size::new(80, 24)), (61, 23));
+        assert_eq!(view.pty_size(1, Size::new(80, 24)), (63, 23));
     }
 
     #[test]

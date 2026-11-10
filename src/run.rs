@@ -1,9 +1,4 @@
 //! Runs: the workspace, the session state, and the PTY of each run.
-#![cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Enter starts runs in a later commit")
-)]
-
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::{DirBuilder, File, OpenOptions};
@@ -183,6 +178,10 @@ pub struct Run {
     state_file: PathBuf,
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the block states of the next commit")
+)]
 pub enum Event {
     Output(Vec<u8>),
     Exit(Status),
@@ -194,6 +193,10 @@ pub enum Status {
     Signal(i32),
 }
 
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "the block states of the next commit")
+)]
 impl Status {
     /// The exit code, as a shell reports it: 128 + N for signal N.
     pub fn rc(self) -> i32 {
@@ -332,8 +335,24 @@ impl Session {
 
 impl Run {
     /// Writes to the program, as keys would.
+    #[cfg_attr(not(test), expect(dead_code, reason = "input mode, in milestone 3"))]
     pub fn write(&self, bytes: &[u8]) -> std::io::Result<()> {
         (&self.master).write_all(bytes)
+    }
+
+    /// Sets the size of the PTY. The kernel sends SIGWINCH to the program.
+    pub fn resize(&self, columns: u16, rows: u16) -> std::io::Result<()> {
+        rustix::termios::tcsetwinsize(&self.master, winsize(columns, rows))?;
+        Ok(())
+    }
+}
+
+fn winsize(columns: u16, rows: u16) -> Winsize {
+    Winsize {
+        ws_row: rows,
+        ws_col: columns,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
     }
 }
 
@@ -347,13 +366,7 @@ fn open_pty(columns: u16, rows: u16) -> std::io::Result<(File, OwnedFd)> {
     let name = rustix::pty::ptsname(&master, Vec::new())?;
     let flags = OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC;
     let slave = rustix::fs::open(name.as_c_str(), flags, Mode::empty())?;
-    let size = Winsize {
-        ws_row: rows,
-        ws_col: columns,
-        ws_xpixel: 0,
-        ws_ypixel: 0,
-    };
-    rustix::termios::tcsetwinsize(&master, size)?;
+    rustix::termios::tcsetwinsize(&master, winsize(columns, rows))?;
     Ok((File::from(master), slave))
 }
 

@@ -149,7 +149,8 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 
 - Each block that has run shows its output under the code. The output stays until the block runs again. Reloads do not clear it.
 - stepbook shows the last 15 rows of the block's terminal, scrollback included. Trailing empty rows are trimmed, except the cursor row while the block runs.
-- PTY size: the document text width minus the gutter, by the terminal height minus 1. It follows terminal resizes.
+- The output takes the column of the code, after the prefixes of the block, with no gutter: code rows always have one.
+- PTY size: the columns of the block's code, which are the text width of the document view without the prefixes and the gutter of the block, by the terminal height minus 1. It follows terminal resizes.
 - Output keeps the colors of the program, 256 colors and RGB included, as in a terminal.
 - Scrollback keeps 5,000 lines per run.
 - A UTF-8 character that is split across two reads of the PTY shows whole (upmd issue K18, see 18).
@@ -380,6 +381,7 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 - Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `rustix` (the PTY and the signals to a process group), `vt100`, `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
 - The main thread owns all state. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events.
 - Control events (keys, paste, resize, signals, file change) go to their own channel. The loop handles them before pending output, so keys stay responsive while a block prints a lot.
+- After output, the loop reads the events of the next 16 ms before it draws: a program that prints a lot redraws the view at most about 60 times a second.
 - Each run sends its output, then its exit status, through its own bounded channel, so that the end of a run never comes before its output. A slow UI slows the program, and no output is lost.
 - The channel of a run goes away with the run, so that a message from an old run never reaches a new run of the same block (upmd issue K5, see 18).
 
