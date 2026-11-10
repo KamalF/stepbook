@@ -624,8 +624,9 @@ pub fn needs_escape(c: char) -> bool {
 /// comment, and runs curl. It escapes the format characters that join the
 /// next character, such as U+070F, U+2D7F and the regional indicators: a
 /// terminal may count their columns otherwise than ratatui, and the text
-/// after them would shift. Prose keeps them all, for emoji, scripts and no-break
-/// spaces.
+/// after them would shift. It escapes "␣" and "⇥", which would pass for
+/// the marks of a space and a tab. Prose keeps them all, for emoji, scripts
+/// and no-break spaces.
 pub fn needs_escape_in_code(c: char) -> bool {
     needs_escape(c)
         || matches!(
@@ -657,6 +658,8 @@ pub fn needs_escape_in_code(c: char) -> bool {
                 | '\u{202f}'
                 | '\u{205f}'
                 | '\u{2800}'
+                | '\u{21e5}'
+                | '\u{2423}'
                 | '\u{3000}'
                 | '\u{ad}'
                 | '\u{34f}'
@@ -1523,6 +1526,14 @@ mod tests {
     }
 
     #[test]
+    fn code_escapes_the_characters_of_its_marks() {
+        for c in ['␣', '⇥'] {
+            assert!(needs_escape_in_code(c) && !needs_escape(c), "{c:?}");
+        }
+        assert_eq!(warnings("rm -rf /tmp/a␣/\n"), ["hidden characters in code"]);
+    }
+
+    #[test]
     fn code_escapes_each_range_of_default_ignorable_code_points() {
         let ends = [
             '\u{ad}',
@@ -1575,6 +1586,8 @@ mod tests {
             Just('\u{1f468}'),
             Just('\u{1f3fb}'),
             Just('\\'),
+            Just('⇥'),
+            Just('␣'),
         ];
         prop::collection::vec(chars, 0..60).prop_map(|c| c.into_iter().collect())
     }
@@ -1604,9 +1617,11 @@ mod tests {
                     code.map(|l| text(&code_line(&[Span::raw(l)], &mut false))).collect();
                 prop_assert_eq!(&shown, &expected);
                 for span in lines.iter().flatten() {
-                    // Only the mark of a tab is dim.
+                    // Only the mark of a tab is dim, and the glyph of a
+                    // mark is always a mark.
                     let dim = span.style.add_modifier.contains(Modifier::DIM);
                     prop_assert!(!dim || span.content.replace(TAB_MARK, "").is_empty(), "{:?}", span);
+                    prop_assert!(dim || !span.content.contains(['⇥', '␣']), "{:?}", span);
                     for g in span.styled_graphemes(Style::new()) {
                         prop_assert!(!hides(g.symbol), "{:?} in {:?}", g.symbol, span);
                     }
