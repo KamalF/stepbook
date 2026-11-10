@@ -35,6 +35,7 @@ pub struct Terminal {
     parser: vt100::Parser,
     columns: u16,
     rows: u16,
+    repeats: RepeatCap,
 }
 
 fn size(n: u16) -> NonZeroU16 {
@@ -51,6 +52,7 @@ impl Terminal {
             parser: parser(columns, rows),
             columns,
             rows,
+            repeats: RepeatCap::default(),
         }
     }
 
@@ -72,7 +74,9 @@ impl Terminal {
     /// Reads the output of a run. vt100 keeps the start of a UTF-8
     /// character that ends in the next read (upmd issue K18).
     pub fn process(&mut self, bytes: &[u8]) {
-        self.guarded(|parser| parser.process(bytes));
+        let cells = usize::from(self.columns) * usize::from(self.rows);
+        let bytes = self.repeats.filter(bytes, cells.max(1));
+        self.guarded(|parser| parser.process(&bytes));
     }
 
     pub fn resize(&mut self, columns: u16, rows: u16) {
@@ -89,6 +93,58 @@ impl Terminal {
             None => last_rows(&mut self.parser, cursor),
         }
     }
+}
+
+/// Caps the count of REP (`ESC [ n b`), which repeats the last character n
+/// times: vt100 writes each one, and 8 KB of `ESC [ 65535 b` held the main
+/// thread for 2.25 s. Past the cells of the screen, more repeats show
+/// nothing more. A sequence can end in the next read.
+#[derive(Default)]
+struct RepeatCap {
+    /// After an ESC.
+    escape: bool,
+    /// The bytes after the `ESC [` of a sequence that has not ended.
+    sequence: Option<Vec<u8>>,
+}
+
+impl RepeatCap {
+    fn filter(&mut self, bytes: &[u8], limit: usize) -> Vec<u8> {
+        let mut out = Vec::with_capacity(bytes.len());
+        for &byte in bytes {
+            if let Some(mut sequence) = self.sequence.take() {
+                // Parameter and intermediate bytes, up to a final byte.
+                if (0x20..=0x3f).contains(&byte) && sequence.len() < 64 {
+                    sequence.push(byte);
+                    self.sequence = Some(sequence);
+                    continue;
+                }
+                if byte == b'b' {
+                    sequence = capped(&sequence, limit);
+                }
+                out.extend(sequence);
+            }
+            if std::mem::take(&mut self.escape) && byte == b'[' {
+                self.sequence = Some(Vec::new());
+            }
+            self.escape = byte == 0x1b;
+            out.push(byte);
+        }
+        out
+    }
+}
+
+/// The parameters of a REP, with a count of at most `limit`.
+fn capped(parameters: &[u8], limit: usize) -> Vec<u8> {
+    let count = parameters.split(|&b| b == b';').next().unwrap_or_default();
+    if count.is_empty() || !count.iter().all(u8::is_ascii_digit) {
+        return parameters.to_vec();
+    }
+    // Digits only: a count too large for usize is too large.
+    let count_value = std::str::from_utf8(count).ok().and_then(|n| n.parse().ok());
+    if count_value.is_some_and(|n: usize| n <= limit) {
+        return parameters.to_vec();
+    }
+    [limit.to_string().as_bytes(), &parameters[count.len()..]].concat()
 }
 
 /// The last `OUTPUT_ROWS` rows of the terminal: see `Terminal::last_rows`.
@@ -298,6 +354,28 @@ mod tests {
         terminal.resize(10, 3);
         terminal.process(b"0123456789abc");
         assert_eq!(rows(&mut terminal, false), "0123456789\nabc");
+    }
+
+    #[test]
+    fn rep_repeats_at_most_the_cells_of_the_screen() {
+        let mut cap = RepeatCap::default();
+        assert_eq!(cap.filter(b"a\x1b[65535b", 100), b"a\x1b[100b");
+        assert_eq!(cap.filter(b"a\x1b[655", 100), b"a\x1b[");
+        assert_eq!(cap.filter(b"35;2b", 100), b"100;2b");
+        assert_eq!(cap.filter(b"\x1b[99999999999999999999b", 100), b"\x1b[100b");
+        assert_eq!(cap.filter(b"\x1b", 100), b"\x1b");
+        assert_eq!(cap.filter(b"[65535b", 100), b"[100b");
+        // Other sequences, and small counts, stay.
+        let others = [
+            &b"\x1b[100b\x1b[b\x1b[31m\x1b[2Jb"[..],
+            b"[65535b",
+            b"\x1b[?65535b",
+        ];
+        for bytes in others {
+            assert_eq!(RepeatCap::default().filter(bytes, 100), bytes);
+        }
+        let mut terminal = after(b"x\x1b[3b", 80, 24);
+        assert_eq!(rows(&mut terminal, false), "xxxx");
     }
 
     #[test]
