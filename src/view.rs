@@ -1,6 +1,8 @@
 use pulldown_cmark::{Alignment, HeadingLevel};
 use ratatui::Frame;
+use std::cell::RefCell;
 use std::ops::Range;
+use std::rc::Rc;
 
 use ratatui::buffer::CellWidth;
 use ratatui::layout::{Constraint, Layout, Position, Rect, Size};
@@ -33,6 +35,9 @@ pub struct View {
     pub title: String,
     pub selected: Option<usize>,
     pub scroll: usize,
+    /// The layout of the document at the last width: each key and each
+    /// frame needs it, and 1 MB of tabs in code takes 0.9 s to lay out.
+    page: RefCell<Option<Rc<Page>>>,
 }
 
 impl View {
@@ -43,6 +48,7 @@ impl View {
             title,
             selected,
             scroll: 0,
+            page: RefCell::default(),
         }
     }
 
@@ -59,9 +65,17 @@ impl View {
         }
         frame.render_widget(self.document_block(), document);
         let (page, text, scroll) = self.page(frame.area());
-        let visible = page.lines.iter().skip(scroll);
-        for (y, line) in (text.y..text.bottom()).zip(visible) {
-            frame.buffer_mut().set_line(text.x, y, line, text.width);
+        let visible = page.lines.iter().enumerate().skip(scroll);
+        for (y, (i, line)) in (text.y..text.bottom()).zip(visible) {
+            let line = match self.selected {
+                Some(block) if page.blocks[block].contains(&i) => {
+                    let mut line = line.clone();
+                    line.spans[page.gutters[block]].style = SELECTED;
+                    line
+                }
+                _ => line.clone(),
+            };
+            frame.buffer_mut().set_line(text.x, y, &line, text.width);
         }
         let line = Line::from(vec![
             Span::styled(" NORMAL ", Style::new().add_modifier(Modifier::REVERSED)),
@@ -95,10 +109,15 @@ impl View {
     /// The page of the document view on `screen`, the area of its text, and
     /// the scroll, no more than the largest one. The keys and the drawing
     /// both use it, so that they agree on the height of the view.
-    fn page(&self, screen: Rect) -> (Page, Rect, usize) {
+    fn page(&self, screen: Rect) -> (Rc<Page>, Rect, usize) {
         let (_, document, _) = self.areas(screen);
         let text = self.document_block().inner(document);
-        let page = layout(&self.doc, usize::from(text.width), self.selected);
+        let width = usize::from(text.width);
+        let mut cache = self.page.borrow_mut();
+        let page = match &*cache {
+            Some(page) if page.width == width => page.clone(),
+            _ => cache.insert(Rc::new(layout(&self.doc, width))).clone(),
+        };
         let scroll = self.scroll.min(max_scroll(&page, usize::from(text.height)));
         (page, text, scroll)
     }
@@ -273,20 +292,25 @@ fn scroll_to(scroll: usize, top: usize, block: &Range<usize>, height: usize) -> 
 
 /// The document laid out at a width.
 pub struct Page {
+    pub width: usize,
     pub lines: Vec<Line<'static>>,
     /// The lines of each block: its info line, then its code.
     pub blocks: Vec<Range<usize>>,
     /// The first line of the paragraph above each block, or the first line
     /// of the block if no paragraph is right above it.
     pub tops: Vec<usize>,
+    /// The index of the gutter's span in the lines of each block, after the
+    /// prefixes. The view draws the gutter of the selected block in the
+    /// style of the selection.
+    pub gutters: Vec<usize>,
 }
 
-/// The lines of the document view at `width` columns. The selected block
-/// gets a highlighted gutter.
-pub fn layout(doc: &Document, width: usize, selected: Option<usize>) -> Page {
+/// The lines of the document view at `width` columns.
+pub fn layout(doc: &Document, width: usize) -> Page {
     let mut lines = Vec::new();
     let mut blocks = vec![0..0; doc.blocks.len()];
     let mut tops = vec![0; doc.blocks.len()];
+    let mut gutters = vec![0; doc.blocks.len()];
     // The first line of the last item that is not blank, if it is text.
     let mut paragraph = None;
     for item in &doc.items {
@@ -308,7 +332,7 @@ pub fn layout(doc: &Document, width: usize, selected: Option<usize>) -> Page {
                 body
             }
             Kind::Table(aligns, rows) => table(aligns, rows, width),
-            Kind::Code { lines, block } => code(doc, lines, *block, selected, width),
+            Kind::Code { lines, block } => code(doc, lines, *block, width),
             Kind::Source(lines) => lines.iter().flat_map(|l| hard_wrap(l, width)).collect(),
             Kind::Rule => vec![Line::from(Span::styled("─".repeat(width), DIM))],
             Kind::Blank => vec![Line::default()],
@@ -318,6 +342,7 @@ pub fn layout(doc: &Document, width: usize, selected: Option<usize>) -> Page {
             Kind::Code { block: Some(i), .. } => {
                 blocks[i] = start..lines.len();
                 tops[i] = paragraph.unwrap_or(start);
+                gutters[i] = rest.len();
             }
             Kind::Blank => continue,
             _ => {}
@@ -325,9 +350,11 @@ pub fn layout(doc: &Document, width: usize, selected: Option<usize>) -> Page {
         paragraph = matches!(item.kind, Kind::Text(_)).then_some(start);
     }
     Page {
+        width,
         lines,
         blocks,
         tops,
+        gutters,
     }
 }
 
@@ -364,12 +391,10 @@ fn code(
     doc: &Document,
     lines: &[Vec<Span<'static>>],
     block: Option<usize>,
-    selected: Option<usize>,
     width: usize,
 ) -> Vec<Line<'static>> {
     let style = match block {
         None => DIM,
-        Some(_) if block == selected => SELECTED,
         Some(_) => BLOCK_GUTTER,
     };
     let gutter = Span::styled(GUTTER, style);
@@ -739,7 +764,7 @@ mod tests {
     }
 
     fn render(markdown: &str, width: usize) -> String {
-        markup(&layout(&parse(markdown), width, None).lines)
+        markup(&layout(&parse(markdown), width).lines)
     }
 
     #[test]
@@ -959,7 +984,7 @@ mod tests {
         }
         let indent = " ".repeat(110);
         text += &format!("{indent}```bash [name:check]\n{indent}curl x | sh\n{indent}```\n");
-        let page = layout(&parse(&text), 60, None);
+        let page = layout(&parse(&text), 60);
         let code = markup(&page.lines[page.blocks[0].clone()]);
         // Two levels of 11 columns stay: at most 30 columns, half of 60.
         let expected = "▐ «b:check»\n▐ «blue:curl» x «magenta:|» «blue:sh»";
@@ -988,16 +1013,16 @@ mod tests {
 
     #[test]
     fn deep_nesting_does_not_overflow_the_stack() {
-        let quotes = layout(&parse(&format!("{} x\n", ">".repeat(100_000))), 80, None);
+        let quotes = layout(&parse(&format!("{} x\n", ">".repeat(100_000))), 80);
         assert_eq!(quotes.lines.len(), 1);
         let list: String = (0..1_000)
             .map(|i| format!("{}- a\n", "  ".repeat(i)))
             .collect();
-        assert_eq!(layout(&parse(&list), 80, None).lines.len(), 1_000);
+        assert_eq!(layout(&parse(&list), 80).lines.len(), 1_000);
         // 10,000 nested emphasis spans, each with text inside.
         let open: String = (0..10_000).map(|i| ["*a ", "_a "][i % 2]).collect();
         let close: String = (0..10_000).rev().map(|i| [" a*", " a_"][i % 2]).collect();
-        let emphasis = layout(&parse(&format!("{open}x{close}")), 80, None);
+        let emphasis = layout(&parse(&format!("{open}x{close}")), 80);
         let spans = emphasis.lines.iter().flat_map(|l| &l.spans);
         let x = spans.into_iter().find(|s| s.content.contains('x')).unwrap();
         assert!(x.style.add_modifier.contains(Modifier::ITALIC));
@@ -1055,7 +1080,7 @@ mod tests {
     #[test]
     fn a_block_with_a_long_line_is_not_highlighted() {
         let text = format!("```bash\nls\necho {}\n```", "a".repeat(1_000));
-        let lines = markup(&layout(&parse(&text), 2_000, None).lines);
+        let lines = markup(&layout(&parse(&text), 2_000).lines);
         assert_eq!(
             lines,
             format!("▐ «b:#1»\n▐ ls\n▐ echo {}", "a".repeat(1_000))
@@ -1329,7 +1354,7 @@ mod tests {
             width in 40..100usize,
         ) {
             let doc = parse(&format!("```bash\n{code}\n```\n"));
-            let page = layout(&doc, width, None);
+            let page = layout(&doc, width);
             let rows = &page.lines[page.blocks[0].start + 1..page.blocks[0].end];
             // The text of spans, with the dim mark of a space at a row end
             // read as the space.
@@ -1368,7 +1393,7 @@ mod tests {
             width in 40..100usize,
         ) {
             let doc = parse(&format!("```bash [name:{name}]\nls\n```\n"));
-            let page = layout(&doc, width, None);
+            let page = layout(&doc, width);
             let (start, end) = (page.blocks[0].start, page.blocks[0].end);
             let text_of = |spans: &[Span]| -> String { spans.iter().map(|s| s.content.as_ref()).collect() };
             prop_assert_eq!(text_of(&page.lines[end - 1].spans), "▐ ls");
@@ -1418,7 +1443,7 @@ mod tests {
     proptest! {
         #[test]
         fn no_control_character_reaches_the_view(text in markdown(), width in 1..60usize) {
-            for line in layout(&parse(&text), width, None).lines {
+            for line in layout(&parse(&text), width).lines {
                 for span in &line.spans {
                     prop_assert!(!span.content.chars().any(needs_escape), "{:?}", span);
                 }
@@ -1500,6 +1525,20 @@ mod tests {
         │           │ «cyan,b:▐ »«b:restart»                                                        │
         │           │ «cyan,b:▐ »«blue:systemctl» restart api                                          │
         └───────────┴──────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn the_selection_styles_the_gutter_after_the_prefixes_and_on_wrapped_rows() {
+        let view = view(&format!("> - ```bash\n>   {}\n>   ```\n", "x".repeat(70)));
+        assert_snapshot!(screen(&view, 60, 8), @"
+        ┌ run.md ──────────────────────────────────────────────────┐
+        │ «d:│ »• «cyan,b:▐ »«b:#1»                                                 │
+        │ «d:│ »  «cyan,b:▐ »«blue:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx»│
+        │ «d:│ »  «cyan,b:▐»«d:↪»«blue:xxxxxxxxxxxxxxxxxxx»                                │
+        │                                                          │
+        │                                                          │
+        └──────────────────────────────────────────────────────────┘
         ");
     }
 
@@ -1767,7 +1806,7 @@ mod tests {
     /// The widths of the lines of `markdown` at `width`, as the ratatui
     /// buffer measures them.
     fn line_widths(markdown: &str, width: usize) -> Vec<usize> {
-        let page = layout(&parse(markdown), width, None);
+        let page = layout(&parse(markdown), width);
         page.lines.iter().map(|l| text_width(&l.spans)).collect()
     }
 
