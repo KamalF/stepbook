@@ -992,6 +992,64 @@ mod tests {
     }
 
     #[test]
+    fn exit_without_a_status_in_the_handler_keeps_the_status_of_the_script() {
+        // As in bash: the status from before the trap, but in a subshell
+        // the status of its last command.
+        let codes = [
+            (
+                "set -e\ntrap 'echo cleanup; exit' EXIT\nfalse\n",
+                "cleanup\n",
+                1,
+            ),
+            ("trap 'echo cleanup; exit' EXIT\nexit 3\n", "cleanup\n", 3),
+            ("trap '(true; exit) || echo bad' EXIT\nexit 4\n", "", 4),
+        ];
+        for (code, expected, rc) in codes {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut session = session(tmp.path());
+            let expected = (expected.into(), Status::Code(rc), true);
+            assert_eq!(run(&mut session, code), expected, "{code}");
+        }
+    }
+
+    #[test]
+    fn the_locals_of_a_function_stay_out_of_the_state() {
+        // bash runs the EXIT trap in the function that called exit, or that
+        // a signal stopped.
+        let codes = [
+            "f() { local X=local PATH=/nowhere; local -x ONLY=1; export A=1; exit 1; }\nf\n",
+            "f() { local X=local; g; }\ng() { local +x PATH; export A=1; kill -INT $$; }\nf\n",
+        ];
+        for code in codes {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut session = session(tmp.path());
+            let path = var(&session, "PATH");
+            assert!(run(&mut session, code).2, "{code}");
+            assert_eq!(var(&session, "A").as_deref(), Some("1"), "{code}");
+            assert_eq!(var(&session, "X").as_deref(), Some("1"), "{code}");
+            assert_eq!(var(&session, "PATH"), path, "{code}");
+            assert_eq!(var(&session, "ONLY"), None, "{code}");
+        }
+    }
+
+    #[test]
+    fn a_debug_trap_that_functions_inherit_never_stops_the_wrapper() {
+        for option in ["set -T", "shopt -s extdebug"] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut session = session(tmp.path());
+            let code = format!(
+                "{option}\ntrap 'echo \"+ $BASH_COMMAND\"' DEBUG\n\
+                trap 'echo cleanup' EXIT\nexport A=1\n"
+            );
+            let (output, status, saved) = run(&mut session, &code);
+            assert_eq!((status, saved), (Status::Code(0), true), "{option}");
+            assert!(output.ends_with("cleanup\n"), "{option}: {output}");
+            let names = session.state.vars.keys().map(|n| n.to_string_lossy());
+            assert_eq!(names.collect::<Vec<_>>(), ["A", "PATH", "X"], "{option}");
+        }
+    }
+
+    #[test]
     fn a_run_gets_no_file_descriptor_of_stepbook() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
@@ -1038,16 +1096,24 @@ mod tests {
 
     #[test]
     fn set_x_never_shows_the_wrapper_or_the_variables() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut session = session(tmp.path());
-        let code = "export SECRET=s3cret\nset -x\ntrap 'echo bye' EXIT\ntrue\n";
-        let (output, _, saved) = run(&mut session, code);
-        assert!(saved);
-        assert!(
-            !output.contains("s3cret") && !output.contains("__stepbook"),
-            "{output}"
-        );
-        assert!(output.ends_with("bye\n"), "{output}");
+        // In the script, or turned on again by its handler.
+        let codes = [
+            "set -x\ntrap 'echo bye' EXIT\ntrue\n",
+            "cleanup() { set -x; echo bye; }\ntrap cleanup EXIT\n",
+            "trap 'set -x; echo bye; exit 0' EXIT\n",
+        ];
+        for code in codes {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut session = session(tmp.path());
+            let code = format!("export SECRET=s3cret\n{code}");
+            let (output, _, saved) = run(&mut session, &code);
+            assert!(saved, "{code}");
+            assert!(
+                !output.contains("s3cret") && !output.contains("__stepbook"),
+                "{code}: {output}"
+            );
+            assert!(output.contains("bye\n"), "{code}: {output}");
+        }
     }
 
     #[test]

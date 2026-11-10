@@ -33,19 +33,19 @@ if [ -s "$3" ]; then
     unset __stepbook_entry
 fi
 # The EXIT handler of the wrapper. It keeps the exit status and the flags,
-# then turns set -x, set -v and set -a off, with no trace. One line: set -v
-# shows it at the exit.
-__stepbook_handler='{ __stepbook_code=$? __stepbook_flags=$-; set +axv; } 2>/dev/null; __stepbook_exit'
+# then turns set -x, set -v, set -a and set -T off, with no trace. One line:
+# set -v shows it at the exit. Under set -T, the functions of the wrapper
+# and their command substitutions would run the DEBUG trap of the script,
+# whose output would mix with what they read.
+__stepbook_handler='{ __stepbook_code=$? __stepbook_flags=$-; set +axvT; } 2>/dev/null; __stepbook_exit'
 # The EXIT handler of the script, which the wrapper runs from its own.
 __stepbook_trap=
 
 # Writes the directory, each exported variable as NAME=value, then an
 # empty entry, each ended by a NUL byte. ">|" writes even under noclobber.
-# Under set -x, bash would print each value, secrets included: the trap
-# turns set -x off first.
+# Under set -x, bash would print each value, secrets included: the callers
+# turn set -x off first.
 __stepbook_save() {
-    local __stepbook_names __stepbook_name __stepbook_array
-    local -A __stepbook_arrays
     # Only into the file that stepbook made: after stepbook ends, its
     # workspace is gone, and a directory of the same name can be another
     # user's.
@@ -56,30 +56,36 @@ __stepbook_save() {
     # no variable would remove them all from the session: no state is
     # better.
     builtin compgen -A builtin printf >/dev/null 2>&1 || return 0
-    # mapfile splits on line feeds, whatever IFS the script exported.
-    mapfile -t __stepbook_names <<<"$(builtin compgen -e)"
-    # bash puts no array in the environment, but compgen -e lists an
-    # exported array: the state would get its first element as a string.
-    # Keys of an associative array match exactly, whatever nocasematch.
-    mapfile -t __stepbook_array <<<"$(builtin compgen -A arrayvar)"
-    for __stepbook_name in "${__stepbook_array[@]}"; do
-        if [ -n "$__stepbook_name" ]; then
-            __stepbook_arrays[$__stepbook_name]=1
-        fi
-    done
-    {
+    # A subshell, since it unsets variables to read the global values.
+    (
+        builtin trap - ERR
+        set +eEu
+        # mapfile splits on line feeds, whatever IFS the script exported.
+        mapfile -t __stepbook_names <<<"$(builtin compgen -e)"
         builtin printf '%s\0' "${PWD-}"
         for __stepbook_name in "${__stepbook_names[@]}"; do
             # Under set -a, bash exports the variables of the wrapper, and
             # the BASH_TRAPSIG that it sets in a trap.
             case $__stepbook_name in '' | __stepbook_* | BASH_TRAPSIG) continue ;; esac
-            if [ -n "${__stepbook_arrays[$__stepbook_name]-}" ]; then
-                continue
+            # After an exit in a function, or a signal, bash runs the EXIT
+            # trap in that function: its locals, and those of its callers,
+            # hide the global variables. The trace attribute marks the
+            # global variable, and each unset removes the innermost local.
+            builtin declare -g -t -- "$__stepbook_name" 2>/dev/null
+            for ((__stepbook_i = 0; __stepbook_i < 2 * ${#FUNCNAME[@]} + 2; __stepbook_i++)); do
+                case ${!__stepbook_name@a} in *t*) break ;; esac
+                builtin unset -v -- "$__stepbook_name" 2>/dev/null || break
+            done
+            # bash puts no array in the environment, but compgen -e lists an
+            # exported array: the state would get its first element as a
+            # string.
+            case ${!__stepbook_name@a} in *[aA]*) continue ;; *x*) ;; *) continue ;; esac
+            if [[ -v $__stepbook_name ]]; then
+                builtin printf '%s=%s\0' "$__stepbook_name" "${!__stepbook_name}"
             fi
-            builtin printf '%s=%s\0' "$__stepbook_name" "${!__stepbook_name}"
         done
         builtin printf '\0'
-    } >|"$__stepbook_state"
+    ) >|"$__stepbook_state"
 }
 
 __stepbook_status() {
@@ -125,23 +131,26 @@ __stepbook_drain() {
 
 # While the handler of the script runs: its exit would skip the second
 # save and the drain. In POSIX mode, bash refuses a function named exit,
-# and finds its builtin first anyway.
+# and finds its builtin first anyway. Without N, exit in the handler gives
+# the status from before the trap, but in a subshell that of the last
+# command.
 __stepbook_exit_function='exit() {
-    local __stepbook_status=$?
-    if [ "$BASHPID" = "$__stepbook_pid" ]; then
-        set +a
-        __stepbook_save
-        __stepbook_drain
+    { local __stepbook_status=$?; set +axvT; } 2>/dev/null
+    if [ "$BASHPID" != "$__stepbook_pid" ]; then
+        builtin exit "${1-$__stepbook_status}"
     fi
-    builtin exit "${1-$__stepbook_status}"
+    __stepbook_save
+    __stepbook_drain
+    builtin exit "$@"
 }'
 
 # Saves the state, then runs the handler of the script with the exit
 # status in $?, and with set -a as the script left it, then saves the
 # state again: the handler can change it. If the handler ends with exit,
 # the exit function saves and drains first. A failure under set -e in the
-# handler skips the rest: the second save and the drain (spec 8.2). set -x
-# stays off, since its trace would show the wrapper.
+# handler skips the rest: the second save and the drain (spec 8.2). The
+# handler runs with set -x and set -T off, as the wrapper does. They go off
+# again after it, since the handler can turn them on.
 __stepbook_exit() {
     __stepbook_save
     if [ -n "$__stepbook_trap" ]; then
@@ -157,7 +166,7 @@ __stepbook_exit() {
         else
             __stepbook_status "$__stepbook_code" || eval "$__stepbook_trap"
         fi
-        set +a
+        { set +axvT; } 2>/dev/null
         __stepbook_save
     fi
     __stepbook_drain
@@ -182,9 +191,11 @@ __stepbook_read_slot() {
 # also runs when this function returns (spec 9.2). An alias that turned on
 # set -ET first would split "cmd && trap ..." in two commands.
 trap() {
-    # Under set -x or set -v, the trace would show the wrapper. "local -"
-    # gives the flags back at the return.
-    { local -; set +xv; } 2>/dev/null
+    # Under set -x or set -v, the trace would show the wrapper, and under
+    # set -T, the DEBUG trap of the script would run in the command
+    # substitutions that read the slot. "local -" gives the flags back at
+    # the return.
+    { local -; set +xvT; } 2>/dev/null
     local __stepbook_slot __stepbook_rc=0
     __stepbook_read_slot
     # A subshell that set its own EXIT trap.
