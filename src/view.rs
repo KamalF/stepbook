@@ -56,6 +56,10 @@ pub struct View {
     pub scroll: usize,
     /// Whether the glyph of a running block shows: it blinks.
     pub blink: bool,
+    /// The question that the footer asks, in place of the keys (spec 7.4).
+    pub question: Option<String>,
+    /// The notification that the footer shows, in place of the keys.
+    pub notice: Option<String>,
     statuses: Vec<Option<Status>>,
     /// The output under each block: the last rows of its terminal.
     outputs: Vec<Vec<Line<'static>>>,
@@ -78,6 +82,8 @@ impl View {
             selected,
             scroll: 0,
             blink: true,
+            question: None,
+            notice: None,
             statuses: vec![None; blocks],
             outputs: vec![Vec::new(); blocks],
             page: RefCell::default(),
@@ -102,11 +108,20 @@ impl View {
             let line = self.line(&shown, row, self.selected);
             frame.buffer_mut().set_line(text.x, y, &line, text.width);
         }
-        let line = Line::from(vec![
-            Span::styled(" NORMAL ", Style::new().add_modifier(Modifier::REVERSED)),
-            Span::raw("  ↑↓ move  q quit"),
-        ]);
-        frame.render_widget(line, footer);
+        frame.render_widget(self.footer(), footer);
+    }
+
+    /// The mode, then the question, the notification or the keys that
+    /// apply now (spec 6.1). Both can quote a directory name (spec 6.5).
+    fn footer(&self) -> Line<'static> {
+        let reversed = Style::new().add_modifier(Modifier::REVERSED);
+        let (mode, text) = match (&self.question, &self.notice) {
+            (Some(question), _) => (" CONFIRM ", escaped(question, Style::new())),
+            (None, Some(notice)) => (" NORMAL ", escaped(notice, WARNING)),
+            (None, None) => (" NORMAL ", vec![Span::raw("↑↓ move  ↵ run  q quit")]),
+        };
+        let spans = [vec![Span::styled(mode, reversed), Span::raw("  ")], text];
+        Line::from(spans.concat())
     }
 
     /// The areas of the sidebar (none on a narrow screen), of the document
@@ -232,7 +247,6 @@ impl View {
         &self.outputs[i]
     }
 
-    #[cfg(test)]
     pub fn status(&self, i: usize) -> Option<&Status> {
         self.statuses[i].as_ref()
     }
@@ -1803,7 +1817,7 @@ pub(crate) mod tests {
         │           │ ▐ «b:#3»                                                             │
         │           │ ▐ «blue:echo»                                                           │
         └───────────┴──────────────────────────────────────────────────────────────────┘
-        «r: NORMAL »  ↑↓ move  q quit
+        «r: NORMAL »  ↑↓ move  ↵ run  q quit
         ");
     }
 
@@ -2085,6 +2099,16 @@ pub(crate) mod tests {
         view.blink = false;
         let sidebar = screen(&view, 80, 20).lines().nth(1).unwrap().to_string();
         assert_snapshot!(sidebar, @"│   run     │ ▐ «b:run»  «yellow:● »running 0:04                                            │");
+    }
+
+    #[test]
+    fn the_footer_shows_a_question_or_a_notification_in_place_of_the_keys() {
+        let mut view = view(BLOCKS);
+        let footer = |view: &View| markup(&[view.footer()]);
+        view.notice = Some("session directory reset to /a\u{1b}[2Jb".into());
+        assert_snapshot!(footer(&view), @"«r: NORMAL »  «yellow:session directory reset to /a^[[2Jb»");
+        view.question = Some("Re-run check? (y/N)".into());
+        assert_snapshot!(footer(&view), @"«r: CONFIRM »  Re-run check? (y/N)");
     }
 
     #[test]

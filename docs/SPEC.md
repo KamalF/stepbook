@@ -128,7 +128,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 
 - **Sidebar:** one row per block, with a status glyph and the name. An unnamed block shows `#<n>`, where n is its position among all the blocks of the file, from 1. Its width, with its left border, is the longest name plus 4, between 12 and 30 columns. A longer name ends with `…`. The sidebar scrolls to keep the selected row visible, and it is hidden on terminals under 80 columns.
 - **Document view:** the rendered runbook. The selected block has a highlighted gutter and sidebar row.
-- **Footer:** the mode, the keys that apply now, and notifications. A notification lasts 3 seconds.
+- **Footer:** the mode, then the keys that apply now. A notification or a question (7.4) shows in place of the keys. A notification lasts 3 seconds.
 - **Minimum size:** on a terminal smaller than 40 columns or 8 rows, stepbook shows only `Enlarge the terminal to at least 40 columns and 8 rows.`, and only the keys that quit work. Below that size, code under a list marker has no room, and the layout of a crafted file costs too much.
 
 ### 6.2 Block states
@@ -236,7 +236,7 @@ A question shows in the footer, in place of the keys, so that it hides no part o
 | Not run | Starts a run. |
 | Running | Shows `already running: i to type, o to view`. Never starts a second run of the same block (upmd issue K5, see 18). |
 | Succeeded, failed or changed | Asks `Re-run <name>? (y/N)`. On `y`, clears the block's output and starts a run. |
-| Cannot run | Shows the reason. |
+| Cannot run | Shows the reason, such as `cannot run: duplicate name`. |
 
 Several blocks can run at the same time. Each one runs in its own PTY.
 

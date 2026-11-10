@@ -209,6 +209,8 @@ fn open(args: &Args) -> Result<Exit, String> {
         file,
         log,
         ticks: crossbeam_channel::tick(TICK),
+        question: None,
+        notice_until: None,
     };
     std::thread::spawn(move || read_terminal(sender));
     let result = event_loop(&mut terminal, &mut app, &control);
@@ -325,8 +327,23 @@ struct App {
     file: PathBuf,
     log: Option<PathBuf>,
     /// While blocks run, a tick updates their time and blinks their glyph.
+    /// It also ends the notification.
     ticks: Receiver<Instant>,
+    /// The question in the footer, which the next key answers.
+    question: Option<Question>,
+    /// When the notification in the footer ends.
+    notice_until: Option<Instant>,
 }
+
+/// A question in the footer (spec 7.4).
+#[derive(Debug, PartialEq)]
+enum Question {
+    /// Re-run block i.
+    Rerun(usize),
+}
+
+/// How long a notification shows (spec 6.1).
+const NOTICE: Duration = Duration::from_secs(3);
 
 /// An event of the loop: a control event, or a message from the run of a
 /// block.
@@ -361,9 +378,9 @@ impl App {
         // another's.
         let mut select = Select::new();
         select.recv(control);
-        // Without runs, the tick would only wake the loop. With runs, it
-        // comes right after the control channel.
-        if !runs.is_empty() {
+        // Without runs or a notification, the tick would only wake the
+        // loop. Else it comes right after the control channel.
+        if !runs.is_empty() || self.notice_until.is_some() {
             select.recv(&self.ticks);
         }
         for (_, events) in &runs {
@@ -393,6 +410,20 @@ impl App {
         if let Event::Resize(..) = event {
             self.resize(size);
         }
+        if let Some(question) = self.question.take() {
+            match event {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    self.view.question = None;
+                    let yes = key.code == KeyCode::Char('y') && key.modifiers.is_empty();
+                    match question {
+                        Question::Rerun(i) if yes => self.start(i, size),
+                        Question::Rerun(_) => {}
+                    }
+                }
+                _ => self.question = Some(question),
+            }
+            return None;
+        }
         match action(event, size)? {
             Action::Quit => return Some(Exit::Quit),
             Action::Select(step) => self.view.select_by(step, size),
@@ -403,20 +434,46 @@ impl App {
                 if self.view.reveal(size)
                     && let Some(i) = self.view.selected
                 {
-                    self.start(i, size);
+                    self.enter(i, size);
                 }
             }
         }
         None
     }
 
-    /// Starts a run of block `i`, unless it runs or cannot run.
-    fn start(&mut self, i: usize, size: Size) {
-        let block = &self.view.doc.blocks[i];
-        let running = self.ran[i].as_ref().is_some_and(|ran| ran.run.is_some());
-        if block.problem.is_some() || running {
+    /// What `Enter` does on block `i`, by its state (spec 8.1).
+    fn enter(&mut self, i: usize, size: Size) {
+        if let Some(problem) = self.view.doc.blocks[i].problem {
+            self.notify(format!("cannot run: {problem}"));
             return;
         }
+        match self.view.status(i) {
+            None => self.start(i, size),
+            Some(view::Status::Running(_)) => {
+                self.notify("already running: i to type, o to view".into());
+            }
+            Some(_) => {
+                let label = self.view.doc.label(i);
+                self.view.question = Some(format!("Re-run {label}? (y/N)"));
+                self.question = Some(Question::Rerun(i));
+            }
+        }
+    }
+
+    /// Shows a notification in the footer for 3 seconds.
+    fn notify(&mut self, text: String) {
+        self.view.notice = Some(text);
+        self.notice_until = Some(Instant::now() + NOTICE);
+    }
+
+    /// Starts a run of block `i`, unless it runs: a block never runs
+    /// twice at a time (upmd issue K5).
+    fn start(&mut self, i: usize, size: Size) {
+        let block = &self.view.doc.blocks[i];
+        if self.ran[i].as_ref().is_some_and(|ran| ran.run.is_some()) {
+            return;
+        }
+        let dir = self.session.state.dir.clone();
         let (columns, rows) = self.view.pty_size(i, size);
         let label = self.view.doc.label(i);
         let env = run::Env {
@@ -439,6 +496,11 @@ impl App {
                 view::Status::NotStarted(reason)
             }
         };
+        // The session directory no longer existed (spec 8.2).
+        if self.session.state.dir != dir {
+            let dir = self.session.state.dir.display();
+            self.notify(format!("session directory reset to {dir}"));
+        }
         self.view.set_status(i, Some(status));
         self.view.set_output(i, Vec::new(), size);
     }
@@ -470,8 +532,16 @@ impl App {
         self.view.set_output(i, lines, size);
     }
 
-    /// Updates the time of each running block, and blinks its glyph.
+    /// Updates the time of each running block, and blinks its glyph. Ends
+    /// the notification after its time.
     fn tick(&mut self) {
+        if self
+            .notice_until
+            .is_some_and(|until| Instant::now() >= until)
+        {
+            self.notice_until = None;
+            self.view.notice = None;
+        }
         self.view.blink = !self.view.blink;
         for (i, ran) in self.ran.iter().enumerate() {
             if let Some(ran) = ran.as_ref().filter(|ran| ran.run.is_some()) {
@@ -750,12 +820,76 @@ mod tests {
             file: tmp.join("run.md"),
             log: None,
             ticks: crossbeam_channel::never(),
+            question: None,
+            notice_until: None,
         }
     }
 
     fn enter(app: &mut App, size: Size) {
         let key = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.handle(&key, size), None);
+    }
+
+    fn key(app: &mut App, code: KeyCode) {
+        let key = Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        assert_eq!(app.handle(&key, SIZE), None);
+    }
+
+    #[test]
+    fn enter_on_a_block_that_has_run_asks_before_it_runs_it_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash [name:count]\necho run >> runs\n```\n", tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        enter(&mut app, SIZE);
+        assert_eq!(app.view.question.as_deref(), Some("Re-run count? (y/N)"));
+        // A resize is no answer, and every key but y says no.
+        assert_eq!(app.handle(&Event::Resize(80, 24), SIZE), None);
+        assert!(app.question.is_some());
+        key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            (app.question.as_ref(), app.view.question.as_ref()),
+            (None, None)
+        );
+        assert!(!running(&app));
+        enter(&mut app, SIZE);
+        key(&mut app, KeyCode::Char('y'));
+        assert_eq!(app.view.output(0), []);
+        read_until(&mut app, SIZE, |app| !running(app));
+        assert_eq!(
+            std::fs::read_to_string(tmp.path().join("runs")).unwrap(),
+            "run\nrun\n"
+        );
+    }
+
+    #[test]
+    fn enter_says_why_a_block_does_not_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app(
+            "```bash [name:a]\nread\n```\n\n```bash [name:b]\n```\n\n```bash [name:b]\n```\n",
+            tmp.path(),
+        );
+        enter(&mut app, SIZE);
+        enter(&mut app, SIZE);
+        assert_eq!(
+            app.view.notice.as_deref(),
+            Some("already running: i to type, o to view")
+        );
+        key(&mut app, KeyCode::Down);
+        enter(&mut app, SIZE);
+        assert_eq!(
+            app.view.notice.as_deref(),
+            Some("cannot run: duplicate name")
+        );
+        // The notification ends with the first tick after 3 seconds.
+        app.tick();
+        assert!(app.view.notice.is_some());
+        app.notice_until = Some(Instant::now());
+        app.tick();
+        assert_eq!(app.view.notice, None);
+        let ran = app.ran[0].as_ref().unwrap();
+        ran.run.as_ref().unwrap().write(b"\n").unwrap();
+        read_until(&mut app, SIZE, |app| !running(app));
     }
 
     fn running(app: &App) -> bool {
@@ -833,7 +967,10 @@ true
             tmp.path().join("gone").display()
         );
         assert_eq!(app.view.status(0), Some(&view::Status::NotStarted(reason)));
+        let notice = format!("session directory reset to {}", tmp.path().display());
+        assert_eq!(app.view.notice, Some(notice));
         enter(&mut app, SIZE);
+        key(&mut app, KeyCode::Char('y'));
         read_until(&mut app, SIZE, |app| !running(app));
         assert!(matches!(
             app.view.status(0),
