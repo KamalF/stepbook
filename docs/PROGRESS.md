@@ -71,6 +71,7 @@ The test of commit 15 is ignored, because CI has no runbooks: `cargo test --rele
   - Round 15: the security reviewer found nothing. The code reviewer found 1 should-fix: characters of ambiguous width in code text shift code too. Kamal chose to require a terminal that draws them 1 column wide (spec 11), and the space after a quote's `│` gets its style back. A snapshot now shows the escapes of `␣` and `⇥`.
   - Round 16: the security reviewer found nothing. The code reviewer found 1 should-fix, fixed: code escapes U+1D159, which fonts draw as a blank, as it does U+2800.
   - Round 17: the security reviewer found no defect. The code reviewer found 1 should-fix, fixed: a property test now checks that comments never show dim, which only snapshots checked. Two new snapshots cover the wrap of HTML lines and the escapes of blank glyphs.
+  - Round 18: the code reviewer found only nits in the docs, fixed. The security reviewer found 1 should-fix, fixed: U+0000 becomes U+FFFD, as CommonMark says, since bash drops it: `r^@m` would have run as `rm`.
 
 ### Kamal's manual checklist
 
