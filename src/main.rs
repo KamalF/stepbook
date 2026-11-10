@@ -23,6 +23,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::crossterm::{execute, queue};
 use ratatui::layout::Size;
 use ratatui::{DefaultTerminal, Terminal};
+use rustix::process::Signal;
 use signal_hook::consts::{SIGHUP, SIGTERM};
 
 const USAGE: &str = "Usage: stepbook [--log PATH | --no-log] FILE";
@@ -211,6 +212,7 @@ fn open(args: &Args) -> Result<Exit, String> {
         ticks: crossbeam_channel::tick(TICK),
         question: None,
         notice_until: None,
+        stopping: None,
     };
     std::thread::spawn(move || read_terminal(sender));
     let result = event_loop(&mut terminal, &mut app, &control);
@@ -333,6 +335,8 @@ struct App {
     question: Option<Question>,
     /// When the notification in the footer ends.
     notice_until: Option<Instant>,
+    /// While stepbook stops the runs to quit: when it kills those left.
+    stopping: Option<Instant>,
 }
 
 /// A question in the footer (spec 7.4).
@@ -340,7 +344,13 @@ struct App {
 enum Question {
     /// Re-run block i.
     Rerun(usize),
+    /// Stop the runs and quit.
+    Quit,
 }
+
+/// How long the runs have to end after SIGHUP, when stepbook quits (spec
+/// 11).
+const STOP_WAIT: Duration = Duration::from_secs(2);
 
 /// How long a notification shows (spec 6.1).
 const NOTICE: Duration = Duration::from_secs(3);
@@ -410,6 +420,9 @@ impl App {
         if let Event::Resize(..) = event {
             self.resize(size);
         }
+        if self.stopping.is_some() {
+            return None;
+        }
         if let Some(question) = self.question.take() {
             match event {
                 Event::Key(key) if key.kind == KeyEventKind::Press => {
@@ -417,7 +430,8 @@ impl App {
                     let yes = key.code == KeyCode::Char('y') && key.modifiers.is_empty();
                     match question {
                         Question::Rerun(i) if yes => self.start(i, size),
-                        Question::Rerun(_) => {}
+                        Question::Quit if yes => self.stop_runs(),
+                        Question::Rerun(_) | Question::Quit => {}
                     }
                 }
                 _ => self.question = Some(question),
@@ -425,7 +439,17 @@ impl App {
             return None;
         }
         match action(event, size)? {
-            Action::Quit => return Some(Exit::Quit),
+            Action::Quit => match self.runs().count() {
+                0 => return Some(Exit::Quit),
+                1 => self.ask(
+                    Question::Quit,
+                    "1 block running. Stop it and quit? (y/N)".into(),
+                ),
+                n => self.ask(
+                    Question::Quit,
+                    format!("{n} blocks running. Stop them and quit? (y/N)"),
+                ),
+            },
             Action::Select(step) => self.view.select_by(step, size),
             Action::First => self.view.select_first(size),
             Action::Last => self.view.select_last(size),
@@ -454,10 +478,43 @@ impl App {
             }
             Some(_) => {
                 let label = self.view.doc.label(i);
-                self.view.question = Some(format!("Re-run {label}? (y/N)"));
-                self.question = Some(Question::Rerun(i));
+                self.ask(Question::Rerun(i), format!("Re-run {label}? (y/N)"));
             }
         }
+    }
+
+    fn ask(&mut self, question: Question, text: String) {
+        self.view.question = Some(text);
+        self.question = Some(question);
+    }
+
+    fn runs(&self) -> impl Iterator<Item = &run::Run> {
+        self.ran.iter().flatten().filter_map(|ran| ran.run.as_ref())
+    }
+
+    /// Sends SIGHUP to the runs, as the close of their PTY would, before
+    /// stepbook quits (spec 11).
+    fn stop_runs(&mut self) {
+        for run in self.runs() {
+            run.signal(Signal::HUP);
+        }
+        self.stopping = Some(Instant::now() + STOP_WAIT);
+        self.notify("stopping the blocks that run".into());
+    }
+
+    /// Whether stepbook can quit, after `stop_runs`: once no run is left,
+    /// or after the wait, when it sends SIGKILL to the runs left.
+    fn stopped(&self) -> bool {
+        let Some(until) = self.stopping else {
+            return false;
+        };
+        if Instant::now() >= until {
+            for run in self.runs() {
+                run.signal(Signal::KILL);
+            }
+            return true;
+        }
+        self.runs().next().is_none()
     }
 
     /// Shows a notification in the footer for 3 seconds.
@@ -619,6 +676,9 @@ fn event_loop(
                     FRAME
                 }
             };
+            if app.stopped() {
+                return Ok(Exit::Quit);
+            }
             deadline.get_or_insert(Instant::now() + wait);
         }
     }
@@ -822,6 +882,7 @@ mod tests {
             ticks: crossbeam_channel::never(),
             question: None,
             notice_until: None,
+            stopping: None,
         }
     }
 
@@ -890,6 +951,84 @@ mod tests {
         let ran = app.ran[0].as_ref().unwrap();
         ran.run.as_ref().unwrap().write(b"\n").unwrap();
         read_until(&mut app, SIZE, |app| !running(app));
+    }
+
+    #[test]
+    fn q_quits_at_once_without_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\ntrue\n```\n", tmp.path());
+        let q = Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE));
+        assert_eq!(app.handle(&q, SIZE), Some(Exit::Quit));
+    }
+
+    #[test]
+    fn quit_asks_then_stops_the_runs_with_sighup() {
+        let tmp = tempfile::tempdir().unwrap();
+        let block = "```bash\necho ready\nsleep 30\n```\n\n";
+        let mut app = app(&block.repeat(2), tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        key(&mut app, KeyCode::Char('q'));
+        assert_eq!(
+            app.view.question.as_deref(),
+            Some("1 block running. Stop it and quit? (y/N)")
+        );
+        key(&mut app, KeyCode::Char('n'));
+        key(&mut app, KeyCode::Down);
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 1).contains("ready"));
+        key(&mut app, KeyCode::Char('q'));
+        let question = "2 blocks running. Stop them and quit? (y/N)";
+        assert_eq!(app.view.question.as_deref(), Some(question));
+        key(&mut app, KeyCode::Char('y'));
+        assert!(!app.stopped());
+        // Keys do nothing while the runs stop.
+        key(&mut app, KeyCode::Up);
+        assert_eq!(app.view.selected, Some(1));
+        read_until(&mut app, SIZE, |app| !running(app));
+        assert!(app.stopped());
+        for i in 0..2 {
+            let status = app.view.status(i);
+            assert!(
+                matches!(
+                    status,
+                    Some(view::Status::Ended {
+                        signal: Some(1),
+                        ..
+                    })
+                ),
+                "{status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_run_that_ignores_sighup_gets_sigkill_after_the_wait() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app(
+            "```bash\ntrap '' HUP\necho ready\nsleep 30\n```\n",
+            tmp.path(),
+        );
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        key(&mut app, KeyCode::Char('q'));
+        key(&mut app, KeyCode::Char('y'));
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(running(&app));
+        app.stopping = Some(Instant::now());
+        assert!(app.stopped());
+        read_until(&mut app, SIZE, |app| !running(app));
+        let status = app.view.status(0);
+        assert!(
+            matches!(
+                status,
+                Some(view::Status::Ended {
+                    signal: Some(9),
+                    ..
+                })
+            ),
+            "{status:?}"
+        );
     }
 
     fn running(app: &App) -> bool {

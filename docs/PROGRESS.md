@@ -114,7 +114,7 @@ The plan, one commit per line:
 
 Done when (spec 16): the integration tests of 14.3 pass, except the log tests, and in tmux a block that runs `export` and `cd` changes what the next block sees.
 
-Commits 1 to 11 are in, with two more: a fix, since a hangup of the terminal could abort stepbook with a core dump, and a chore that ignores the pending snapshots of insta. The check in tmux of commit 9: a block that runs `export` and `cd` changes what the next block sees.
+The 12 commits are in, with two more: a fix, since a hangup of the terminal could abort stepbook with a core dump, and a chore that ignores the pending snapshots of insta. The check in tmux of commit 9: a block that runs `export` and `cd` changes what the next block sees.
 
 Kamal signed off the plan and these choices on 2026-11-10. The spec records them (19).
 

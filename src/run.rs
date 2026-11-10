@@ -12,6 +12,7 @@ use std::process::{Child, Command};
 
 use crossbeam_channel::{Receiver, Sender};
 use rustix::fs::{Mode, OFlags};
+use rustix::process::{Pid, Signal};
 use rustix::pty::OpenptFlags;
 use rustix::termios::Winsize;
 
@@ -171,6 +172,8 @@ pub struct Env<'a> {
 /// status, so that the end of a run never comes before its output.
 pub struct Run {
     pub events: Receiver<Event>,
+    /// The process of the wrapper, the leader of the process group.
+    pid: u32,
     master: File,
     /// The state that the run started with.
     start: State,
@@ -253,9 +256,11 @@ impl Session {
             .map_err(fail)?;
         let reader = master.try_clone().map_err(fail)?;
         let (sender, events) = crossbeam_channel::bounded(OUTPUT_MESSAGES);
+        let pid = child.id();
         std::thread::spawn(move || read_run(reader, child, sender));
         Ok(Run {
             events,
+            pid,
             master,
             start,
             script,
@@ -330,6 +335,15 @@ impl Run {
     #[cfg_attr(not(test), expect(dead_code, reason = "input mode, in milestone 3"))]
     pub fn write(&self, bytes: &[u8]) -> std::io::Result<()> {
         (&self.master).write_all(bytes)
+    }
+
+    /// Sends a signal to the processes of the run: the wrapper's process
+    /// group. A process that has left it, with setsid for one, does not get
+    /// it. The run may have ended already.
+    pub fn signal(&self, signal: Signal) {
+        if let Some(pid) = Pid::from_raw(self.pid as i32) {
+            let _ = rustix::process::kill_process_group(pid, signal);
+        }
     }
 
     /// Sets the size of the PTY. The kernel sends SIGWINCH to the program.

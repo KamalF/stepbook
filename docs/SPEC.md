@@ -326,9 +326,9 @@ Blocks are matched by key between the old and the new file:
 ## 11. Quit
 
 - If no run is active, `q` and `ctrl-c` quit at once.
-- If runs are active, stepbook asks `N blocks running. Stop them and quit? (y/N)`. On `y`:
-  1. It closes each PTY, which sends SIGHUP.
-  2. It waits up to 2 seconds, then sends SIGKILL to processes still alive.
+- If runs are active, stepbook asks `N blocks running. Stop them and quit? (y/N)`, or `1 block running. Stop it and quit? (y/N)`. On `y`:
+  1. It sends SIGHUP to the process group of each run, as the close of its PTY would. The footer says `stopping the blocks that run`, and keys do nothing.
+  2. It waits up to 2 seconds, then sends SIGKILL to the process groups of the runs still alive.
   3. It writes their `END` lines to the log and quits.
 - stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide, as ratatui counts them. On a terminal set to draw them wide, such as VTE with that option or `xterm -cjk_width`, the text after such a character shifts, in code too, and a space can vanish.
 - While it runs, stepbook turns the autowrap of the terminal off: a character that the terminal draws wider than ratatui counts must not wrap into the row below and move what is there.
