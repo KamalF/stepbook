@@ -225,7 +225,7 @@ While the view is open, the PTY takes the full terminal size. It gets its docume
 
 ### 7.4 Confirmation dialogs
 
-A question shows in the footer, in place of the keys, so that it hides no part of the document. `y` confirms. `n`, `Esc` and every other key cancel.
+A question shows in the footer, in place of the keys, so that it hides no part of the document. `y` confirms. `n`, `Esc` and every other key cancel. If a resize hid the block to re-run, `y` shows it and asks again, as `Enter` does (7.1).
 
 ## 8. Running blocks
 
@@ -249,6 +249,7 @@ Several blocks can run at the same time. Each one runs in its own PTY.
 3. It spawns `bash --noprofile --norc <workspace>/wrapper.sh <run files>` in a new PTY, in the session directory.
 4. The child gets exactly the session variables, plus:
    - `TERM=xterm-256color`
+   - `PWD`: the session directory, so that bash keeps the path that the last `cd` gave through a link, as a terminal does
    - `STEPBOOK_FILE`: the absolute path of the runbook
    - `STEPBOOK_LOG`: the absolute path of the log, or empty
    - `STEPBOOK_BLOCK`: the block name
@@ -257,7 +258,7 @@ Several blocks can run at the same time. Each one runs in its own PTY.
 
 stepbook checks at startup that `bash` is on the `PATH` and fails if it is not. There is no timeout on runs.
 
-When the wrapper ends, the kernel sends SIGHUP to the processes of the run, background jobs included, as when a terminal closes. `nohup` or `setsid` keeps one alive.
+When the wrapper ends, stepbook sends SIGHUP to the processes left in the session of the run, background jobs included, as when a terminal closes. The kernel sends it only to the process group in the foreground, and `timeout` or `set -m` give a job a group of its own. `nohup` or `setsid` keeps a job alive.
 
 ### 8.3 Workspace
 
@@ -272,14 +273,14 @@ When the wrapper ends, the kernel sends SIGHUP to the processes of the run, back
 
 The session state is a map of exported variables and one working directory.
 
-- At startup, it is stepbook's own environment and current directory.
+- At startup, it is stepbook's own environment and current directory. The directory is `$PWD` if it names the current directory, so that a path through a link stays as the user typed it.
 - These variables are excluded: `_`, `SHLVL`, `PWD`, `OLDPWD`, and all `STEPBOOK_*`.
 
 ### 9.2 Capture
 
 When the block script ends, the wrapper writes the state file `<workspace>/run-<id>.state`:
 
-- the working directory, then each exported variable as `NAME=value`, then an empty entry;
+- the working directory, then each exported variable as `NAME=value`, then an empty entry. An exported array is not saved: bash puts no array in the environment;
 - each entry ends with a NUL byte, so values can hold newlines, quotes and any other byte.
 
 Without the empty entry, the file is partial, and stepbook ignores it: the wrapper was killed while it wrote it, and the missing variables would count as unset.
@@ -340,6 +341,7 @@ Blocks are matched by key between the old and the new file:
 - stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide, as ratatui counts them. On a terminal set to draw them wide, such as VTE with that option or `xterm -cjk_width`, the text after such a character shifts, in code too, and a space can vanish.
 - While it runs, stepbook turns the autowrap of the terminal off: a character that the terminal draws wider than ratatui counts must not wrap into the row below and move what is there.
 - On exit, stepbook restores the terminal, autowrap and bracketed paste included, and ends a synchronized update that a failed frame left open. It also deletes the workspace. It does the same on SIGTERM and SIGHUP.
+- Whenever stepbook ends, after a signal, a panic or a terminal error too, it sends SIGHUP to the processes of the runs that have not ended, those of each session: the close of a PTY reaches only its process group in the foreground.
 - A panic hook restores the terminal and deletes the workspace too. Then it ends stepbook, even after a panic in another thread: the main thread would go on drawing on the restored terminal.
 
 ## 12. Log

@@ -175,6 +175,7 @@ fn open(args: &Args) -> Result<Exit, String> {
     };
     let dir = std::env::current_dir()
         .map_err(|e| format!("cannot read the current directory: {}", io_message(&e)))?;
+    let dir = run::start_dir(dir, std::env::var_os("PWD"));
     if !std::io::stdout().is_terminal() {
         return Err("run stepbook in a terminal: its output is not a terminal".into());
     }
@@ -212,6 +213,7 @@ fn open(args: &Args) -> Result<Exit, String> {
     let mut app = App::new(view, session, crossbeam_channel::tick(TICK));
     std::thread::spawn(move || read_terminal(sender));
     let result = event_loop(&mut terminal, &mut app, &control);
+    run::hang_up_runs();
     restore_terminal();
     result.map_err(|e| format!("terminal error: {}", io_message(&e)))
 }
@@ -237,6 +239,7 @@ fn set_up_terminal(workspace: &Path) -> std::io::Result<DefaultTerminal> {
             return;
         }
         let _ = std::fs::remove_dir_all(&workspace);
+        run::hang_up_runs();
         restore_terminal();
         default_hook(info);
         std::process::exit(101);
@@ -465,7 +468,12 @@ impl App {
                     self.view.question = None;
                     let yes = key.code == KeyCode::Char('y') && key.modifiers.is_empty();
                     match question {
-                        Question::Rerun(i) if yes => self.start(i, size),
+                        // As Enter, y runs no code off the screen (spec 7.1):
+                        // after a resize, it shows the block and asks again.
+                        Question::Rerun(i) if yes => match self.view.reveal(size) {
+                            true => self.start(i, size),
+                            false => self.ask_rerun(i),
+                        },
                         Question::Quit if yes => self.stop_runs(),
                         Question::Rerun(_) | Question::Quit => {}
                     }
@@ -522,11 +530,13 @@ impl App {
             Some(view::Status::Running(_)) => {
                 self.notify("already running: i to type, o to view".into());
             }
-            Some(_) => {
-                let label = self.view.doc.label(i);
-                self.ask(Question::Rerun(i), format!("Re-run {label}? (y/N)"));
-            }
+            Some(_) => self.ask_rerun(i),
         }
+    }
+
+    fn ask_rerun(&mut self, i: usize) {
+        let label = self.view.doc.label(i);
+        self.ask(Question::Rerun(i), format!("Re-run {label}? (y/N)"));
     }
 
     fn ask(&mut self, question: Question, text: String) {
@@ -993,6 +1003,24 @@ mod tests {
         release.kind = KeyEventKind::Release;
         assert_eq!(app.handle(&Event::Key(release), SIZE), None);
         assert_eq!(app.question, Some(Question::Rerun(0)));
+    }
+
+    #[test]
+    fn y_shows_a_block_that_a_resize_hid_and_asks_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let steps = "Step.\n\n".repeat(30);
+        let mut app = app(&format!("{steps}```bash\ntrue\n```\n"), tmp.path());
+        app.view.select_last(SIZE);
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        enter(&mut app, SIZE);
+        // The view scrolls back to the top, as after a resize.
+        app.view.scroll = 0;
+        key(&mut app, KeyCode::Char('y'));
+        assert!(app.question.is_some() && !running(&app) && app.view.scroll > 0);
+        key(&mut app, KeyCode::Char('y'));
+        assert!(app.question.is_none() && running(&app));
+        read_until(&mut app, SIZE, |app| !running(app));
     }
 
     #[test]

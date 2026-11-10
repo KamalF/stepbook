@@ -23,7 +23,9 @@
 set -u
 export TMUX_TMPDIR=${TMPDIR:-/tmp}/tui-tmux
 mkdir -p "$TMUX_TMPDIR"
-T="tmux -L tui"
+# A server of its own: two checks at the same time must not kill each
+# other's.
+T="tmux -L tui-$$"
 
 start() {
     local w=$1 h=$2

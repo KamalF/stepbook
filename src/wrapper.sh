@@ -30,13 +30,17 @@ __stepbook_trap=
 # Under set -x, bash would print each value, secrets included: the trap
 # turns set -x off first.
 __stepbook_save() {
-    local IFS=$' \t\n' __stepbook_name
+    local IFS=$' \t\n' __stepbook_name __stepbook_arrays
+    # bash puts no array in the environment, but compgen -e lists an
+    # exported array: the state would get its first element as a string.
+    __stepbook_arrays=" $(builtin compgen -A arrayvar) "
     {
         builtin printf '%s\0' "$PWD"
         for __stepbook_name in $(builtin compgen -e); do
             # Under set -a, bash exports the variables of the wrapper, and
             # the BASH_TRAPSIG that it sets in a trap.
             case $__stepbook_name in __stepbook_* | BASH_TRAPSIG) continue ;; esac
+            case $__stepbook_arrays in *[[:space:]]$__stepbook_name[[:space:]]*) continue ;; esac
             builtin printf '%s=%s\0' "$__stepbook_name" "${!__stepbook_name}"
         done
         builtin printf '\0'

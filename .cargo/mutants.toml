@@ -34,6 +34,11 @@ exclude_re = [
     # One more pending space shows only before a word of width 0, which the
     # buffer drops: the row is spaces either way.
     "replace < with <= in wrap",
+    # SIGHUP to the runs of stepbook when it ends: a test would hang up the
+    # runs of the other tests, all children of the test process. The check
+    # in tmux covers it.
+    "replace hang_up_runs with \\(\\)",
+    "in hang_up_runs$",
     # The thread that reads the keys: the check in tmux covers it.
     "replace read_terminal with \\(\\)",
     "in read_terminal$",

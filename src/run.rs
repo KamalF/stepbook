@@ -5,7 +5,7 @@ use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::{Read, Write};
 use std::os::fd::{BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
@@ -69,6 +69,19 @@ impl Drop for Workspace {
     fn drop(&mut self) {
         let _ = std::fs::remove_dir_all(&self.dir);
     }
+}
+
+/// The directory that stepbook starts in: `$PWD`, as the shell gave it,
+/// if it names the current directory, else the physical path. Through a
+/// link, the runs then start in the path that the user typed.
+pub fn start_dir(current: PathBuf, pwd: Option<OsString>) -> PathBuf {
+    let same = |pwd: &PathBuf| {
+        let (Ok(a), Ok(b)) = (std::fs::metadata(pwd), std::fs::metadata(&current)) else {
+            return false;
+        };
+        pwd.is_absolute() && (a.dev(), a.ino()) == (b.dev(), b.ino())
+    };
+    pwd.map(PathBuf::from).filter(same).unwrap_or(current)
 }
 
 /// `$XDG_RUNTIME_DIR` if it is an absolute path, else the temp dir, made
@@ -338,6 +351,10 @@ impl Session {
             .args(run_files)
             .env_clear()
             .envs(&start.vars)
+            // bash keeps a PWD that names its directory: through a link,
+            // the run starts in the path that the last cd gave, as in a
+            // terminal, and not in the physical path.
+            .env("PWD", &self.state.dir)
             .env("STEPBOOK_FILE", &self.file)
             .env("STEPBOOK_LOG", self.log.as_deref().unwrap_or(Path::new("")))
             .env("STEPBOOK_BLOCK", block)
@@ -416,15 +433,60 @@ fn winsize(columns: u16, rows: u16) -> Winsize {
     }
 }
 
-/// The processes of a session, from /proc.
-fn session_processes(leader: Pid) -> Vec<Pid> {
+/// A process, from /proc.
+struct Process {
+    pid: Pid,
+    parent: i32,
+    session: i32,
+}
+
+/// The processes of the system.
+fn processes() -> Vec<Process> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
-        return vec![leader];
+        return Vec::new();
+    };
+    let process = |pid: i32| {
+        // The name of the program, in parentheses, can hold any byte.
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+        let mut fields = stat.rsplit_once(')')?.1.split_whitespace().skip(1);
+        let parent = fields.next()?.parse().ok()?;
+        let session = fields.nth(1)?.parse().ok()?;
+        let pid = Pid::from_raw(pid)?;
+        Some(Process {
+            pid,
+            parent,
+            session,
+        })
     };
     let pids = entries.filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok());
-    let pids = pids.filter_map(Pid::from_raw);
-    pids.filter(|&pid| rustix::process::getsid(Some(pid)) == Ok(leader))
-        .collect()
+    pids.filter_map(process).collect()
+}
+
+/// The processes of a session. Without /proc, only its leader.
+fn session_processes(leader: Pid) -> Vec<Pid> {
+    let all = processes();
+    if all.is_empty() {
+        return vec![leader];
+    }
+    let members = all.into_iter().filter(|p| p.session == leader.as_raw_pid());
+    members.map(|p| p.pid).collect()
+}
+
+/// Sends SIGHUP to the processes of each run that has not ended, as the
+/// close of their PTYs would, before stepbook ends: the runs are the
+/// sessions of the children of stepbook. The close itself reaches only
+/// the wrapper and the process group in the foreground: timeout and set -m
+/// give a child a process group of its own.
+pub fn hang_up_runs() {
+    let me = std::process::id() as i32;
+    let all = processes();
+    let runs: Vec<i32> = (all.iter())
+        .filter(|p| p.parent == me)
+        .map(|p| p.pid.as_raw_pid())
+        .collect();
+    for process in all.iter().filter(|p| runs.contains(&p.session)) {
+        let _ = rustix::process::kill_process(process.pid, Signal::HUP);
+    }
 }
 
 /// Opens a PTY of `columns` by `rows`: its side for stepbook, and its
@@ -484,6 +546,13 @@ fn read_run(reader: File, mut child: Child, sender: Sender<Event>, screen: &term
             Err(_) => break,
         }
     }
+    // As when a terminal closes, the processes that the run leaves in its
+    // session get SIGHUP, background jobs included. The kernel sends it only
+    // to the process group in the foreground. The wrapper, not reaped yet,
+    // keeps its pid, so that no other session can take it.
+    for pid in session_processes(Pid::from_child(&child)) {
+        let _ = rustix::process::kill_process(pid, Signal::HUP);
+    }
     let status = child.wait().expect("the child of a run is waited for once");
     let status = match status.code() {
         Some(code) => Status::Code(code),
@@ -526,6 +595,40 @@ mod tests {
         let dir = Workspace::dir_in(tmp.path());
         std::os::unix::fs::symlink(tmp.path(), &dir).unwrap();
         assert!(Workspace::create(tmp.path()).is_err());
+    }
+
+    #[test]
+    fn a_run_keeps_the_path_of_a_cd_through_a_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir_all(tmp.path().join("real/proj")).unwrap();
+        std::os::unix::fs::symlink("real/proj", tmp.path().join("lnk")).unwrap();
+        let mut session = session(tmp.path());
+        run(&mut session, "cd lnk\n");
+        let lnk = tmp.path().join("lnk");
+        assert_eq!(session.state.dir, lnk);
+        // A run that does not cd changes no directory.
+        assert_eq!(run(&mut session, "pwd\n").0, format!("{}\n", lnk.display()));
+        assert_eq!(session.state.dir, lnk);
+        let (output, _, _) = run(&mut session, "cd ..; pwd\n");
+        assert_eq!(output, format!("{}\n", tmp.path().display()));
+    }
+
+    #[test]
+    fn stepbook_starts_in_the_pwd_that_names_its_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        fs::create_dir(tmp.path().join("real")).unwrap();
+        std::os::unix::fs::symlink("real", tmp.path().join("lnk")).unwrap();
+        let real = tmp.path().join("real");
+        let lnk = tmp.path().join("lnk");
+        assert_eq!(start_dir(real.clone(), Some(lnk.clone().into())), lnk);
+        for pwd in [
+            tmp.path().into(),
+            OsString::from("lnk"),
+            OsString::from("/no/such"),
+        ] {
+            assert_eq!(start_dir(real.clone(), Some(pwd)), real);
+        }
+        assert_eq!(start_dir(real.clone(), None), real);
     }
 
     #[test]
@@ -911,6 +1014,16 @@ mod tests {
     }
 
     #[test]
+    fn exported_arrays_stay_out_of_the_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "export ARR=(a b) B=1\ndeclare -Ax M=([k]=v)\n";
+        assert!(run(&mut session, code).2);
+        let names = session.state.vars.keys().map(|n| n.to_string_lossy());
+        assert_eq!(names.collect::<Vec<_>>(), ["B", "PATH", "X"]);
+    }
+
+    #[test]
     fn values_with_newlines_quotes_and_escapes_survive_the_state() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
@@ -1023,6 +1136,22 @@ mod tests {
         assert_eq!(session_of(&run).len(), 3);
         run.signal(Signal::KILL);
         wait(&run);
+        assert_eq!(session_of(&run), []);
+    }
+
+    #[test]
+    fn the_jobs_of_a_run_get_sighup_when_it_ends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        // timeout puts itself and its child in a process group of their own,
+        // which the kernel does not hang up.
+        let code = "timeout 30 sleep 30 &\nsleep 0.1\necho started\n";
+        let run = session.start(code, "check", 80, 24).unwrap();
+        assert_eq!(wait(&run), ("started\n".into(), Status::Code(0)));
+        let deadline = std::time::Instant::now() + WAIT;
+        while !session_of(&run).is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
         assert_eq!(session_of(&run), []);
     }
 
