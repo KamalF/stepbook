@@ -15,7 +15,10 @@ const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const ERROR: Style = Style::new().fg(Color::Red);
 const BLOCK_GUTTER: Style = Style::new();
 const SELECTED: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
-const GUTTER: &str = "▌ ";
+/// "▐" has an East Asian width of N, so every terminal draws it 1 column
+/// wide. "▌" has an ambiguous width: a terminal set to draw it wide
+/// would shift the code after it.
+const GUTTER: &str = "▐ ";
 /// The second column of the gutter on a row that goes on from a wrapped
 /// line of code or info line. Text never reaches the gutter, so it cannot
 /// fake the mark.
@@ -361,7 +364,7 @@ fn code(
     // A row that goes on from a wrapped line has a mark in its gutter:
     // without it, a part of a line that starts with "#" would pass for a
     // comment, and a long name for a line of code.
-    let wrapped = [Span::styled("▌", style), Span::styled(WRAP_MARK, DIM)];
+    let wrapped = [Span::styled("▐", style), Span::styled(WRAP_MARK, DIM)];
     let gutter_of = |row: usize| {
         if row == 0 {
             vec![gutter.clone()]
@@ -835,7 +838,7 @@ mod tests {
     fn an_empty_code_block_shows_its_gutter() {
         assert_snapshot!(render("1. a\n2. ```\n   ```\n3. c", 40), @"
         1. a
-        2. «d:▌ »
+        2. «d:▐ »
 
         3. c
         ");
@@ -878,8 +881,8 @@ mod tests {
         let text = "1. Do x:\n   ```bash\n   ls\n   ```\n2. Next\n\nafter";
         assert_snapshot!(render(text, 40), @"
         1. Do x:
-           ▌ «b:#1»
-           ▌ «blue:ls»
+           ▐ «b:#1»
+           ▐ «blue:ls»
 
         2. Next
 
@@ -903,9 +906,9 @@ mod tests {
         assert_snapshot!(render("- item\n\n  > a\n  >\n  > b", 40), @"
         • item
 
-          «d:│ »a
-          «d:│ »
-          «d:│ »b
+          «d:│» a
+          «d:│»
+          «d:│» b
         ");
     }
 
@@ -913,12 +916,12 @@ mod tests {
     fn blockquotes_have_a_bar_per_level() {
         let text = "> one two three\n>\n> > nested\n>\n> - item\n\nafter";
         assert_snapshot!(render(text, 12), @"
-        «d:│ »one two
-        «d:│ »three
-        «d:│ »
-        «d:│ │ »nested
-        «d:│ »
-        «d:│ »• item
+        «d:│» one two
+        «d:│» three
+        «d:│»
+        «d:│» «d:│» nested
+        «d:│»
+        «d:│» • item
 
         after
         ");
@@ -927,7 +930,7 @@ mod tests {
     #[test]
     fn prefixes_keep_the_innermost_10_levels() {
         let quotes = render(&format!("{} x", ">".repeat(12)), 80);
-        assert_eq!(quotes, format!("«d:{}»x", "│ ".repeat(10)));
+        assert_eq!(quotes, format!("{}x", "«d:│» ".repeat(10)));
         let list: String = (0..12)
             .map(|i| format!("{}- {i}\n", "  ".repeat(i)))
             .collect();
@@ -947,8 +950,8 @@ mod tests {
         let page = layout(&parse(&text), 60, None);
         let code = markup(&page.lines[page.blocks[0].clone()]);
         // Two levels of 11 columns stay: at most 30 columns, half of 60.
-        let expected = "▌ «b:check»\n▌ «blue:curl» x «magenta:|» «blue:sh»";
-        assert_eq!(code, expected.replace("▌", &format!("{}▌", " ".repeat(22))));
+        let expected = "▐ «b:check»\n▐ «blue:curl» x «magenta:|» «blue:sh»";
+        assert_eq!(code, expected.replace("▐", &format!("{}▐", " ".repeat(22))));
     }
 
     #[test]
@@ -1017,12 +1020,12 @@ mod tests {
     fn blocks_show_an_info_line_and_a_gutter() {
         let text = "```bash [name:check]\nls\n```\n\n```sh\n\ncd /\n```";
         assert_snapshot!(render(text, 40), @"
-        ▌ «b:check»
-        ▌ «blue:ls»
+        ▐ «b:check»
+        ▐ «blue:ls»
 
-        ▌ «b:#2»
-        ▌
-        ▌ «blue:cd» /
+        ▐ «b:#2»
+        ▐
+        ▐ «blue:cd» /
         ");
     }
 
@@ -1031,9 +1034,9 @@ mod tests {
         let text =
             "```bash\nexport A=\"x $HOME\" # note\nif [ -n 1 ]; then ls -la | grep x; fi\n```";
         assert_snapshot!(render(text, 80), @r#"
-        ▌ «b:#1»
-        ▌ «magenta:export» «cyan:A»=«green:"x »«cyan:$HOME»«green:"» «i:# note»
-        ▌ «magenta:if» «blue:[» -n 1 «blue:]»«magenta:;» «magenta:then» «blue:ls» -la «magenta:|» «blue:grep» x«magenta:;» «magenta:fi»
+        ▐ «b:#1»
+        ▐ «magenta:export» «cyan:A»=«green:"x »«cyan:$HOME»«green:"» «i:# note»
+        ▐ «magenta:if» «blue:[» -n 1 «blue:]»«magenta:;» «magenta:then» «blue:ls» -la «magenta:|» «blue:grep» x«magenta:;» «magenta:fi»
         "#);
     }
 
@@ -1043,7 +1046,7 @@ mod tests {
         let lines = markup(&layout(&parse(&text), 2_000, None).lines);
         assert_eq!(
             lines,
-            format!("▌ «b:#1»\n▌ ls\n▌ echo {}", "a".repeat(1_000))
+            format!("▐ «b:#1»\n▐ ls\n▐ echo {}", "a".repeat(1_000))
         );
     }
 
@@ -1052,17 +1055,17 @@ mod tests {
         // pulldown-cmark turns CR LF into LF, but CR CR LF keeps one CR.
         let text = "```\ncd /tmp/x\r\r\nrm -rf *\n```";
         assert_snapshot!(render(text, 40), @"
-        «d:▌ »cd /tmp/x«yellow:^M»
-        «d:▌ »rm -rf *
+        «d:▐ »cd /tmp/x«yellow:^M»
+        «d:▐ »rm -rf *
         ");
     }
 
     #[test]
     fn other_code_blocks_have_a_dim_gutter_and_no_highlighting() {
         assert_snapshot!(render("```python\nif x: 'a'\n```\n\n    ls '$x'", 40), @"
-        «d:▌ »if x: 'a'
+        «d:▐ »if x: 'a'
 
-        «d:▌ »ls '$x'
+        «d:▐ »ls '$x'
         ");
     }
 
@@ -1070,20 +1073,20 @@ mod tests {
     fn a_long_info_line_wraps_so_that_its_warnings_show() {
         let text = "```bash [name:deploy-the-api-to-production x:1]\n\u{1b}[8m\n```";
         assert_snapshot!(render(text, 30), @"
-        ▌ «b:deploy-the-api-to-production»
-        ▌«d:↪»«yellow:unknown attribute 'x';»
-        ▌«d:↪»«yellow:hidden characters in code»
-        ▌ «yellow:^[»«blue:[8m»
+        ▐ «b:deploy-the-api-to-production»
+        ▐«d:↪»«yellow:unknown attribute 'x';»
+        ▐«d:↪»«yellow:hidden characters in code»
+        ▐ «yellow:^[»«blue:[8m»
         ");
     }
 
     #[test]
     fn long_code_lines_wrap_so_that_all_the_code_shows() {
         assert_snapshot!(render("```bash\nrm -rf build/output/folder\n```", 12), @"
-        ▌ «b:#1»
-        ▌ «blue:rm» -rf bui
-        ▌«d:↪»ld/output/
-        ▌«d:↪»folder
+        ▐ «b:#1»
+        ▐ «blue:rm» -rf bui
+        ▐«d:↪»ld/output/
+        ▐«d:↪»folder
         ");
     }
 
@@ -1091,11 +1094,11 @@ mod tests {
     fn info_lines_show_problems_and_warnings() {
         let text = "```bash [name:a x:1]\n```\n```bash [name:a]\n```\n```bash [name:\"b c\"]\n```";
         assert_snapshot!(render(text, 60), @"
-        ▌ «b:a»  «red:duplicate name»  «yellow:unknown attribute 'x'»
+        ▐ «b:a»  «red:duplicate name»  «yellow:unknown attribute 'x'»
 
-        ▌ «b:a»  «red:duplicate name»
+        ▐ «b:a»  «red:duplicate name»
 
-        ▌ «b:#3»  «yellow:invalid name: use [A-Za-z0-9_.-]»
+        ▐ «b:#3»  «yellow:invalid name: use [A-Za-z0-9_.-]»
         ");
     }
 
@@ -1104,8 +1107,8 @@ mod tests {
         assert_snapshot!(render("- step:\n\n  ```bash [name:s]\n  ls\n  ```", 40), @"
         • step:
 
-          ▌ «b:s»
-          ▌ «blue:ls»
+          ▐ «b:s»
+          ▐ «blue:ls»
         ");
     }
 
@@ -1116,9 +1119,9 @@ mod tests {
 
         «d:──────────»
 
-        «d:│ »b
-        «d:│ »
-        «d:│ ────────»
+        «d:│» b
+        «d:│»
+        «d:│» «d:────────»
         ");
     }
 
@@ -1178,8 +1181,8 @@ mod tests {
     fn control_characters_in_code_show_escaped_with_a_warning() {
         let text = "```bash\necho \u{1b}[31mred\u{7f} \u{9b}x \u{202e}y\n```";
         assert_snapshot!(render(text, 60), @"
-        ▌ «b:#1»  «yellow:hidden characters in code»
-        ▌ «blue:echo» «yellow:^[»«magenta:[»31mred«yellow:^?» «yellow:<9b>»x «yellow:<202e>»y
+        ▐ «b:#1»  «yellow:hidden characters in code»
+        ▐ «blue:echo» «yellow:^[»«magenta:[»31mred«yellow:^?» «yellow:<9b>»x «yellow:<202e>»y
         ");
     }
 
@@ -1201,21 +1204,45 @@ mod tests {
 
     #[test]
     fn control_characters_in_attributes_show_escaped() {
-        assert_snapshot!(render("```bash [\u{1b}]\n```", 60), @"▌ «b:#1»  «yellow:unexpected '^[' where a key starts»");
+        assert_snapshot!(render("```bash [\u{1b}]\n```", 60), @"▐ «b:#1»  «yellow:unexpected '^[' where a key starts»");
     }
 
     #[test]
     fn code_shows_escaped_what_a_terminal_would_not_draw() {
         let text = "```bash\necho \"prod\u{200b}\" ok\u{fe0f}\n\u{301}ls 'x\u{ff9e}\u{ff9e}'\ntrue\u{a0}#; ls\necho a\u{70f}b\n\u{93e}ls\necho \u{1f1eb}\u{1f1f7} \u{fff9}x \u{2d7f}\n```";
         assert_snapshot!(render(text, 60), @r#"
-        ▌ «b:#1»  «yellow:hidden characters in code»
-        ▌ «blue:echo» «green:"prod»«yellow:<200b>»«green:"» ok«yellow:<fe0f>»
-        ▌ «yellow:<0301>»«blue:ls» «green:'x»«yellow:<ff9e><ff9e>»«green:'»
-        ▌ «blue:true»«yellow:<a0>»«i:#; ls»
-        ▌ «blue:echo» a«yellow:<070f>»b
-        ▌ «yellow:<093e>»«blue:ls»
-        ▌ «blue:echo» «yellow:<1f1eb><1f1f7>» «yellow:<fff9>»x «yellow:<2d7f>»
+        ▐ «b:#1»  «yellow:hidden characters in code»
+        ▐ «blue:echo» «green:"prod»«yellow:<200b>»«green:"» ok«yellow:<fe0f>»
+        ▐ «yellow:<0301>»«blue:ls» «green:'x»«yellow:<ff9e><ff9e>»«green:'»
+        ▐ «blue:true»«yellow:<a0>»«i:#; ls»
+        ▐ «blue:echo» a«yellow:<070f>»b
+        ▐ «yellow:<093e>»«blue:ls»
+        ▐ «blue:echo» «yellow:<1f1eb><1f1f7>» «yellow:<fff9>»x «yellow:<2d7f>»
         "#);
+    }
+
+    #[test]
+    fn a_glyph_of_ambiguous_width_before_code_cannot_shift_it() {
+        // A terminal can draw a glyph of ambiguous East Asian width 2
+        // columns wide, and shift the rest of its row. ratatui moves the
+        // cursor back into place only at a cell with no style. Before the
+        // code, each glyph other than ASCII and the gutter is followed by
+        // such a cell.
+        let text = format!("- > ```bash\n  > echo {}\n  > ```", "a ".repeat(40));
+        let page = layout(&parse(&text), 40, Some(0));
+        let block = &page.blocks[0];
+        for line in &page.lines[block.start..block.end] {
+            let cells: Vec<_> = (line.spans.iter())
+                .flat_map(|s| s.styled_graphemes(Style::new()))
+                .map(|g| (g.symbol, g.style))
+                .collect();
+            let gutter = cells.iter().position(|(s, _)| *s == "▐").unwrap();
+            for (i, (symbol, _)) in cells[..gutter].iter().enumerate() {
+                let plain_space = cells[i + 1] == (" ", Style::new());
+                assert!(symbol.is_ascii() || plain_space, "{line:?}");
+            }
+            assert_ne!(gutter, 0, "{line:?}");
+        }
     }
 
     #[test]
@@ -1227,18 +1254,18 @@ mod tests {
             "a".repeat(25)
         );
         assert_snapshot!(render(&text, 40), @r"
-        ▌ «b:#1»
-        ▌ «blue:echo» would remove: \«d:␣»
-        ▌ «blue:rm» -rf /tmp/aaaaaaaaaaaaaaaaaaaaaaaaa«d:␣»
-        ▌«d:↪»/
+        ▐ «b:#1»
+        ▐ «blue:echo» would remove: \«d:␣»
+        ▐ «blue:rm» -rf /tmp/aaaaaaaaaaaaaaaaaaaaaaaaa«d:␣»
+        ▐«d:↪»/
         ");
     }
 
     #[test]
     fn tabs_in_code_expand_to_8_columns() {
         assert_snapshot!(render("```\na\tb\n\tc\n```", 40), @"
-        «d:▌ »a«d:⇥»      b
-        «d:▌ ⇥»       c
+        «d:▐ »a«d:⇥»      b
+        «d:▐ ⇥»       c
         ");
     }
 
@@ -1308,8 +1335,8 @@ mod tests {
                 prop_assert!(!last.ends_with(' '), "{:?}", row);
                 let text = text_of(&row.spans[1..]);
                 match row.spans[0].content.as_ref() {
-                    "▌ " => lines.push(text),
-                    "▌" => {
+                    "▐ " => lines.push(text),
+                    "▐" => {
                         prop_assert_eq!(&row.spans[1], &Span::styled(WRAP_MARK, DIM));
                         lines.last_mut().unwrap().push_str(&text_of(&row.spans[2..]));
                     }
@@ -1331,12 +1358,12 @@ mod tests {
             let page = layout(&doc, width, None);
             let (start, end) = (page.blocks[0].start, page.blocks[0].end);
             let text_of = |spans: &[Span]| -> String { spans.iter().map(|s| s.content.as_ref()).collect() };
-            prop_assert_eq!(text_of(&page.lines[end - 1].spans), "▌ ls");
+            prop_assert_eq!(text_of(&page.lines[end - 1].spans), "▐ ls");
             let rows = &page.lines[start..end - 1];
             prop_assert_eq!(rows[0].spans[0].content.as_ref(), GUTTER);
             let mut text = text_of(&rows[0].spans[1..]);
             for row in &rows[1..] {
-                let mark = [Span::styled("▌", BLOCK_GUTTER), Span::styled(WRAP_MARK, DIM)];
+                let mark = [Span::styled("▐", BLOCK_GUTTER), Span::styled(WRAP_MARK, DIM)];
                 prop_assert_eq!(&row.spans[..2], &mark);
                 text.push_str(&text_of(&row.spans[2..]));
             }
@@ -1427,14 +1454,14 @@ mod tests {
         │   #3      │                                                                  │
         │ «red:!» check   │ Why: apply the config.                                           │
         │           │                                                                  │
-        │           │ «cyan,b:▌ »«b:check»  «red:duplicate name»                                          │
-        │           │ «cyan,b:▌ »«blue:ls»                                                             │
+        │           │ «cyan,b:▐ »«b:check»  «red:duplicate name»                                          │
+        │           │ «cyan,b:▐ »«blue:ls»                                                             │
         │           │                                                                  │
-        │           │ ▌ «b:restart»                                                        │
-        │           │ ▌ «blue:systemctl» restart api                                          │
+        │           │ ▐ «b:restart»                                                        │
+        │           │ ▐ «blue:systemctl» restart api                                          │
         │           │                                                                  │
-        │           │ ▌ «b:#3»                                                             │
-        │           │ ▌ «blue:echo»                                                           │
+        │           │ ▐ «b:#3»                                                             │
+        │           │ ▐ «blue:echo»                                                           │
         └───────────┴──────────────────────────────────────────────────────────────────┘
         «r: NORMAL »  ↑↓ move  q quit
         ");
@@ -1451,11 +1478,11 @@ mod tests {
         │   #3      │                                                                  │
         │ «red:!» check   │ Why: apply the config.                                           │
         │           │                                                                  │
-        │           │ ▌ «b:check»  «red:duplicate name»                                          │
-        │           │ ▌ «blue:ls»                                                             │
+        │           │ ▐ «b:check»  «red:duplicate name»                                          │
+        │           │ ▐ «blue:ls»                                                             │
         │           │                                                                  │
-        │           │ «cyan,b:▌ »«b:restart»                                                        │
-        │           │ «cyan,b:▌ »«blue:systemctl» restart api                                          │
+        │           │ «cyan,b:▐ »«b:restart»                                                        │
+        │           │ «cyan,b:▐ »«blue:systemctl» restart api                                          │
         └───────────┴──────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -1487,7 +1514,7 @@ mod tests {
         assert_snapshot!(rows("```bash [name:abcdefghijklmnop]\n```\n"), @"┌ blocks ───────────┬ run.md ──────────────────────────────────────────────────┐");
         assert_snapshot!(screen(&view(&long), 80, 8), @"
         ┌ blocks ─────────────────────┬ run.md ────────────────────────────────────────┐
-        │«cyan,b:▶»  «cyan,b:nnnnnnnnnnnnnnnnnnnnnnnnn…»│ «cyan,b:▌ »«b:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn»     │
+        │«cyan,b:▶»  «cyan,b:nnnnnnnnnnnnnnnnnnnnnnnnn…»│ «cyan,b:▐ »«b:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn»     │
         │                             │                                                │
         │                             │                                                │
         │                             │                                                │
@@ -1502,11 +1529,11 @@ mod tests {
         view.selected = Some(7);
         assert_snapshot!(screen(&view, 80, 8), @"
         ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
-        │   #4      │ ▌ «b:#1»                                                             │
+        │   #4      │ ▐ «b:#1»                                                             │
         │   #5      │                                                                  │
-        │   #6      │ ▌ «b:#2»                                                             │
+        │   #6      │ ▐ «b:#2»                                                             │
         │   #7      │                                                                  │
-        │«cyan,b:▶»  «cyan,b:#8»      │ ▌ «b:#3»                                                             │
+        │«cyan,b:▶»  «cyan,b:#8»      │ ▐ «b:#3»                                                             │
         └───────────┴──────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -1582,9 +1609,9 @@ mod tests {
         │                                                          │
         │ Why: step 2.                                             │
         │                                                          │
-        │ «cyan,b:▌ »«b:s2»                                                     │
-        │ «cyan,b:▌ »«blue:ls»                                                     │
-        │ «cyan,b:▌ »«blue:ls»                                                     │
+        │ «cyan,b:▐ »«b:s2»                                                     │
+        │ «cyan,b:▐ »«blue:ls»                                                     │
+        │ «cyan,b:▐ »«blue:ls»                                                     │
         └──────────────────────────────────────────────────────────┘
         ");
     }

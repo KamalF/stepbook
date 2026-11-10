@@ -414,8 +414,13 @@ impl Builder {
         for container in levels {
             match container {
                 Container::Quote => {
-                    first.push(Span::styled("│ ", DIM));
-                    rest.push(Span::styled("│ ", DIM));
+                    // "│" has an ambiguous East Asian width. A terminal
+                    // can draw it 2 columns wide, and shift the rest of
+                    // the row. ratatui moves the cursor back into place at
+                    // the next cell with no style: the space.
+                    let prefix = [Span::styled("│", DIM), Span::raw(" ")];
+                    first.extend(prefix.clone());
+                    rest.extend(prefix);
                 }
                 Container::Item { marker, indent, .. } => {
                     let spaces = Span::raw(" ".repeat(*indent));
@@ -453,7 +458,7 @@ impl Builder {
     fn push_item(&mut self, kind: Kind) {
         // A code block always ends with a blank line, or with the end of
         // the file. Text right under it would look like more code: the
-        // text of a tight list item can draw a gutter with "▌".
+        // text of a tight list item can draw a gutter with "▐".
         if matches!(
             self.items.last(),
             Some(Item {
@@ -827,7 +832,7 @@ pub fn code_line(spans: &[Span], hidden: &mut bool) -> Vec<Span<'static>> {
     // drop.
     for grapheme in Span::raw(text.as_str()).styled_graphemes(Style::new()) {
         let mut style = starts[starts.partition_point(|(start, _)| *start <= offset) - 1].1;
-        // The view draws the gutter "▌ " before each line: a mark at the
+        // The view draws the gutter "▐ " before each line: a mark at the
         // start of a line would join its space into one grapheme.
         let at_start = offset == 0;
         offset += grapheme.symbol.len();
@@ -1644,7 +1649,7 @@ mod tests {
     #[test]
     fn a_code_block_is_followed_by_a_blank_line() {
         let text =
-            "- Dry run first:\n  ```bash\n  ls \\\n  ```\n  ▌ --dry-run\n- ```\n  x\n  ```\n- next";
+            "- Dry run first:\n  ```bash\n  ls \\\n  ```\n  ▐ --dry-run\n- ```\n  x\n  ```\n- next";
         let kinds: Vec<_> = (parse(text).items.iter())
             .map(|item| match item.kind {
                 Kind::Code { .. } => "code",

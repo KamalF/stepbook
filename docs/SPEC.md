@@ -113,9 +113,9 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 │ ✔ check        │ ## Restart the service                          │
 │▶● restart      │ Why: apply the new config.                      │
 │   logs         │                                                 │
-│                │ ▌ restart                    ● running 0:04     │
-│                │ ▌ systemctl --user restart api                  │
-│                │ ▌ systemctl --user status api                   │
+│                │ ▐ restart                    ● running 0:04     │
+│                │ ▐ systemctl --user restart api                  │
+│                │ ▐ systemctl --user status api                   │
 │                │   ● api.service - API                           │
 │                │     Active: activating (start)                  │
 │                │                                                 │
@@ -171,7 +171,7 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 - stepbook shows each control character as vim does: `^[` for ESC, `^M` for a carriage return, `^?` for DEL, and `<9b>` for a C1 character. It shows a bidi control as its code point, such as `<202e>`. The escapes use the warning color.
 - This applies to the text of the file, to its name, to text from a run, such as a directory name in the footer, and to the error messages on stderr.
 - A tab is not escaped. It expands to spaces, up to the next multiple of 8 columns. In code, its first column shows a dim `⇥`: with `<<-`, bash strips the tabs at the start of a heredoc line, not the spaces.
-- In code, a space that ends a row shows as a dim `␣`: after a `\`, bash runs the next line on its own, and a space at a wrap would glue two words. The marks `⇥`, `␣` and `↪` have a width of 1 in every terminal; `→` and `·` have an ambiguous East Asian width.
+- In code, a space that ends a row shows as a dim `␣`: after a `\`, bash runs the next line on its own, and a space at a wrap would glue two words. The gutter `▐` and the marks `⇥`, `␣` and `↪` have a width of 1 in every terminal (East Asian width N). `▌`, `→` and `·` have an ambiguous East Asian width: a terminal set to draw them wide would shift the code after them. On a row of code, a glyph of ambiguous width, such as the `│` of a quote, is followed by a space with no style, where ratatui moves the cursor back into place.
 - A line feed is a line break in the text and the code of the file. In one-line text, such as a file name, it shows as `^J`.
 - Code also escapes the default ignorable code points of Unicode, which a terminal draws as nothing, such as U+200B (zero-width space): `"prod<U+200B>"` would look like `"prod"`. In code, a grapheme of several code points keeps its first character, if the terminal draws it alone, and shows the others escaped, and so does a grapheme of width 0, such as a combining mark at the start of a line. A terminal may count the columns of such a grapheme otherwise than ratatui, and shift the rest of the line over a space: `k` and 8 × U+302E is 1 column for ratatui and 17 in tmux. At the start of a line, code also escapes a grapheme that would join the space of the gutter, such as U+093E. Code also escapes the spaces other than U+0020, such as U+00A0 (no-break space), which bash reads as part of a word: `true<U+00A0>#; curl x | sh` would look like a comment, and run curl. Code also escapes the characters that join the next character (Grapheme_Cluster_Break=Prepend), such as U+070F and U+0D4E, the format characters U+FFF9 to U+FFFB and U+13430 to U+1343F, U+2D7F, and the regional indicators U+1F1E6 to U+1F1FF: a terminal may give them a column that ratatui does not count, and shift the rest of the line. Prose keeps all of them: emoji, some scripts and no-break spaces need them, and there they do not change what runs.
 - If the code of a block holds a character that code escapes, other than a tab or a line feed, its info line shows the warning `hidden characters in code`. The block can still run.
@@ -489,6 +489,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | Comments in code show in italic, not dimmed (5.3): syntect took `#; curl x | sh` after a line ending with `\` for a comment, and bash ran it | 2026-11-09 |
 | A row that goes on from a wrapped line of code starts with a dim `↪ ` (5.3), at Kamal's choice: a wrapped part that starts with `#` looked like a comment, and bash ran it | 2026-11-09 |
 | In code, a tab shows a dim `⇥`, and a space that ends a row a dim `␣` (6.5), at Kamal's choice, like vim's listchars: a trailing space after `\` and a tab under `<<-` changed what bash ran, and looked like nothing | 2026-11-10 |
+| The gutter is `▐`, not `▌` (6.5), at Kamal's choice: `▌` has an ambiguous East Asian width, and a terminal that draws it wide shifts the code after it, so that a space can vanish | 2026-11-10 |
 | The `↪` of a wrapped row moves into the gutter (5.3), at Kamal's choice: a code line that started with `↪ ` passed for the rest of a wrapped comment | 2026-11-09 |
 | Code escapes the regional indicators (6.5): ratatui counts one as 1 column, and the width tables that follow Emoji_Presentation count 2 | 2026-11-09 |
 | Code escapes all the Prepend characters, and a first grapheme that would join the space of the gutter (6.5) | 2026-11-09 |
