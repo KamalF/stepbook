@@ -9,7 +9,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::sync::{Arc, Mutex, PoisonError, TryLockError};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use crossbeam_channel::{Receiver, Sender};
 use rustix::event::{PollFd, PollFlags, Timespec};
@@ -524,15 +524,11 @@ fn session_processes(leader: Pid) -> Vec<Pid> {
 /// own. A wrapper that outlived stepbook would write its state where the
 /// workspace was, maybe in a directory that another user made there.
 pub fn end_runs() {
-    let runs: Vec<i32> = match RUNS.try_lock() {
-        Ok(runs) => runs.iter().map(|pid| pid.as_raw_pid()).collect(),
-        Err(TryLockError::Poisoned(runs)) => runs
-            .into_inner()
-            .iter()
-            .map(|pid| pid.as_raw_pid())
-            .collect(),
-        Err(TryLockError::WouldBlock) => return,
-    };
+    // Held only around a push or a retain, which cannot panic: the lock
+    // cannot block for long, nor be held by the thread of a panic.
+    let runs: Vec<i32> = (RUNS.lock().unwrap_or_else(PoisonError::into_inner).iter())
+        .map(|pid| pid.as_raw_pid())
+        .collect();
     let members = || {
         let alive = (processes().into_iter()).filter(|p| !p.zombie && runs.contains(&p.session));
         alive.map(|p| p.pid).collect::<Vec<_>>()
@@ -1132,21 +1128,56 @@ mod tests {
 
     #[test]
     fn the_output_of_a_process_substitution_ends_before_the_run() {
+        // The logging header of the old runbooks (spec 12.3): when the
+        // wrapper exits, the kernel sends SIGHUP to its tee. Under set -f
+        // too, and with a handler that ends with exit.
+        let handlers = [
+            "trap 'echo \"=== END b rc=$?\"' EXIT",
+            "set -f\ntrap 'echo \"=== END b rc=$?\"' EXIT",
+            "trap 'rc=$?; echo \"=== END b rc=$rc\"; exit $rc' EXIT",
+        ];
+        for handler in handlers {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut session = session(tmp.path());
+            let code = format!("exec > >(tee -a \"$PWD/log\") 2>&1\n{handler}\nseq 1 20000\n");
+            let started = std::time::Instant::now();
+            let (output, status, saved) = run(&mut session, &code);
+            assert_eq!((status, saved), (Status::Code(0), true), "{handler}");
+            let end = &output[output.len().saturating_sub(50)..];
+            assert!(
+                output.ends_with("\n20000\n=== END b rc=0\n"),
+                "{handler}: {end}"
+            );
+            let log = fs::read_to_string(tmp.path().join("log")).unwrap();
+            assert_eq!(log.lines().count(), 20001, "{handler}");
+            // The tee read the end of its input: the wrapper did not wait
+            // its whole second.
+            assert!(
+                started.elapsed() < std::time::Duration::from_millis(900),
+                "{handler}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_end_of_a_run_fires_no_trap_and_needs_no_option_of_the_script() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
-        // The logging header of the old runbooks (spec 12.3): when the
-        // wrapper exits, the kernel sends SIGHUP to its tee.
-        let code = "exec > >(tee -a \"$PWD/log\") 2>&1\n\
-            trap 'echo \"=== END b rc=$?\"' EXIT\nseq 1 20000\n";
-        let (output, status, saved) = run(&mut session, code);
-        assert_eq!((status, saved), (Status::Code(0), true));
-        assert!(
-            output.ends_with("\n20000\n=== END b rc=0\n"),
-            "{}",
-            &output[output.len() - 50..]
+        // An ERR trap under set -E, set -f and POSIX mode act on the lines
+        // of the wrapper after the script; a background job makes the
+        // wrapper wait.
+        let code = "set -Eeuo pipefail\ntrap 'echo err >> \"$PWD/errs\"' ERR\n\
+            set -f\nsleep 0.3 &\necho deployed\n";
+        assert_eq!(
+            run(&mut session, code),
+            ("deployed\n".into(), Status::Code(0), true)
         );
-        let log = fs::read_to_string(tmp.path().join("log")).unwrap();
-        assert_eq!(log.lines().count(), 20001);
+        assert!(!tmp.path().join("errs").exists());
+        let code = "set -o posix\nset -f\ntrue\n";
+        assert_eq!(
+            run(&mut session, code),
+            (String::new(), Status::Code(0), true)
+        );
     }
 
     #[test]
@@ -1184,6 +1215,15 @@ mod tests {
         let (_, _, saved) = run(&mut session, "unset X\n");
         assert!(!saved);
         assert_eq!(var(&session, "X").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn a_variable_named_as_an_array_with_another_case_stays_under_nocasematch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        session.state.vars.insert("HOSTS".into(), "a b".into());
+        assert!(run(&mut session, "shopt -s nocasematch\nhosts=(a b)\n").2);
+        assert_eq!(var(&session, "HOSTS").as_deref(), Some("a b"));
     }
 
     #[test]

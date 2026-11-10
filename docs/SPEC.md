@@ -258,7 +258,7 @@ Several blocks can run at the same time. Each one runs in its own PTY.
 
 stepbook checks at startup that `bash` is on the `PATH` and fails if it is not. There is no timeout on runs.
 
-Before the wrapper exits, it closes its files and waits up to 1 s for its children to end: the kernel sends SIGHUP to the process group in the foreground when the wrapper exits, and a process substitution, such as the `tee` of the old logging header (12.3), would lose the end of its output. A background job, which keeps the files open, costs that second.
+Before the wrapper exits, it closes its files and waits up to 1 s for its children to end: the kernel sends SIGHUP to the process group in the foreground when the wrapper exits, and a process substitution, such as the `tee` of the old logging header (12.3), would lose the end of its output. A background job, which keeps the files open, costs that second. It does so after the script's `EXIT` handler, or at the `exit` of that handler, whatever the options and traps of the script. A failure under `set -e` in the handler ends the shell at once: the wrapper then neither saves the state a second time nor waits.
 
 When the wrapper ends, stepbook sends SIGHUP to the processes left in the session of the run, background jobs included, as when a terminal closes. The kernel sends it only to the process group in the foreground, and `timeout` or `set -m` give a job a group of its own. `nohup` or `setsid` keeps a job alive.
 

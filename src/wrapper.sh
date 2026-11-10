@@ -44,7 +44,8 @@ __stepbook_trap=
 # Under set -x, bash would print each value, secrets included: the trap
 # turns set -x off first.
 __stepbook_save() {
-    local __stepbook_names __stepbook_name __stepbook_arrays
+    local __stepbook_names __stepbook_name __stepbook_array
+    local -A __stepbook_arrays
     # Only into the file that stepbook made: after stepbook ends, its
     # workspace is gone, and a directory of the same name can be another
     # user's.
@@ -59,14 +60,22 @@ __stepbook_save() {
     mapfile -t __stepbook_names <<<"$(builtin compgen -e)"
     # bash puts no array in the environment, but compgen -e lists an
     # exported array: the state would get its first element as a string.
-    __stepbook_arrays=" $(builtin compgen -A arrayvar) "
+    # Keys of an associative array match exactly, whatever nocasematch.
+    mapfile -t __stepbook_array <<<"$(builtin compgen -A arrayvar)"
+    for __stepbook_name in "${__stepbook_array[@]}"; do
+        if [ -n "$__stepbook_name" ]; then
+            __stepbook_arrays[$__stepbook_name]=1
+        fi
+    done
     {
         builtin printf '%s\0' "${PWD-}"
         for __stepbook_name in "${__stepbook_names[@]}"; do
             # Under set -a, bash exports the variables of the wrapper, and
             # the BASH_TRAPSIG that it sets in a trap.
             case $__stepbook_name in '' | __stepbook_* | BASH_TRAPSIG) continue ;; esac
-            case $__stepbook_arrays in *[[:space:]]$__stepbook_name[[:space:]]*) continue ;; esac
+            if [ -n "${__stepbook_arrays[$__stepbook_name]-}" ]; then
+                continue
+            fi
             builtin printf '%s=%s\0' "$__stepbook_name" "${!__stepbook_name}"
         done
         builtin printf '\0'
@@ -83,36 +92,62 @@ __stepbook_status() {
 # of the PTY. So the wrapper first closes its files, so that they read the
 # end of their input, and waits up to 1 s for its children to end. A
 # background job, which keeps them open, costs that second.
+#
+# The shell exits right after, so the drain drops the options and the
+# traps of the script, which would act on its lines: set -f would keep the
+# glob from expanding, an ERR trap under set -E would run on the reads that
+# fail on purpose, and in POSIX mode a failed exec would end the shell.
 __stepbook_drain() {
-    local - __stepbook_fd __stepbook_children __stepbook_tries=20
-    set +e
+    builtin trap - ERR DEBUG RETURN
+    set +eEfuT +o posix
+    shopt -u failglob nullglob
+    local __stepbook_fd __stepbook_children __stepbook_tries=20
     for __stepbook_fd in /proc/"$BASHPID"/fd/*; do
         __stepbook_fd=${__stepbook_fd##*/}
-        # bash reads the wrapper on fd 255.
-        if [ "$__stepbook_fd" != 255 ]; then
+        # bash reads the wrapper on fd 255. The glob read the directory on
+        # an fd that is closed by now.
+        if [ "$__stepbook_fd" != 255 ] && [ -e "/proc/$BASHPID/fd/$__stepbook_fd" ]; then
             exec {__stepbook_fd}>&- 2>/dev/null
         fi
     done
     exec {__stepbook_fd}<>"$__stepbook_timer" || return 0
     while [ "$__stepbook_tries" -gt 0 ]; do
         __stepbook_children=
-        read -r __stepbook_children <"/proc/$BASHPID/task/$BASHPID/children"
+        # The file has no final line feed: read fails, and reads it all.
+        read -r __stepbook_children <"/proc/$BASHPID/task/$BASHPID/children" || :
         if [ -z "$__stepbook_children" ]; then
             return 0
         fi
-        read -r -t 0.05 -u "$__stepbook_fd"
+        read -r -t 0.05 -u "$__stepbook_fd" || :
         __stepbook_tries=$((__stepbook_tries - 1))
     done
 }
 
+# While the handler of the script runs: its exit would skip the second
+# save and the drain. In POSIX mode, bash refuses a function named exit,
+# and finds its builtin first anyway.
+__stepbook_exit_function='exit() {
+    local __stepbook_status=$?
+    if [ "$BASHPID" = "$__stepbook_pid" ]; then
+        set +a
+        __stepbook_save
+        __stepbook_drain
+    fi
+    builtin exit "${1-$__stepbook_status}"
+}'
+
 # Saves the state, then runs the handler of the script with the exit
 # status in $?, and with set -a as the script left it, then saves the
-# state again: the handler can change it. The handler can also end with
-# exit, or with a failure under set -e, which skip the rest of this
-# function. set -x stays off, since its trace would show the wrapper.
+# state again: the handler can change it. If the handler ends with exit,
+# the exit function saves and drains first. A failure under set -e in the
+# handler skips the rest: the second save and the drain (spec 8.2). set -x
+# stays off, since its trace would show the wrapper.
 __stepbook_exit() {
     __stepbook_save
     if [ -n "$__stepbook_trap" ]; then
+        if ! shopt -oq posix; then
+            eval "$__stepbook_exit_function"
+        fi
         case $__stepbook_flags in *a*) set -a ;; esac
         # Under set -e, a status other than 0 would end the trap here,
         # unless a "||" follows it. set -e still applies to the handler, as
