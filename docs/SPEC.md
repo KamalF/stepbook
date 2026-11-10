@@ -298,6 +298,8 @@ The wrapper saves the state in all these cases:
 | Killed with SIGKILL, or replaces itself with `exec` | No. The info line shows `state not saved`. |
 | Installs its own `EXIT` trap in POSIX mode (`set -o posix`, `POSIXLY_CORRECT`) | No: bash runs its builtin `trap`, which replaces the wrapper's handler. The block still runs. |
 
+The wrapper keeps the script's `EXIT` handler apart with a shell function named `trap`. bash resets the `ERR`, `DEBUG` and `RETURN` traps in a function, and puts them back at its return. So in a block, `trap - ERR` (or `DEBUG`, `RETURN`) removes nothing, `trap -p ERR` shows nothing, and a `RETURN` trap set in a function also runs when `trap` returns. Setting an `ERR` or `DEBUG` trap works.
+
 ### 9.3 Applying the state
 
 When a run ends, stepbook compares the captured state with the state the run started with, and applies only the difference to the session:

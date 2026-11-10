@@ -19,9 +19,9 @@ if shopt -oq posix; then
     set +o posix
 fi
 # The EXIT handler of the wrapper. It keeps the exit status and the flags,
-# then turns set -x and set -a off, with no trace.
-__stepbook_handler='{ __stepbook_code=$? __stepbook_flags=$-; set +ax; } 2>/dev/null
-__stepbook_exit'
+# then turns set -x, set -v and set -a off, with no trace. One line: set -v
+# shows it at the exit.
+__stepbook_handler='{ __stepbook_code=$? __stepbook_flags=$-; set +axv; } 2>/dev/null; __stepbook_exit'
 # The EXIT handler of the script, which the wrapper runs from its own.
 __stepbook_trap=
 
@@ -82,10 +82,16 @@ __stepbook_read_slot() {
 # of the wrapper's. So "trap -p EXIT" and "$(trap -p EXIT)" give the
 # handler of the script, and a handler that chains them never calls the
 # wrapper's.
+#
+# In a function, bash resets the ERR, DEBUG and RETURN traps, and puts
+# them back at the return: through this function, "trap - ERR" removes
+# nothing, "trap -p ERR" shows nothing, and a RETURN trap set in a function
+# also runs when this function returns (spec 9.2). An alias that turned on
+# set -ET first would split "cmd && trap ..." in two commands.
 trap() {
-    # Under set -x, the trace would show the wrapper. "local -" gives the
-    # flags back at the return.
-    { local -; set +x; } 2>/dev/null
+    # Under set -x or set -v, the trace would show the wrapper. "local -"
+    # gives the flags back at the return.
+    { local -; set +xv; } 2>/dev/null
     local __stepbook_slot __stepbook_rc=0
     __stepbook_read_slot
     # A subshell that set its own EXIT trap.

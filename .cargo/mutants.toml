@@ -45,5 +45,5 @@ exclude_re = [
     # install their handlers with SA_RESTART.
     "replace match guard e.kind\\(\\) == std::io::ErrorKind::Interrupted with false in read_run",
     # With as many rows as asked, the scrollback adds none.
-    "term.rs:\\d+:\\d+: replace < with <= in Terminal::last_rows",
+    "term.rs:\\d+:\\d+: replace < with <= in last_rows$",
 ]
