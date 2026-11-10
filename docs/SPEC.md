@@ -261,7 +261,7 @@ When the wrapper ends, the kernel sends SIGHUP to the processes of the run, back
 
 ### 8.3 Workspace
 
-- The workspace is `$XDG_RUNTIME_DIR/stepbook-<pid>/`, or `<temp dir>/stepbook-<pid>/` if `XDG_RUNTIME_DIR` is not set.
+- The workspace is `$XDG_RUNTIME_DIR/stepbook-<pid>/`, or `<temp dir>/stepbook-<pid>/` if `XDG_RUNTIME_DIR` is not set or not absolute. A relative temp dir becomes absolute: a run opens its files after its `cd`.
 - The directory has mode 0700 and its files have mode 0600 (upmd issue S4, see 18).
 - If the directory exists, stepbook fails at startup: in a shared temp dir, another user could have made it.
 - stepbook deletes the workspace when it exits, including after a panic or a SIGTERM or SIGHUP. It deletes the files of a run when the run ends.

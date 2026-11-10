@@ -188,7 +188,8 @@ fn open(args: &Args) -> Result<Exit, String> {
             let _ = signal_sender.send(Control::Signal(signal));
         }
     });
-    let parent = run::workspace_parent(std::env::var_os("XDG_RUNTIME_DIR"));
+    let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
+    let parent = run::workspace_parent(runtime_dir, std::env::temp_dir());
     let fail = |e: std::io::Error| {
         let dir = run::Workspace::dir_in(&parent);
         format!(

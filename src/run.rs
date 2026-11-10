@@ -70,12 +70,15 @@ impl Drop for Workspace {
     }
 }
 
-/// `$XDG_RUNTIME_DIR` if it is an absolute path, else the temp dir.
-pub fn workspace_parent(runtime_dir: Option<OsString>) -> PathBuf {
-    runtime_dir
+/// `$XDG_RUNTIME_DIR` if it is an absolute path, else the temp dir, made
+/// absolute.
+pub fn workspace_parent(runtime_dir: Option<OsString>, temp_dir: PathBuf) -> PathBuf {
+    let dir = runtime_dir
         .map(PathBuf::from)
-        .filter(|dir| dir.is_absolute())
-        .unwrap_or_else(std::env::temp_dir)
+        .filter(|dir| dir.is_absolute());
+    let dir = dir.unwrap_or(temp_dir);
+    // The runs open their files from the session directory.
+    std::path::absolute(&dir).unwrap_or(dir)
 }
 
 /// The exported variables and the working directory that a run starts
@@ -513,14 +516,19 @@ mod tests {
 
     #[test]
     fn the_workspace_goes_in_the_runtime_dir_if_it_is_absolute() {
-        let temp = std::env::temp_dir();
+        let parent = |runtime: Option<&str>, temp: &str| {
+            workspace_parent(runtime.map(OsString::from), temp.into())
+        };
         assert_eq!(
-            workspace_parent(Some("/run/user/1".into())),
+            parent(Some("/run/user/1"), "/tmp"),
             Path::new("/run/user/1")
         );
-        assert_eq!(workspace_parent(Some("run".into())), temp);
-        assert_eq!(workspace_parent(Some("".into())), temp);
-        assert_eq!(workspace_parent(None), temp);
+        assert_eq!(parent(Some("run"), "/tmp"), Path::new("/tmp"));
+        assert_eq!(parent(Some(""), "/tmp"), Path::new("/tmp"));
+        assert_eq!(parent(None, "/tmp"), Path::new("/tmp"));
+        // A run opens its files after its cd.
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(parent(None, "tmp"), cwd.join("tmp"));
     }
 
     fn make_file(dir: &std::path::Path, mode: u32) -> PathBuf {
