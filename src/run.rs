@@ -487,24 +487,28 @@ fn processes() -> Vec<Process> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
     };
-    let process = |pid: i32| {
-        // The name of the program, in parentheses, can hold any byte, and
-        // the kernel cuts it at 15 bytes, inside a UTF-8 character too. The
-        // fields after it are ASCII.
-        let stat = std::fs::read(format!("/proc/{pid}/stat")).ok()?;
-        let after = &stat[stat.iter().rposition(|&b| b == b')')? + 1..];
-        let mut fields = std::str::from_utf8(after).ok()?.split_whitespace();
-        let zombie = fields.next()? == "Z";
-        let session = fields.nth(2)?.parse().ok()?;
-        let pid = Pid::from_raw(pid)?;
-        Some(Process {
-            pid,
-            session,
-            zombie,
-        })
-    };
+    let process = |pid: i32| parse_stat(pid, &std::fs::read(format!("/proc/{pid}/stat")).ok()?);
     let pids = entries.filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok());
     pids.filter_map(process).collect()
+}
+
+/// A process from its /proc/PID/stat.
+fn parse_stat(pid: i32, stat: &[u8]) -> Option<Process> {
+    // The name of the program, in parentheses, can hold any byte, and the
+    // kernel cuts it at 15 bytes, inside a UTF-8 character too. The fields
+    // after it are ASCII.
+    let after = &stat[stat.iter().rposition(|&b| b == b')')? + 1..];
+    let mut fields = std::str::from_utf8(after).ok()?.split_whitespace();
+    let state = fields.next()?;
+    let session = fields.nth(2)?.parse().ok()?;
+    // A process whose main thread has ended shows Z while its other threads
+    // run: it has ended only with no thread left.
+    let threads: u32 = fields.nth(13)?.parse().ok()?;
+    Some(Process {
+        pid: Pid::from_raw(pid)?,
+        session,
+        zombie: state == "Z" && threads <= 1,
+    })
 }
 
 /// The processes of a session. Without /proc, only its leader.
@@ -1292,6 +1296,14 @@ mod tests {
             ("deployed\n".into(), Status::Code(0), true)
         );
         assert!(!tmp.path().join("errs").exists());
+        // Without set -E, bash puts the ERR trap back when the functions of
+        // the wrapper return.
+        let code = "set -e\ntrap 'echo err >> \"$PWD/errs\"; exit 1' ERR\necho deployed\n";
+        assert_eq!(
+            run(&mut session, code),
+            ("deployed\n".into(), Status::Code(0), true)
+        );
+        assert!(!tmp.path().join("errs").exists());
         let code = "set -o posix\nset -f\ntrue\n";
         assert_eq!(
             run(&mut session, code),
@@ -1546,6 +1558,24 @@ mod tests {
         assert!(output.ends_with("started\n"), "{output}");
         end_sessions(&[run.pid.as_raw_pid()]);
         assert_eq!(session_of(&run), []);
+    }
+
+    #[test]
+    fn a_process_whose_main_thread_ended_is_not_a_zombie_while_a_thread_runs() {
+        // pid (name) state ppid pgrp session tty tpgid, 11 fields, then
+        // the number of threads. The name can hold ") ".
+        let stat = |state: &str, threads: u32| {
+            format!(
+                "42 (a) Z 1 (b) {state} 1 7 7 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 {threads} 0 9\n"
+            )
+        };
+        let parse = |state, threads| {
+            let process = parse_stat(42, stat(state, threads).as_bytes()).unwrap();
+            (process.session, process.zombie)
+        };
+        assert_eq!(parse("Z", 1), (7, true));
+        assert_eq!(parse("Z", 2), (7, false));
+        assert_eq!(parse("S", 1), (7, false));
     }
 
     /// Waits until a run has `count` processes, which a loaded machine

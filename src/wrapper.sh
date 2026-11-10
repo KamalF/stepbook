@@ -149,7 +149,9 @@ __stepbook_keep_jobs() {
     # the group in the foreground of the tty.
     [[ ${__stepbook_stat##*) } =~ ^[^\ ]+\ [0-9]+\ ([0-9]+)\ [0-9]+\ [0-9]+\ ([0-9]+)\  ]] || return 0
     [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ] || return 0
-    (exec -c /proc/self/exe -m -c 'kill -KILL $$') 2>/dev/tty
+    # Its status, 137, would come back to the EXIT trap, where an ERR trap
+    # of the script set without set -E would fire on it.
+    (exec -c /proc/self/exe -m -c 'kill -KILL $$') 2>/dev/tty || :
 }
 
 # While the handler of the script runs: its exit would skip the second
