@@ -1483,21 +1483,14 @@ mod tests {
     #[test]
     fn a_tab_in_code_starts_with_a_dim_mark() {
         let spans = code_line(&[Span::raw("a\tb")], &mut false);
-        let shown: String = spans.iter().map(|s| s.content.as_ref()).collect();
-        assert_eq!(shown, format!("a{TAB_MARK}      b"));
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, format!("a{TAB_MARK}      b"));
         assert!(
             spans
                 .iter()
                 .any(|s| s.content == TAB_MARK && s.style == DIM)
         );
-        assert_eq!(shown_in_prose("a\tb"), "a       b");
-    }
-
-    fn shown_in_prose(text: &str) -> String {
-        escaped(text, Style::new())
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect()
+        assert_eq!(shown("a\tb"), "a       b");
     }
 
     #[test]
