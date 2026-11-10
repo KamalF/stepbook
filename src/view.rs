@@ -13,6 +13,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
 
 use crate::doc::{Cell, DIM, Document, Item, Kind, WARNING, escaped};
+use crate::run;
 
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const ERROR: Style = Style::new().fg(Color::Red);
@@ -23,6 +24,7 @@ const SELECTED: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD
 /// wide. "▌" has an ambiguous width: a terminal set to draw it wide
 /// would shift the code after it.
 const GUTTER: &str = "▐ ";
+const GUTTER_WIDTH: usize = 2;
 /// The second column of the gutter on a row that goes on from a wrapped
 /// line of code or info line. Text never reaches the gutter, so it cannot
 /// fake the mark.
@@ -35,11 +37,10 @@ const SIDEBAR_SCREEN_WIDTH: u16 = 80;
 pub enum Status {
     /// Running for this long.
     Running(Duration),
-    /// Ended with exit code `rc`, killed by `signal` if any, after `took`.
-    /// `saved` is false if the run saved no session state (spec 9.2).
+    /// Ended after `took`. `saved` is false if the run saved no session
+    /// state (spec 9.2).
     Ended {
-        rc: i32,
-        signal: Option<i32>,
+        status: run::Status,
         took: Duration,
         saved: bool,
     },
@@ -61,6 +62,8 @@ pub struct View {
     /// The notification that the footer shows, in place of the keys.
     pub notice: Option<String>,
     statuses: Vec<Option<Status>>,
+    /// The width of the sidebar: the labels never change.
+    sidebar: u16,
     /// The output under each block: the last rows of its terminal.
     outputs: Vec<Vec<Line<'static>>>,
     /// The layout of the document at the last width: each key and each
@@ -77,6 +80,7 @@ impl View {
         let selected = (!doc.blocks.is_empty()).then_some(0);
         let blocks = doc.blocks.len();
         View {
+            sidebar: sidebar_width(&doc),
             doc,
             title,
             selected,
@@ -133,7 +137,7 @@ impl View {
         if main.width < SIDEBAR_SCREEN_WIDTH {
             return (None, main, footer);
         }
-        let width = self.sidebar_width();
+        let width = self.sidebar;
         let sidebar = Rect {
             width: width + 1,
             ..main
@@ -169,8 +173,10 @@ impl View {
         };
         let mut infos = self.infos.borrow_mut();
         for (i, info) in infos.iter_mut().enumerate() {
+            // The first info row takes the list marker of the item.
             info.get_or_insert_with(|| {
-                info_rows(&self.doc, i, self.statuses[i].as_ref(), page.widths[i])
+                let rows = info_rows(&self.doc, i, self.statuses[i].as_ref(), page.widths[i]);
+                prefixed(&page.firsts[i], &page.prefixes[i], rows).collect()
             });
         }
         let infos = infos.iter().map(|info| info.as_ref().map_or(0, Vec::len));
@@ -189,26 +195,18 @@ impl View {
             line
         };
         match shown.row(row) {
-            Row::Page(i) => match page.blocks.iter().position(|b| b.contains(&i)) {
-                Some(block) => gutter(page.lines[i].clone(), block),
-                None => page.lines[i].clone(),
-            },
-            // The first info row takes the list marker of the item.
+            Row::Page(i) => page.lines[i].clone(),
+            Row::Code(block, i) => gutter(page.lines[i].clone(), block),
             Row::Info(block, i) => {
-                let prefix = match i {
-                    0 => &page.firsts[block],
-                    _ => &page.prefixes[block],
-                };
                 let info = &self.infos.borrow()[block];
                 let rows = info.as_ref().expect("shown_at makes the info rows");
-                let line = Line::from([prefix.clone(), rows[i].spans.clone()].concat());
-                gutter(line, block)
+                gutter(rows[i].clone(), block)
             }
             // Output takes the column of the code, and no gutter: code rows
             // always have one.
             Row::Output(block, i) => {
                 let mut spans = page.prefixes[block].clone();
-                spans.push(Span::raw(" ".repeat(GUTTER.chars().count())));
+                spans.push(Span::raw(" ".repeat(GUTTER_WIDTH)));
                 spans.extend(self.outputs[block][i].spans.iter().cloned());
                 Line::from(spans)
             }
@@ -226,9 +224,9 @@ impl View {
     }
 
     /// Sets the state of block `i`.
-    pub fn set_status(&mut self, i: usize, status: Option<Status>) {
-        if self.statuses[i] != status {
-            self.statuses[i] = status;
+    pub fn set_status(&mut self, i: usize, status: Status) {
+        if self.statuses[i].as_ref() != Some(&status) {
+            self.statuses[i] = Some(status);
             self.infos.get_mut()[i] = None;
         }
     }
@@ -238,7 +236,7 @@ impl View {
     /// 6.3).
     pub fn pty_size(&self, i: usize, size: Size) -> (u16, u16) {
         let (shown, _, _) = self.shown(screen(size));
-        let columns = shown.page.widths[i].max(1);
+        let columns = shown.page.widths[i];
         (columns as u16, size.height.saturating_sub(1).max(1))
     }
 
@@ -275,15 +273,6 @@ impl View {
             .merge_borders(MergeStrategy::Exact)
     }
 
-    /// The width of the sidebar with its left border: the longest label
-    /// and 4 columns, between 12 and 30.
-    fn sidebar_width(&self) -> u16 {
-        let labels =
-            (0..self.doc.blocks.len()).map(|i| text_width(&[Span::raw(self.doc.label(i))]));
-        let width = labels.max().unwrap_or(0) + 4;
-        width.clamp(12, 30) as u16
-    }
-
     fn draw_sidebar(&self, frame: &mut Frame, area: Rect) {
         let block = Block::bordered()
             .title(" blocks ")
@@ -304,7 +293,7 @@ impl View {
             };
             let glyph = match (self.doc.blocks[i].problem, &self.statuses[i]) {
                 (Some(_), _) => Span::styled("!", ERROR),
-                (None, Some(Status::Running(_))) if self.blink => Span::styled("●", WARNING),
+                (None, Some(Status::Running(_))) if !self.blink => Span::raw(" "),
                 (None, Some(status)) => status_glyph(status),
                 (None, None) => Span::raw(" "),
             };
@@ -392,6 +381,14 @@ impl View {
     }
 }
 
+/// The width of the sidebar with its left border: the longest label and 4
+/// columns, between 12 and 30.
+fn sidebar_width(doc: &Document) -> u16 {
+    let labels = (0..doc.blocks.len()).map(|i| text_width(&[Span::raw(doc.label(i))]));
+    let width = labels.max().unwrap_or(0) + 4;
+    width.clamp(12, 30) as u16
+}
+
 /// The smallest screen that stepbook lays the document out on. Below it,
 /// code under a list marker has no room, and the layout costs too much: a
 /// file of 1 MB of tabs in code took 2.5 GB per frame at 6 columns.
@@ -417,13 +414,17 @@ struct Shown {
     outputs: Vec<usize>,
     /// The rows of info and output above each block, then in all.
     above: Vec<usize>,
+    /// The first row of each block.
+    starts: Vec<usize>,
 }
 
 /// A row of the document view.
 #[derive(Debug, PartialEq)]
 enum Row {
-    /// A line of the page.
+    /// A line of the page, out of the blocks.
     Page(usize),
+    /// A line of the page, of the code of a block.
+    Code(usize, usize),
     /// An info row of a block.
     Info(usize, usize),
     /// A row of the output of a block.
@@ -436,11 +437,15 @@ impl Shown {
         for (info, output) in infos.iter().zip(&outputs) {
             above.push(above[above.len() - 1] + info + output);
         }
+        let starts = (page.blocks.iter().zip(&above))
+            .map(|(code, above)| code.start + above)
+            .collect();
         Shown {
             page,
             infos,
             outputs,
             above,
+            starts,
         }
     }
 
@@ -467,19 +472,17 @@ impl Shown {
 
     fn row(&self, row: usize) -> Row {
         // The blocks that start at or above `row`.
-        let started = (0..self.page.blocks.len())
-            .take_while(|&i| self.block(i).start <= row)
-            .count();
+        let started = self.starts.partition_point(|&start| start <= row);
         let Some(i) = started.checked_sub(1) else {
             return Row::Page(row);
         };
-        let start = self.block(i).start;
+        let start = self.starts[i];
         let code = start + self.infos[i];
         let output = self.block(i).end;
         if row < code {
             Row::Info(i, row - start)
         } else if row < output {
-            Row::Page(self.page.blocks[i].start + row - code)
+            Row::Code(i, self.page.blocks[i].start + row - code)
         } else if row < output + self.outputs[i] {
             Row::Output(i, row - output)
         } else {
@@ -547,6 +550,7 @@ pub fn layout(doc: &Document, width: usize) -> Page {
         let start = lines.len();
         let (first, rest) = fitted_prefixes(item, width);
         let width = width.saturating_sub(text_width(rest)).max(1);
+        let code_width = width.saturating_sub(GUTTER_WIDTH).max(1);
         let body = match &item.kind {
             Kind::Text(text) => wrap(text, width),
             Kind::Heading(level, text) => {
@@ -562,7 +566,7 @@ pub fn layout(doc: &Document, width: usize) -> Page {
                 body
             }
             Kind::Table(aligns, rows) => table(aligns, rows, width),
-            Kind::Code { lines, block } => code(lines, *block, width),
+            Kind::Code { lines, block } => code(lines, *block, code_width),
             Kind::Source(lines) => lines.iter().flat_map(|l| hard_wrap(l, width)).collect(),
             Kind::Rule => vec![Line::from(Span::styled("─".repeat(width), DIM))],
             Kind::Blank => vec![Line::default()],
@@ -575,14 +579,12 @@ pub fn layout(doc: &Document, width: usize) -> Page {
                 tops[i] = paragraph.unwrap_or(start);
                 prefixes[i] = rest.to_vec();
                 firsts[i] = first.to_vec();
-                widths[i] = width.saturating_sub(GUTTER.chars().count()).max(1);
+                widths[i] = code_width;
             }
             _ => lines.extend(prefixed(first, rest, body)),
         }
-        match item.kind {
-            Kind::Code { block: Some(_), .. } => {}
-            Kind::Blank => continue,
-            _ => {}
+        if let Kind::Blank = item.kind {
+            continue;
         }
         paragraph = matches!(item.kind, Kind::Text(_)).then_some(start);
     }
@@ -622,15 +624,14 @@ fn prefixed<'a>(
     })
 }
 
-/// Draws a code block with a gutter. The code wraps at the width, so that
-/// the view shows all the code that runs. The info line of a block is not
-/// part of it: see `info_rows`.
+/// Draws a code block with a gutter. The code wraps at `width`, its
+/// columns after the gutter, so that the view shows all the code that
+/// runs. The info line of a block is not part of it: see `info_rows`.
 fn code(lines: &[Vec<Span<'static>>], block: Option<usize>, width: usize) -> Vec<Line<'static>> {
     let style = match block {
         None => DIM,
         Some(_) => BLOCK_GUTTER,
     };
-    let width = width.saturating_sub(GUTTER.chars().count()).max(1);
     let mut out = Vec::new();
     for line in lines {
         for (row, part) in hard_wrap(line, width).into_iter().enumerate() {
@@ -687,8 +688,11 @@ fn info_rows(
 /// The glyph of a block that has run, in the sidebar (spec 6.2).
 fn status_glyph(status: &Status) -> Span<'static> {
     match status {
-        Status::Running(_) => Span::raw(" "),
-        Status::Ended { rc: 0, .. } => Span::styled("✔", SUCCESS),
+        Status::Running(_) => Span::styled("●", WARNING),
+        Status::Ended {
+            status: run::Status::Code(0),
+            ..
+        } => Span::styled("✔", SUCCESS),
         Status::Ended { .. } | Status::NotStarted(_) => Span::styled("✘", ERROR),
     }
 }
@@ -702,21 +706,20 @@ fn status_spans(status: &Status) -> Vec<Span<'static>> {
     };
     match status {
         Status::Running(took) => vec![
-            Span::styled("● ", WARNING),
-            Span::raw(format!("running {}", time(took))),
+            status_glyph(status),
+            Span::raw(format!(" running {}", time(took))),
         ],
         Status::Ended {
-            rc,
-            signal,
+            status: exit,
             took,
             saved,
         } => {
-            let mut text = format!("rc={rc}");
-            if let Some(signal) = signal {
-                text += &format!(" {}", signal_name(*signal));
-            }
-            text += &format!(" {}", time(took));
-            let mut spans = vec![status_glyph(status), Span::raw(" "), Span::raw(text)];
+            let signal = match exit {
+                run::Status::Signal(signal) => format!(" {}", signal_name(*signal)),
+                run::Status::Code(_) => String::new(),
+            };
+            let text = format!(" rc={}{signal} {}", exit.rc(), time(took));
+            let mut spans = vec![status_glyph(status), Span::raw(text)];
             if !saved {
                 spans.extend([Span::raw("  "), Span::styled("state not saved", WARNING)]);
             }
@@ -731,13 +734,9 @@ fn status_spans(status: &Status) -> Vec<Span<'static>> {
     }
 }
 
-/// The name of a signal on Linux, such as `SIGINT` for 2.
+/// The name of a signal, such as `SIGINT` for 2.
 fn signal_name(signal: i32) -> String {
-    const NAMES: [&str; 15] = [
-        "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT", "SIGBUS", "SIGFPE",
-        "SIGKILL", "SIGUSR1", "SIGSEGV", "SIGUSR2", "SIGPIPE", "SIGALRM", "SIGTERM",
-    ];
-    match usize::try_from(signal - 1).ok().and_then(|i| NAMES.get(i)) {
+    match signal_hook::low_level::signal_name(signal) {
         Some(name) => name.to_string(),
         None => format!("signal {signal}"),
     }
@@ -2055,27 +2054,26 @@ pub(crate) mod tests {
         let block = |name: &str| format!("```bash [name:{name}]\nls\n```\n\n");
         let names = ["run", "ok", "fail", "int", "nope", "new"];
         let mut view = view(&names.map(block).concat());
-        let ended = |rc, signal, seconds, saved| Status::Ended {
-            rc,
-            signal,
+        let ended = |status, seconds, saved| Status::Ended {
+            status,
             took: Duration::from_secs(seconds),
             saved,
         };
         let not_started = "cannot start: directory /x\u{1b} no longer exists".to_string();
         let statuses = [
             Status::Running(Duration::from_secs(4)),
-            ended(0, None, 2, true),
-            ended(1, None, 62, true),
-            ended(130, Some(2), 3, false),
+            ended(run::Status::Code(0), 2, true),
+            ended(run::Status::Code(1), 62, true),
+            ended(run::Status::Signal(2), 3, false),
             Status::NotStarted(not_started),
         ];
         for (i, status) in statuses.into_iter().enumerate() {
-            view.set_status(i, Some(status));
+            view.set_status(i, status);
         }
         view.selected = None;
         assert_snapshot!(screen(&view, 80, 20), @"
         ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
-        │ «yellow:●» run     │ ▐ «b:run»  «yellow:● »running 0:04                                            │
+        │ «yellow:●» run     │ ▐ «b:run»  «yellow:●» running 0:04                                            │
         │ «green:✔» ok      │ ▐ «blue:ls»                                                             │
         │ «red:✘» fail    │                                                                  │
         │ «red:✘» int     │ ▐ «b:ok»  «green:✔» rc=0 0:02                                                │
@@ -2096,7 +2094,7 @@ pub(crate) mod tests {
         ");
         view.blink = false;
         let sidebar = screen(&view, 80, 20).lines().nth(1).unwrap().to_string();
-        assert_snapshot!(sidebar, @"│   run     │ ▐ «b:run»  «yellow:● »running 0:04                                            │");
+        assert_snapshot!(sidebar, @"│   run     │ ▐ «b:run»  «yellow:●» running 0:04                                            │");
     }
 
     #[test]

@@ -44,11 +44,6 @@ exclude_re = [
     # A read of the PTY never fails with EINTR: signal-hook and crossterm
     # install their handlers with SA_RESTART.
     "replace match guard e.kind\\(\\) == std::io::ErrorKind::Interrupted with false in read_run",
-    # With as many rows as asked, the scrollback adds none. More scrollback
-    # rows than asked go at the end of the cut.
+    # With as many rows as asked, the scrollback adds none.
     "term.rs:\\d+:\\d+: replace < with <= in Terminal::last_rows",
-    "term.rs:\\d+:\\d+: replace - with \\+ in Terminal::last_rows",
-    # Spans of one style look the same on screen: the merge only saves
-    # allocations.
-    "replace match guard last.style == span.style with false in line",
 ]

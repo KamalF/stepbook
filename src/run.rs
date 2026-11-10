@@ -38,9 +38,14 @@ impl Workspace {
     /// Creates `stepbook-<pid>` in `parent`. It fails if the directory
     /// exists: in a shared temp dir, another user could have made it.
     pub fn create(parent: &Path) -> std::io::Result<Workspace> {
-        let dir = parent.join(format!("stepbook-{}", std::process::id()));
+        let dir = Workspace::dir_in(parent);
         DirBuilder::new().mode(0o700).create(&dir)?;
         Ok(Workspace { dir })
+    }
+
+    /// The path of the workspace in `parent`.
+    pub fn dir_in(parent: &Path) -> PathBuf {
+        parent.join(format!("stepbook-{}", std::process::id()))
     }
 
     pub fn dir(&self) -> &Path {
@@ -156,16 +161,35 @@ pub struct Session {
     bash: PathBuf,
     workspace: Workspace,
     wrapper: PathBuf,
+    /// The absolute paths of the runbook and of the log, for the runs
+    /// (spec 8.2).
+    file: PathBuf,
+    log: Option<PathBuf>,
     next_id: u64,
 }
 
-/// The variables that a run gets besides the session (spec 8.2).
-pub struct Env<'a> {
-    /// The absolute path of the runbook.
-    pub file: &'a Path,
-    /// The absolute path of the log.
-    pub log: Option<&'a Path>,
-    pub block: &'a str,
+/// Why a run did not start.
+#[derive(Debug, PartialEq)]
+pub enum StartError {
+    /// The session directory no longer exists. The session went back to the
+    /// directory that stepbook started in.
+    Gone(PathBuf),
+    Failed(String),
+}
+
+impl std::fmt::Display for StartError {
+    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+        match self {
+            StartError::Gone(dir) => {
+                write!(
+                    f,
+                    "cannot start: directory {} no longer exists",
+                    dir.display()
+                )
+            }
+            StartError::Failed(reason) => write!(f, "cannot start: {reason}"),
+        }
+    }
 }
 
 /// A run in its own PTY. Its reader thread sends its output, then the exit
@@ -173,7 +197,7 @@ pub struct Env<'a> {
 pub struct Run {
     pub events: Receiver<Event>,
     /// The process of the wrapper, the leader of the process group.
-    pid: u32,
+    pid: Pid,
     master: File,
     /// The state that the run started with.
     start: State,
@@ -209,7 +233,13 @@ const OUTPUT_MESSAGES: usize = 64;
 const READ_SIZE: usize = 32 * 1024;
 
 impl Session {
-    pub fn new(workspace: Workspace, bash: PathBuf, state: State) -> std::io::Result<Session> {
+    pub fn new(
+        workspace: Workspace,
+        bash: PathBuf,
+        state: State,
+        file: PathBuf,
+        log: Option<PathBuf>,
+    ) -> std::io::Result<Session> {
         let wrapper = workspace.write("wrapper.sh", WRAPPER.as_bytes())?;
         Ok(Session {
             origin: state.dir.clone(),
@@ -217,6 +247,8 @@ impl Session {
             bash,
             workspace,
             wrapper,
+            file,
+            log,
             next_id: 1,
         })
     }
@@ -225,19 +257,22 @@ impl Session {
         self.workspace.dir()
     }
 
-    /// Starts a run of `code` in the session directory, in a new PTY of
-    /// `columns` by `rows`. If the session directory no longer exists, the
-    /// run does not start, and the session goes back to the directory that
-    /// stepbook started in: never to `$HOME` (spec 8.2).
-    pub fn start(&mut self, code: &str, env: &Env, columns: u16, rows: u16) -> Result<Run, String> {
+    /// Starts a run of the code of `block` in the session directory, in a
+    /// new PTY of `columns` by `rows`. If the session directory no longer
+    /// exists, the run does not start, and the session goes back to the
+    /// directory that stepbook started in: never to `$HOME` (spec 8.2).
+    pub fn start(
+        &mut self,
+        code: &str,
+        block: &str,
+        columns: u16,
+        rows: u16,
+    ) -> Result<Run, StartError> {
         if !self.state.dir.is_dir() {
             let dir = std::mem::replace(&mut self.state.dir, self.origin.clone());
-            return Err(format!(
-                "cannot start: directory {} no longer exists",
-                dir.display()
-            ));
+            return Err(StartError::Gone(dir));
         }
-        let fail = |e: std::io::Error| format!("cannot start: {}", io_message(&e));
+        let fail = |e: std::io::Error| StartError::Failed(io_message(&e));
         let id = self.next_id;
         self.next_id += 1;
         let script = (self.workspace)
@@ -251,12 +286,12 @@ impl Session {
         let mut start = self.state.clone();
         start.vars.insert("TERM".into(), "xterm-256color".into());
         let run_files = [&script, &state_file];
-        let (master, child) = (self.spawn(&run_files, &start, env, columns, rows))
+        let (master, child) = (self.spawn(&run_files, &start, block, columns, rows))
             .inspect_err(|_| run_files.iter().for_each(|f| _ = std::fs::remove_file(f)))
             .map_err(fail)?;
         let reader = master.try_clone().map_err(fail)?;
         let (sender, events) = crossbeam_channel::bounded(OUTPUT_MESSAGES);
-        let pid = child.id();
+        let pid = Pid::from_child(&child);
         std::thread::spawn(move || read_run(reader, child, sender));
         Ok(Run {
             events,
@@ -273,7 +308,7 @@ impl Session {
         &self,
         run_files: &[&PathBuf; 2],
         start: &State,
-        env: &Env,
+        block: &str,
         columns: u16,
         rows: u16,
     ) -> std::io::Result<(File, Child)> {
@@ -286,9 +321,9 @@ impl Session {
             .args(run_files)
             .env_clear()
             .envs(&start.vars)
-            .env("STEPBOOK_FILE", env.file)
-            .env("STEPBOOK_LOG", env.log.unwrap_or(Path::new("")))
-            .env("STEPBOOK_BLOCK", env.block)
+            .env("STEPBOOK_FILE", &self.file)
+            .env("STEPBOOK_LOG", self.log.as_deref().unwrap_or(Path::new("")))
+            .env("STEPBOOK_BLOCK", block)
             .current_dir(&self.state.dir)
             .stdin(slave.try_clone()?)
             .stdout(slave.try_clone()?)
@@ -341,9 +376,7 @@ impl Run {
     /// group. A process that has left it, with setsid for one, does not get
     /// it. The run may have ended already.
     pub fn signal(&self, signal: Signal) {
-        if let Some(pid) = Pid::from_raw(self.pid as i32) {
-            let _ = rustix::process::kill_process_group(pid, signal);
-        }
+        let _ = rustix::process::kill_process_group(self.pid, signal);
     }
 
     /// Sets the size of the PTY. The kernel sends SIGWINCH to the program.
@@ -415,10 +448,7 @@ mod tests {
     fn only_the_user_can_read_the_workspace() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = Workspace::create(tmp.path()).unwrap();
-        assert_eq!(
-            workspace.dir(),
-            tmp.path().join(format!("stepbook-{}", std::process::id()))
-        );
+        assert_eq!(workspace.dir(), Workspace::dir_in(tmp.path()));
         assert_eq!(mode(workspace.dir()), 0o700);
     }
 
@@ -435,7 +465,7 @@ mod tests {
     #[test]
     fn the_workspace_must_not_exist() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = tmp.path().join(format!("stepbook-{}", std::process::id()));
+        let dir = Workspace::dir_in(tmp.path());
         std::os::unix::fs::symlink(tmp.path(), &dir).unwrap();
         assert!(Workspace::create(tmp.path()).is_err());
     }
@@ -619,15 +649,9 @@ mod tests {
         let path = std::env::var_os("PATH").unwrap();
         let bash = find_in_path("bash", &path).unwrap();
         let vars = [("PATH".into(), path), ("X".into(), "1".into())];
-        Session::new(workspace, bash, State::new(tmp.into(), vars)).unwrap()
-    }
-
-    fn env() -> Env<'static> {
-        Env {
-            file: Path::new("/r/run.md"),
-            log: Some(Path::new("/r/run.log")),
-            block: "check",
-        }
+        let state = State::new(tmp.into(), vars);
+        let (file, log) = ("/r/run.md".into(), Some("/r/run.log".into()));
+        Session::new(workspace, bash, state, file, log).unwrap()
     }
 
     /// A run in a test takes less: a bug that loses an event fails the
@@ -650,7 +674,7 @@ mod tests {
 
     /// Runs `code` to its end, and applies its state.
     fn run(session: &mut Session, code: &str) -> (String, Status, bool) {
-        let run = session.start(code, &env(), 80, 24).unwrap();
+        let run = session.start(code, "check", 80, 24).unwrap();
         let (output, status) = wait(&run);
         (output, status, session.finish(&run))
     }
@@ -729,14 +753,16 @@ mod tests {
         let mut session = session(tmp.path());
         let runs: Vec<_> = (0..2)
             .map(|_| {
-                let run = session.start("echo ready; read\n", &env(), 80, 24).unwrap();
+                let run = session
+                    .start("echo ready; read\n", "check", 80, 24)
+                    .unwrap();
                 wait_for(&run, "ready");
                 run
             })
             .collect();
         // The second run started while the PTY of the first was open. bash
         // keeps the wrapper on fd 255.
-        let fds = fs::read_dir(format!("/proc/{}/fd", runs[1].pid)).unwrap();
+        let fds = fs::read_dir(format!("/proc/{}/fd", runs[1].pid.as_raw_pid())).unwrap();
         let mut fds: Vec<_> = fds.map(|fd| fd.unwrap().file_name()).collect();
         fds.sort();
         assert_eq!(fds, ["0", "1", "2", "255"]);
@@ -827,12 +853,8 @@ mod tests {
         let mut session = session(tmp.path());
         run(&mut session, "mkdir gone; cd gone\n");
         fs::remove_dir(tmp.path().join("gone")).unwrap();
-        let error = session.start("pwd\n", &env(), 80, 24).err();
-        let message = format!(
-            "cannot start: directory {} no longer exists",
-            tmp.path().join("gone").display()
-        );
-        assert_eq!(error, Some(message));
+        let error = session.start("pwd\n", "check", 80, 24).err();
+        assert_eq!(error, Some(StartError::Gone(tmp.path().join("gone"))));
         assert_eq!(session.state.dir, tmp.path());
         assert_eq!(
             run(&mut session, "pwd\n").0,
@@ -857,7 +879,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
         let run = session
-            .start("export A=1\necho ready\nsleep 5\n", &env(), 80, 24)
+            .start("export A=1\necho ready\nsleep 5\n", "check", 80, 24)
             .unwrap();
         wait_for(&run, "ready");
         run.write(b"\x03").unwrap();
@@ -881,7 +903,7 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
         let first = session
-            .start("export A=1; echo ready; read\n", &env(), 80, 24)
+            .start("export A=1; echo ready; read\n", "check", 80, 24)
             .unwrap();
         wait_for(&first, "ready");
         let (_, _, saved) = run(&mut session, "export B=2; unset X\n");
@@ -927,11 +949,9 @@ mod tests {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
         session.bash = tmp.path().join("no-bash");
-        let error = session.start("ls\n", &env(), 80, 24).err();
-        assert_eq!(
-            error.as_deref(),
-            Some("cannot start: No such file or directory")
-        );
+        let error = session.start("ls\n", "check", 80, 24).err();
+        let failed = StartError::Failed("No such file or directory".into());
+        assert_eq!(error, Some(failed));
         let files: Vec<_> = fs::read_dir(session.workspace())
             .unwrap()
             .map(|e| e.unwrap().file_name())

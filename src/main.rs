@@ -3,6 +3,7 @@ mod run;
 mod term;
 mod view;
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal, Read, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -188,32 +189,25 @@ fn open(args: &Args) -> Result<Exit, String> {
         }
     });
     let parent = run::workspace_parent(std::env::var_os("XDG_RUNTIME_DIR"));
-    let workspace_dir = parent.join(format!("stepbook-{}", std::process::id()));
     let fail = |e: std::io::Error| {
-        let dir = workspace_dir.display();
-        format!("cannot create the workspace {dir}: {}", io_message(&e))
+        let dir = run::Workspace::dir_in(&parent);
+        format!(
+            "cannot create the workspace {}: {}",
+            dir.display(),
+            io_message(&e)
+        )
     };
     let workspace = run::Workspace::create(&parent).map_err(fail)?;
     // The runs get absolute paths (spec 8.2).
     let file = dir.join(&args.file);
     let log = args.log.as_ref().map(|log| dir.join(log));
     let state = run::State::new(dir, std::env::vars_os());
-    let session = run::Session::new(workspace, bash, state).map_err(fail)?;
+    let session = run::Session::new(workspace, bash, state, file, log).map_err(fail)?;
     let mut terminal = set_up_terminal(session.workspace())
         .map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
     let title = args.file.file_name().unwrap_or(args.file.as_os_str());
     let view = view::View::new(doc, title.to_string_lossy().into_owned());
-    let mut app = App {
-        ran: (0..view.doc.blocks.len()).map(|_| None).collect(),
-        view,
-        session,
-        file,
-        log,
-        ticks: crossbeam_channel::tick(TICK),
-        question: None,
-        notice_until: None,
-        stopping: None,
-    };
+    let mut app = App::new(view, session, crossbeam_channel::tick(TICK));
     std::thread::spawn(move || read_terminal(sender));
     let result = event_loop(&mut terminal, &mut app, &control);
     restore_terminal();
@@ -267,7 +261,7 @@ fn restore_terminal() {
 }
 
 /// Runbooks are a few KB: the largest of ~/dev/claude/runbooks had 22 KB
-/// on 2026-11-09. The view lays out the whole file on each frame.
+/// on 2026-11-09. The view lays out the whole file at each width.
 const MAX_FILE: u64 = 1024 * 1024;
 
 /// Reads a runbook, which must be a regular file of at most `MAX_FILE`
@@ -323,13 +317,13 @@ struct Ran {
 struct App {
     view: view::View,
     session: run::Session,
-    /// The blocks that have run, by index.
-    ran: Vec<Option<Ran>>,
-    /// The absolute paths of the runbook and of the log.
-    file: PathBuf,
-    log: Option<PathBuf>,
+    /// The blocks that have run, by index. A crafted runbook can hold 80,000
+    /// blocks, and the terminal of a run takes about 700 bytes.
+    ran: BTreeMap<usize, Ran>,
+    /// The blocks whose output changed since the last frame: their rows are
+    /// made once a frame, not once a read of the PTY.
+    changed: BTreeSet<usize>,
     /// While blocks run, a tick updates their time and blinks their glyph.
-    /// It also ends the notification.
     ticks: Receiver<Instant>,
     /// The question in the footer, which the next key answers.
     question: Option<Question>,
@@ -371,6 +365,19 @@ const TICK: Duration = Duration::from_millis(500);
 const FRAME: Duration = Duration::from_millis(16);
 
 impl App {
+    fn new(view: view::View, session: run::Session, ticks: Receiver<Instant>) -> App {
+        App {
+            view,
+            session,
+            ran: BTreeMap::new(),
+            changed: BTreeSet::new(),
+            ticks,
+            question: None,
+            notice_until: None,
+            stopping: None,
+        }
+    }
+
     /// The next event, a control event first, until `deadline`, or with no
     /// end. An error means that the thread that reads the keys stopped.
     fn next(
@@ -381,20 +388,18 @@ impl App {
         if let Ok(event) = control.try_recv() {
             return Some(Ok(Incoming::Control(event)));
         }
-        let runs: Vec<_> = (self.ran.iter().enumerate())
-            .filter_map(|(i, ran)| Some((i, &ran.as_ref()?.run.as_ref()?.events)))
-            .collect();
+        let runs: Vec<_> = self.runs().collect();
         // Not biased among the runs, so that no run's output waits for
         // another's.
         let mut select = Select::new();
         select.recv(control);
-        // Without runs or a notification, the tick would only wake the
-        // loop. Else it comes right after the control channel.
-        if !runs.is_empty() || self.notice_until.is_some() {
+        // Without runs, the tick would only wake the loop. With runs, it
+        // comes right after the control channel.
+        if !runs.is_empty() {
             select.recv(&self.ticks);
         }
-        for (_, events) in &runs {
-            select.recv(events);
+        for (_, run) in &runs {
+            select.recv(&run.events);
         }
         let operation = match deadline {
             Some(deadline) => select.select_deadline(deadline).ok()?,
@@ -407,12 +412,34 @@ impl App {
                 Ok(Incoming::Tick)
             }
             n => {
-                let (i, events) = runs[n - 2];
-                let event = operation.recv(events);
+                let (i, run) = runs[n - 2];
+                let event = operation.recv(&run.events);
                 let event = event.expect("a reader sends the exit status before it stops");
                 Ok(Incoming::Run(i, event))
             }
         })
+    }
+
+    /// The blocks that run, with their runs.
+    fn runs(&self) -> impl Iterator<Item = (usize, &run::Run)> {
+        (self.ran.iter()).filter_map(|(&i, ran)| Some((i, ran.run.as_ref()?)))
+    }
+
+    /// When the loop must wake up with no event: at the end of the
+    /// notification, and when the runs that stop get SIGKILL.
+    fn deadline(&self) -> Option<Instant> {
+        self.notice_until.into_iter().chain(self.stopping).min()
+    }
+
+    /// Ends the notification after its time.
+    fn expire(&mut self) {
+        if self
+            .notice_until
+            .is_some_and(|until| Instant::now() >= until)
+        {
+            self.notice_until = None;
+            self.view.notice = None;
+        }
     }
 
     /// Applies a terminal event, and returns how the loop ends, if it does.
@@ -488,14 +515,10 @@ impl App {
         self.question = Some(question);
     }
 
-    fn runs(&self) -> impl Iterator<Item = &run::Run> {
-        self.ran.iter().flatten().filter_map(|ran| ran.run.as_ref())
-    }
-
     /// Sends SIGHUP to the runs, as the close of their PTY would, before
     /// stepbook quits (spec 11).
     fn stop_runs(&mut self) {
-        for run in self.runs() {
+        for (_, run) in self.runs() {
             run.signal(Signal::HUP);
         }
         self.stopping = Some(Instant::now() + STOP_WAIT);
@@ -509,7 +532,7 @@ impl App {
             return false;
         };
         if Instant::now() >= until {
-            for run in self.runs() {
+            for (_, run) in self.runs() {
                 run.signal(Signal::KILL);
             }
             return true;
@@ -523,87 +546,80 @@ impl App {
         self.notice_until = Some(Instant::now() + NOTICE);
     }
 
-    /// Starts a run of block `i`, unless it runs: a block never runs
-    /// twice at a time (upmd issue K5).
+    /// Starts a run of block `i`. `enter` never starts a block that runs:
+    /// a block never runs twice at a time (upmd issue K5).
     fn start(&mut self, i: usize, size: Size) {
+        debug_assert!(!self.ran.get(&i).is_some_and(|ran| ran.run.is_some()));
         let block = &self.view.doc.blocks[i];
-        if self.ran[i].as_ref().is_some_and(|ran| ran.run.is_some()) {
-            return;
-        }
-        let dir = self.session.state.dir.clone();
         let (columns, rows) = self.view.pty_size(i, size);
         let label = self.view.doc.label(i);
-        let env = run::Env {
-            file: &self.file,
-            log: self.log.as_deref(),
-            block: &label,
-        };
-        let started = self.session.start(&block.code, &env, columns, rows);
-        let status = match started {
+        let status = match self.session.start(&block.code, &label, columns, rows) {
             Ok(run) => {
-                self.ran[i] = Some(Ran {
-                    terminal: term::Terminal::new(columns, rows),
-                    run: Some(run),
-                    started: Instant::now(),
-                });
+                let terminal = term::Terminal::new(columns, rows);
+                let started = Instant::now();
+                let run = Some(run);
+                self.ran.insert(
+                    i,
+                    Ran {
+                        terminal,
+                        run,
+                        started,
+                    },
+                );
                 view::Status::Running(Duration::ZERO)
             }
-            Err(reason) => {
-                self.ran[i] = None;
-                view::Status::NotStarted(reason)
+            Err(error) => {
+                self.ran.remove(&i);
+                // The session directory no longer existed (spec 8.2).
+                if let run::StartError::Gone(_) = error {
+                    let dir = self.session.state.dir.display().to_string();
+                    self.notify(format!("session directory reset to {dir}"));
+                }
+                view::Status::NotStarted(error.to_string())
             }
         };
-        // The session directory no longer existed (spec 8.2).
-        if self.session.state.dir != dir {
-            let dir = self.session.state.dir.display();
-            self.notify(format!("session directory reset to {dir}"));
-        }
-        self.view.set_status(i, Some(status));
+        self.view.set_status(i, status);
         self.view.set_output(i, Vec::new(), size);
     }
 
-    /// Reads a message from the run of block `i`.
-    fn read(&mut self, i: usize, event: run::Event, size: Size) {
-        let Some(ran) = &mut self.ran[i] else {
-            return;
-        };
+    /// Reads a message from the run of block `i`. Its rows are made before
+    /// the next frame.
+    fn read(&mut self, i: usize, event: run::Event) {
+        let ran = self.ran.get_mut(&i).expect("a message comes from a run");
         match event {
             run::Event::Output(bytes) => ran.terminal.process(&bytes),
             run::Event::Exit(status) => {
-                if let Some(run) = ran.run.take() {
-                    let saved = self.session.finish(&run);
-                    let ended = view::Status::Ended {
-                        rc: status.rc(),
-                        signal: match status {
-                            run::Status::Signal(signal) => Some(signal),
-                            run::Status::Code(_) => None,
-                        },
-                        took: ran.started.elapsed(),
-                        saved,
-                    };
-                    self.view.set_status(i, Some(ended));
-                }
+                let run = ran.run.take().expect("a run sends its exit status once");
+                let saved = self.session.finish(&run);
+                let took = ran.started.elapsed();
+                let ended = view::Status::Ended {
+                    status,
+                    took,
+                    saved,
+                };
+                self.view.set_status(i, ended);
             }
         }
-        let lines = ran.terminal.last_rows(term::OUTPUT_ROWS, ran.run.is_some());
-        self.view.set_output(i, lines, size);
+        self.changed.insert(i);
     }
 
-    /// Updates the time of each running block, and blinks its glyph. Ends
-    /// the notification after its time.
-    fn tick(&mut self) {
-        if self
-            .notice_until
-            .is_some_and(|until| Instant::now() >= until)
-        {
-            self.notice_until = None;
-            self.view.notice = None;
+    /// Makes the rows of the output that changed (spec 6.3).
+    fn refresh(&mut self, size: Size) {
+        for i in std::mem::take(&mut self.changed) {
+            if let Some(ran) = self.ran.get_mut(&i) {
+                let lines = ran.terminal.last_rows(ran.run.is_some());
+                self.view.set_output(i, lines, size);
+            }
         }
+    }
+
+    /// Updates the time of each running block, and blinks its glyph.
+    fn tick(&mut self) {
         self.view.blink = !self.view.blink;
-        for (i, ran) in self.ran.iter().enumerate() {
-            if let Some(ran) = ran.as_ref().filter(|ran| ran.run.is_some()) {
+        for (&i, ran) in &self.ran {
+            if ran.run.is_some() {
                 let status = view::Status::Running(ran.started.elapsed());
-                self.view.set_status(i, Some(status));
+                self.view.set_status(i, status);
             }
         }
     }
@@ -613,20 +629,13 @@ impl App {
         if view::too_small(size) {
             return;
         }
-        for i in 0..self.ran.len() {
-            let Some(Ran {
-                terminal,
-                run: Some(run),
-                ..
-            }) = &mut self.ran[i]
-            else {
-                continue;
-            };
-            let (columns, rows) = self.view.pty_size(i, size);
-            let _ = run.resize(columns, rows);
-            terminal.resize(columns, rows);
-            let lines = terminal.last_rows(term::OUTPUT_ROWS, true);
-            self.view.set_output(i, lines, size);
+        for (&i, ran) in &mut self.ran {
+            if let Some(run) = &ran.run {
+                let (columns, rows) = self.view.pty_size(i, size);
+                let _ = run.resize(columns, rows);
+                ran.terminal.resize(columns, rows);
+                self.changed.insert(i);
+            }
         }
     }
 }
@@ -636,7 +645,9 @@ fn event_loop(
     app: &mut App,
     control: &Receiver<Control>,
 ) -> std::io::Result<Exit> {
+    let mut size = terminal.size()?;
     loop {
+        app.refresh(size);
         // A terminal can draw a grapheme of prose wider than ratatui counts
         // it, and shift the rest of its row. ratatui sends only the cells
         // that changed, so the shift would stay on later frames, where a
@@ -651,17 +662,29 @@ fn event_loop(
         terminal.draw(|frame| app.view.draw(frame))?;
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
         // The events of one frame: after a key, those that wait; after
-        // output, those of the next FRAME.
-        let mut deadline = None;
-        while let Some(incoming) = app.next(control, deadline) {
+        // output, those of the next FRAME. A deadline of the app also ends
+        // the frame.
+        let mut frame = None;
+        loop {
+            let deadline = [frame, app.deadline()].into_iter().flatten().min();
+            let Some(incoming) = app.next(control, deadline) else {
+                app.expire();
+                if app.stopped() {
+                    return Ok(Exit::Quit);
+                }
+                break;
+            };
             let Ok(incoming) = incoming else {
                 let error = "the thread that reads the keys stopped";
                 return Err(std::io::Error::other(error));
             };
-            let size = terminal.size()?;
             let wait = match incoming {
                 Incoming::Control(Control::Terminal(event)) => {
-                    if let Some(exit) = app.handle(&event?, size) {
+                    let event = event?;
+                    if let Event::Resize(columns, rows) = event {
+                        size = Size::new(columns, rows);
+                    }
+                    if let Some(exit) = app.handle(&event, size) {
                         return Ok(exit);
                     }
                     Duration::ZERO
@@ -672,14 +695,14 @@ fn event_loop(
                     Duration::ZERO
                 }
                 Incoming::Run(i, event) => {
-                    app.read(i, event, size);
+                    app.read(i, event);
                     FRAME
                 }
             };
             if app.stopped() {
                 return Ok(Exit::Quit);
             }
-            deadline.get_or_insert(Instant::now() + wait);
+            frame.get_or_insert(Instant::now() + wait);
         }
     }
 }
@@ -871,19 +894,9 @@ mod tests {
         let path = std::env::var_os("PATH").unwrap();
         let bash = run::find_in_path("bash", &path).unwrap();
         let state = run::State::new(tmp.into(), [("PATH".into(), path)]);
-        let session = run::Session::new(workspace, bash, state).unwrap();
+        let session = run::Session::new(workspace, bash, state, tmp.join("run.md"), None);
         let view = view::View::new(doc::parse(markdown), "run.md".into());
-        App {
-            ran: (0..view.doc.blocks.len()).map(|_| None).collect(),
-            view,
-            session,
-            file: tmp.join("run.md"),
-            log: None,
-            ticks: crossbeam_channel::never(),
-            question: None,
-            notice_until: None,
-            stopping: None,
-        }
+        App::new(view, session.unwrap(), crossbeam_channel::never())
     }
 
     fn enter(app: &mut App, size: Size) {
@@ -955,13 +968,16 @@ mod tests {
             app.view.notice.as_deref(),
             Some("cannot run: duplicate name")
         );
-        // The notification ends with the first tick after 3 seconds.
-        app.tick();
+        // The notification ends after 3 seconds, when the loop wakes up.
+        let until = app.notice_until.unwrap();
+        assert!(until > Instant::now() + Duration::from_millis(2_900));
+        assert_eq!(app.deadline(), Some(until));
+        app.expire();
         assert!(app.view.notice.is_some());
         app.notice_until = Some(Instant::now());
-        app.tick();
-        assert_eq!(app.view.notice, None);
-        let ran = app.ran[0].as_ref().unwrap();
+        app.expire();
+        assert_eq!((app.view.notice.as_ref(), app.deadline()), (None, None));
+        let ran = &app.ran[&0];
         ran.run.as_ref().unwrap().write(b"\n").unwrap();
         read_until(&mut app, SIZE, |app| !running(app));
     }
@@ -1006,7 +1022,7 @@ mod tests {
                 matches!(
                     status,
                     Some(view::Status::Ended {
-                        signal: Some(1),
+                        status: run::Status::Signal(1),
                         ..
                     })
                 ),
@@ -1036,7 +1052,7 @@ mod tests {
             matches!(
                 status,
                 Some(view::Status::Ended {
-                    signal: Some(9),
+                    status: run::Status::Signal(9),
                     ..
                 })
             ),
@@ -1045,7 +1061,7 @@ mod tests {
     }
 
     fn running(app: &App) -> bool {
-        app.ran.iter().flatten().any(|ran| ran.run.is_some())
+        app.runs().next().is_some()
     }
 
     /// Reads the messages of the runs until `done`.
@@ -1057,7 +1073,8 @@ mod tests {
             let Some(Ok(Incoming::Run(i, event))) = app.next(&control, Some(deadline)) else {
                 panic!("no message of a run");
             };
-            app.read(i, event, size);
+            app.read(i, event);
+            app.refresh(size);
         }
     }
 
@@ -1074,34 +1091,22 @@ mod tests {
         assert_eq!(output(&app, 0), "hi");
         let a = app.session.state.vars.get(OsStr::new("A"));
         assert_eq!(a.map(|a| a.to_str().unwrap()), Some("1"));
-        let Some(view::Status::Ended {
-            rc, signal, saved, ..
-        }) = app.view.status(0)
-        else {
+        let Some(view::Status::Ended { status, saved, .. }) = app.view.status(0) else {
             panic!("not ended: {:?}", app.view.status(0));
         };
-        assert_eq!((*rc, *signal, *saved), (0, None, true));
+        assert_eq!((*status, *saved), (run::Status::Code(0), true));
     }
 
     #[test]
     fn a_run_shows_its_exit_code_and_whether_it_saved_the_state() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut app = app(
-            "```bash
-exec bash -c 'kill -INT $$'
-```
-",
-            tmp.path(),
-        );
+        let mut app = app("```bash\nexec bash -c 'kill -INT $$'\n```\n", tmp.path());
         enter(&mut app, SIZE);
         read_until(&mut app, SIZE, |app| !running(app));
-        let Some(view::Status::Ended {
-            rc, signal, saved, ..
-        }) = app.view.status(0)
-        else {
+        let Some(view::Status::Ended { status, saved, .. }) = app.view.status(0) else {
             panic!("not ended: {:?}", app.view.status(0));
         };
-        assert_eq!((*rc, *signal, *saved), (130, Some(2), false));
+        assert_eq!((*status, *saved), (run::Status::Signal(2), false));
     }
 
     #[test]
@@ -1128,7 +1133,10 @@ true
         read_until(&mut app, SIZE, |app| !running(app));
         assert!(matches!(
             app.view.status(0),
-            Some(view::Status::Ended { rc: 0, .. })
+            Some(view::Status::Ended {
+                status: run::Status::Code(0),
+                ..
+            })
         ));
     }
 
@@ -1145,14 +1153,14 @@ read
         );
         enter(&mut app, SIZE);
         read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
-        app.ran[0].as_mut().unwrap().started -= Duration::from_secs(5);
+        app.ran.get_mut(&0).unwrap().started -= Duration::from_secs(5);
         app.tick();
         assert!(!app.view.blink);
         let Some(view::Status::Running(took)) = app.view.status(0) else {
             panic!("not running: {:?}", app.view.status(0));
         };
         assert!(*took >= Duration::from_secs(5));
-        let ran = app.ran[0].as_ref().unwrap();
+        let ran = &app.ran[&0];
         ran.run.as_ref().unwrap().write(b"\n").unwrap();
         read_until(&mut app, SIZE, |app| !running(app));
     }
@@ -1165,7 +1173,7 @@ read
         read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
         enter(&mut app, SIZE);
         assert!(!app.session.workspace().join("run-2.sh").exists());
-        let ran = app.ran[0].as_ref().unwrap();
+        let ran = &app.ran[&0];
         ran.run.as_ref().unwrap().write(b"\n").unwrap();
         read_until(&mut app, SIZE, |app| !running(app));
     }
@@ -1178,7 +1186,7 @@ read
             tmp.path(),
         );
         enter(&mut app, SIZE);
-        assert!(app.ran[0].is_none());
+        assert!(app.ran.is_empty());
     }
 
     #[test]
@@ -1189,7 +1197,7 @@ read
         read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
         let size = Size::new(100, 30);
         assert_eq!(app.handle(&Event::Resize(100, 30), size), None);
-        let ran = app.ran[0].as_ref().unwrap();
+        let ran = &app.ran[&0];
         ran.run.as_ref().unwrap().write(b"\n").unwrap();
         read_until(&mut app, size, |app| !running(app));
         let (columns, rows) = app.view.pty_size(0, size);

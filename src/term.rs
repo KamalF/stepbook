@@ -3,7 +3,7 @@
 use std::num::NonZeroU16;
 
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::Line;
 
 use crate::doc::escaped;
 
@@ -11,7 +11,7 @@ use crate::doc::escaped;
 const SCROLLBACK: usize = 5_000;
 
 /// The rows of output under a block (spec 6.3).
-pub const OUTPUT_ROWS: usize = 15;
+const OUTPUT_ROWS: usize = 15;
 
 /// The screen of a run. Program output reaches the outer terminal only
 /// through it, as text and styles: never as escape sequences (spec 6.4).
@@ -40,27 +40,28 @@ impl Terminal {
         self.parser.set_size(size(rows), size(columns));
     }
 
-    /// The last `count` rows of the terminal, scrollback included, without
-    /// the blank rows at the end. If `cursor`, the rows go down to the row
-    /// of the cursor at least: a running program writes there next.
-    pub fn last_rows(&mut self, count: usize, cursor: bool) -> Vec<Line<'static>> {
+    /// The last `OUTPUT_ROWS` rows of the terminal, scrollback included,
+    /// without the blank rows at the end. If `cursor`, the rows go down to
+    /// the row of the cursor at least: a running program writes there next.
+    pub fn last_rows(&mut self, cursor: bool) -> Vec<Line<'static>> {
         let screen = self.parser.screen();
         let (rows, columns) = screen.size();
         let (rows, columns) = (rows.get(), columns.get());
         let mut end = (0..rows)
             .rev()
-            .find(|&row| !is_blank(screen, row, columns))
+            .find(|&row| (0..columns).any(|column| screen.cell(row, column).is_some_and(shows)))
             .map_or(0, |row| row + 1);
         if cursor {
             end = end.max(screen.cursor_position().0 + 1);
         }
-        let mut lines: Vec<_> = (0..end).map(|row| line(screen, row, columns)).collect();
-        if lines.len() < count {
+        let start = end.saturating_sub(OUTPUT_ROWS as u16);
+        let mut lines: Vec<_> = (start..end).map(|row| line(screen, row, columns)).collect();
+        if lines.len() < OUTPUT_ROWS {
             // The scrollback shows above the screen. With an offset of n,
             // the first row of the screen shows the n-th line above it.
             let screen = self.parser.screen_mut();
-            let above = (count - lines.len()).min(screen.scrollback_len());
-            let mut all = Vec::with_capacity(count);
+            let above = (OUTPUT_ROWS - lines.len()).min(screen.scrollback_len());
+            let mut all = Vec::with_capacity(OUTPUT_ROWS);
             for offset in (1..=above).rev() {
                 screen.set_scrollback(offset);
                 all.push(line(screen, 0, columns));
@@ -69,17 +70,13 @@ impl Terminal {
             all.append(&mut lines);
             lines = all;
         }
-        lines.split_off(lines.len().saturating_sub(count))
+        lines
     }
 }
 
-/// Whether a row shows nothing: no text, and no background.
-fn is_blank(screen: &vt100::Screen, row: u16, columns: u16) -> bool {
-    (0..columns).all(|column| {
-        screen
-            .cell(row, column)
-            .is_none_or(|cell| !cell.has_contents() && style(cell) == Style::new())
-    })
+/// Whether a cell shows: text, or a background.
+fn shows(cell: &vt100::Cell) -> bool {
+    cell.has_contents() || style(cell) != Style::new()
 }
 
 /// A row as a line, without its blank cells at the end. Control and bidi
@@ -91,23 +88,22 @@ fn line(screen: &vt100::Screen, row: u16, columns: u16) -> Line<'static> {
         .collect();
     let end = cells
         .iter()
-        .rposition(|cell| cell.has_contents() || style(cell) != Style::new())
+        .rposition(|cell| shows(cell))
         .map_or(0, |i| i + 1);
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    for cell in &cells[..end] {
-        let text = if cell.has_contents() {
-            cell.contents()
-        } else {
-            " "
-        };
-        for span in escaped(text, style(cell)) {
-            match spans.last_mut() {
-                Some(last) if last.style == span.style => {
-                    last.content.to_mut().push_str(&span.content)
+    // One escape per run of cells of one style: one per cell would
+    // allocate for each.
+    let mut spans = Vec::new();
+    for run in cells[..end].chunk_by(|a, b| style(a) == style(b)) {
+        let text: String = (run.iter())
+            .map(|cell| {
+                if cell.has_contents() {
+                    cell.contents()
+                } else {
+                    " "
                 }
-                _ => spans.push(span),
-            }
-        }
+            })
+            .collect();
+        spans.extend(escaped(&text, style(run[0])));
     }
     Line::from(spans)
 }
@@ -177,7 +173,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn rows(terminal: &mut Terminal, cursor: bool) -> String {
-        markup(&terminal.last_rows(OUTPUT_ROWS, cursor))
+        markup(&terminal.last_rows(cursor))
     }
 
     fn after(bytes: &[u8], columns: u16, rows: u16) -> Terminal {
@@ -231,7 +227,7 @@ mod tests {
     #[test]
     fn a_row_ends_at_its_last_text_or_background() {
         let mut terminal = after(b"a\r\nb\x1b[41m  \x1b[0m", 80, 24);
-        let rows = terminal.last_rows(OUTPUT_ROWS, false);
+        let rows = terminal.last_rows(false);
         let widths: Vec<_> = rows.iter().map(Line::width).collect();
         assert_eq!(widths, [1, 3]);
     }
@@ -267,7 +263,7 @@ mod tests {
                 terminal.process(read);
             }
             terminal.process(text.as_bytes());
-            for line in terminal.last_rows(15, true) {
+            for line in terminal.last_rows(true) {
                 for span in &line.spans {
                     prop_assert!(!span.content.chars().any(needs_escape), "{:?}", span);
                 }

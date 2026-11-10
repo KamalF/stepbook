@@ -119,6 +119,7 @@ The 12 commits are in, with three more: a fix, since a hangup of the terminal co
 ### After the 12 commits
 
 - `cargo mutants`: 654 caught, 18 missed, 72 timeouts and 47 unviable, in 33 minutes. The tests that wait for a run had no time limit, so a mutant that lost an event hung them: they now fail after 10 s. The misses got tests (the file descriptors of a run, a key release with a question open, the end of a row of output, the layout cache, the top of a block under output), or an exclusion with its reason in `.cargo/mutants.toml`.
+- `/simplify`, with 4 cleanup agents: 2 commits. The altitude agent found 2 bugs of the wrapper, fixed: a handler that chained `trap -p EXIT` called the wrapper's handler without end, and under `set -a` the state took `BASH_TRAPSIG` on most exit paths. The efficiency agent measured 7 MB of output 12 times faster once the rows of output are made once per frame, not once per read of the PTY.
 
 Kamal signed off the plan and these choices on 2026-11-10. The spec records them (19).
 
