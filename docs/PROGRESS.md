@@ -16,7 +16,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 
 | # | Milestone | Status |
 |---|---|---|
-| 1 | Document view | In progress, on `m1-document-view` |
+| 1 | Document view | Done, merged into `main` on 2026-11-10 |
 | 2 | Running blocks | — |
 | 3 | Input and full-screen view | — |
 | 4 | Log and reload | — |
@@ -73,6 +73,8 @@ The test of commit 15 is ignored, because CI has no runbooks: `cargo test --rele
   - Round 17: the security reviewer found no defect. The code reviewer found 1 should-fix, fixed: a property test now checks that comments never show dim, which only snapshots checked. Two new snapshots cover the wrap of HTML lines and the escapes of blank glyphs.
   - Round 18: the code reviewer found only nits in the docs, fixed. The security reviewer found 1 should-fix, fixed: U+0000 becomes U+FFFD, as CommonMark says, since bash drops it: `r^@m` would have run as `rm`.
   - Round 19: nothing to fix. The security reviewer found nothing, and the code reviewer 2 nits in comments and docs, fixed. The loop converged.
+- `cargo mutants` after the loop: 541 caught, 0 missed, 18 unviable and 1 timeout (`+=` to `*=` in `fitted_prefixes` loops forever, so the tests catch it).
+- The check in tmux on 2026-11-10: the largest runbook, the `▐` gutter, `↪` rows, `⇥` and `␣`, the moves, the 39 by 8 message, and `q`, which restores the terminal with exit code 0.
 
 ### Kamal's manual checklist
 
@@ -81,12 +83,12 @@ What tmux cannot show, in herdr in Ghostty:
 1. `stepbook ~/dev/claude/runbooks/<a runbook>.md`: the headings, the code highlighting, the gutters, the dimmed text and the cyan selection read well in your theme.
 2. Select text with the mouse: herdr copies it, because stepbook does not capture the mouse.
 3. `j`, `k`, `PageDown`, `End`, `Home`, then `q`: the shell prompt comes back clean.
+4. Ambiguous width (spec 11): `printf '→→→→|\n····|\n|||||\n'` shows the three `|` of the right edge in one column, so your terminal draws these characters 1 column wide.
 
 ## Next
 
-1. The next round of the review loop, until a round has nothing to fix.
-2. `cargo mutants` again: the code changed after the run of round 12.
-3. The check in tmux, then the merge of `m1-document-view` into `main`.
+1. Kamal runs the manual checklist above, creates `KamalF/stepbook`, adds the remote and pushes `main`.
+2. Milestone 2, running blocks, on `m2-running-blocks`. Two open points below come first: keep the selected block in view, and bracketed paste.
 
 ## Open points
 
