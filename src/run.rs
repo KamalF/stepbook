@@ -720,6 +720,35 @@ mod tests {
     }
 
     #[test]
+    fn set_x_never_shows_the_variables_at_the_exit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "export SECRET=s3cret\ntrap 'echo bye' EXIT\nset -x\ntrue\n";
+        let (output, _, saved) = run(&mut session, code);
+        assert!(saved);
+        assert!(
+            !output.contains("s3cret") && !output.contains("__stepbook"),
+            "{output}"
+        );
+        assert!(output.ends_with("bye\n"), "{output}");
+    }
+
+    #[test]
+    fn set_a_keeps_the_variables_of_the_wrapper_out_of_the_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let (_, _, saved) = run(&mut session, "set -a\ntrap 'Y=2' EXIT\nX=3\n");
+        assert!(saved);
+        let names: Vec<_> = session
+            .state
+            .vars
+            .keys()
+            .map(|n| n.to_string_lossy())
+            .collect();
+        assert_eq!(names, ["PATH", "X", "Y"]);
+    }
+
+    #[test]
     fn trap_keeps_its_other_forms() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());

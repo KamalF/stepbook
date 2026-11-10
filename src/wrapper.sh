@@ -16,8 +16,9 @@ __stepbook_trap=
 
 # Writes the directory, each exported variable as NAME=value, then an
 # empty entry, each ended by a NUL byte. ">|" writes even under noclobber.
+# Under set -x, bash would print each value, secrets included: the trap
+# turns set -x off first.
 __stepbook_save() {
-    set +a
     local IFS=$' \t\n' __stepbook_name
     {
         builtin printf '%s\0' "$PWD"
@@ -33,15 +34,16 @@ __stepbook_status() {
 }
 
 # Saves the state, then runs the handler of the script with the exit
-# status in $?, then saves the state again: the handler can change it.
-# The handler can also end with exit, or with a failure under set -e,
-# which skip the rest of this function.
+# status in $?, and with set -a as the script left it, then saves the
+# state again: the handler can change it. The handler can also end with
+# exit, or with a failure under set -e, which skip the rest of this
+# function. set -x stays off, since its trace would show the wrapper.
 __stepbook_exit() {
-    local __stepbook_code=$?
     __stepbook_save
     if [ -z "$__stepbook_trap" ]; then
         return
     fi
+    case $__stepbook_flags in *a*) set -a ;; esac
     # Under set -e, a status other than 0 would end the trap here, unless
     # a "||" follows it. set -e still applies to the handler, as it would
     # without the wrapper.
@@ -50,6 +52,10 @@ __stepbook_exit() {
     else
         __stepbook_status "$__stepbook_code" || eval "$__stepbook_trap"
     fi
+    # Under set -a, bash 5.3 exports the BASH_TRAPSIG that it sets in a
+    # trap.
+    set +a
+    export -n BASH_TRAPSIG
     __stepbook_save
 }
 
@@ -86,6 +92,8 @@ trap() {
             else
                 __stepbook_trap=$__stepbook_action
             fi
+            # Under set -a, the state would hold it.
+            export -n __stepbook_trap
             ;;
         *) __stepbook_rest+=("$__stepbook_signal") ;;
         esac
@@ -95,6 +103,14 @@ trap() {
     fi
 }
 
-builtin trap __stepbook_exit EXIT
+# The trap keeps the exit status and the flags, then turns set -x and
+# set -a off, with no trace: under set -a, its variables would be
+# exported, and the state would hold them.
+builtin trap '{
+    __stepbook_code=$? __stepbook_flags=$-
+    set +ax
+    export -n __stepbook_code __stepbook_flags
+} 2>/dev/null
+__stepbook_exit' EXIT
 set --
 . "$__stepbook_script"
