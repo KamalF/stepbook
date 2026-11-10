@@ -1126,6 +1126,23 @@ mod tests {
     }
 
     #[test]
+    fn a_line_of_an_html_block_wraps_at_any_character() {
+        assert_snapshot!(render("<p>aaaa bbbb cccc</p>\n", 10), @"
+        «d:<p>aaaa bb»
+        «d:bb cccc</p»
+        «d:>»
+        ");
+    }
+
+    #[test]
+    fn code_shows_the_characters_that_fonts_draw_as_a_blank_escaped() {
+        assert_snapshot!(render("```bash\ntrue\u{1d159}#; ls\u{2800}x\n```", 50), @"
+        ▐ «b:#1»  «yellow:hidden characters in code»
+        ▐ «blue:true»«yellow:<1d159>»«blue:#»«magenta:;» «blue:ls»«yellow:<2800>»«blue:x»
+        ");
+    }
+
+    #[test]
     fn raw_html_shows_dimmed_as_source() {
         let text = "text\n\n<div>\n  <b>x</b>\n</div>\n\nan <i>inline</i> tag\n\n<p>\nlast\n</p>\n";
         assert_snapshot!(render(text, 40), @"
