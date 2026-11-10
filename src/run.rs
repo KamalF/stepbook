@@ -20,14 +20,17 @@ use rustix::termios::Winsize;
 
 use crate::{io_message, term};
 
-/// The first executable file called `name` in the directories of `path`.
+/// The first executable file called `name` in the directories of `path`,
+/// as an absolute path: each run starts in its own directory, where a
+/// relative path would name another file.
 pub fn find_in_path(name: &str, path: &OsStr) -> Option<PathBuf> {
-    std::env::split_paths(path)
+    let found = std::env::split_paths(path)
         .map(|dir| dir.join(name))
         .find(|file| {
             file.metadata()
                 .is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-        })
+        })?;
+    Some(std::path::absolute(&found).unwrap_or(found))
 }
 
 /// The directory of the run files, which only the user can read (spec
@@ -438,6 +441,8 @@ struct Process {
     pid: Pid,
     parent: i32,
     session: i32,
+    /// Ended, but not yet reaped by its parent.
+    zombie: bool,
 }
 
 /// The processes of the system.
@@ -448,7 +453,8 @@ fn processes() -> Vec<Process> {
     let process = |pid: i32| {
         // The name of the program, in parentheses, can hold any byte.
         let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let mut fields = stat.rsplit_once(')')?.1.split_whitespace().skip(1);
+        let mut fields = stat.rsplit_once(')')?.1.split_whitespace();
+        let zombie = fields.next()? == "Z";
         let parent = fields.next()?.parse().ok()?;
         let session = fields.nth(1)?.parse().ok()?;
         let pid = Pid::from_raw(pid)?;
@@ -456,6 +462,7 @@ fn processes() -> Vec<Process> {
             pid,
             parent,
             session,
+            zombie,
         })
     };
     let pids = entries.filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok());
@@ -472,21 +479,37 @@ fn session_processes(leader: Pid) -> Vec<Pid> {
     members.map(|p| p.pid).collect()
 }
 
-/// Sends SIGHUP to the processes of each run that has not ended, as the
-/// close of their PTYs would, before stepbook ends: the runs are the
-/// sessions of the children of stepbook. The close itself reaches only
-/// the wrapper and the process group in the foreground: timeout and set -m
-/// give a child a process group of its own.
-pub fn hang_up_runs() {
+/// Ends the runs that have not ended, before stepbook ends and deletes
+/// the workspace: the runs are the sessions of the children of stepbook.
+/// SIGHUP first, as the close of their PTYs would, then SIGKILL after up to
+/// 0.2 s. The close itself reaches only the wrapper and the process group in
+/// the foreground: timeout and set -m give a child a process group of its
+/// own. A wrapper that outlived stepbook would write its state where the
+/// workspace was, maybe in a directory that another user made there.
+pub fn end_runs() {
     let me = std::process::id() as i32;
-    let all = processes();
-    let runs: Vec<i32> = (all.iter())
-        .filter(|p| p.parent == me)
-        .map(|p| p.pid.as_raw_pid())
-        .collect();
-    for process in all.iter().filter(|p| runs.contains(&p.session)) {
-        let _ = rustix::process::kill_process(process.pid, Signal::HUP);
+    let members = || {
+        let all = processes();
+        let runs: Vec<i32> = (all.iter())
+            .filter(|p| p.parent == me)
+            .map(|p| p.pid.as_raw_pid())
+            .collect();
+        let alive = all
+            .into_iter()
+            .filter(|p| !p.zombie && runs.contains(&p.session));
+        alive.map(|p| p.pid).collect::<Vec<_>>()
+    };
+    let signal = |pids: Vec<Pid>, signal| {
+        for pid in pids {
+            let _ = rustix::process::kill_process(pid, signal);
+        }
+    };
+    signal(members(), Signal::HUP);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(200);
+    while !members().is_empty() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(10));
     }
+    signal(members(), Signal::KILL);
 }
 
 /// Opens a PTY of `columns` by `rows`: its side for stepbook, and its
@@ -546,12 +569,19 @@ fn read_run(reader: File, mut child: Child, sender: Sender<Event>, screen: &term
             Err(_) => break,
         }
     }
-    // As when a terminal closes, the processes that the run leaves in its
-    // session get SIGHUP, background jobs included. The kernel sends it only
-    // to the process group in the foreground. The wrapper, not reaped yet,
-    // keeps its pid, so that no other session can take it.
-    for pid in session_processes(Pid::from_child(&child)) {
-        let _ = rustix::process::kill_process(pid, Signal::HUP);
+    // The PTY can end first: a script that moves its stdio off the PTY goes
+    // on with no terminal. The run ends when the wrapper exits.
+    if let Some(exit) = &exit {
+        let mut fds = [PollFd::new(exit, PollFlags::IN)];
+        while rustix::event::poll(&mut fds, None) == Err(rustix::io::Errno::INTR) {}
+        // As when a terminal closes, the processes that the run leaves in
+        // its session get SIGHUP, background jobs included. The kernel
+        // sends it only to the process group in the foreground. The
+        // wrapper, not reaped yet, keeps its pid, so that no other session
+        // can take it.
+        for pid in session_processes(Pid::from_child(&child)) {
+            let _ = rustix::process::kill_process(pid, Signal::HUP);
+        }
     }
     let status = child.wait().expect("the child of a run is waited for once");
     let status = match status.code() {
@@ -669,6 +699,16 @@ mod tests {
         let path =
             std::env::join_paths([&not_exec, &folder, &exec, &tmp.path().join("d")]).unwrap();
         assert_eq!(find_in_path("bash", &path), Some(found));
+    }
+
+    #[test]
+    fn a_relative_directory_of_the_path_gives_an_absolute_path() {
+        let tmp = tempfile::tempdir_in(".").unwrap();
+        let name = tmp.path().file_name().unwrap();
+        make_file(tmp.path(), 0o755);
+        let path = PathBuf::from(name);
+        let expected = std::env::current_dir().unwrap().join(name).join("bash");
+        assert_eq!(find_in_path("bash", path.as_os_str()), Some(expected));
     }
 
     #[test]
@@ -1014,6 +1054,21 @@ mod tests {
     }
 
     #[test]
+    fn the_wrapper_writes_the_state_only_into_the_file_of_stepbook() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        // As when the workspace is gone, and another user made it again.
+        let run = session
+            .start("rm \"$__stepbook_state\"\nexport A=1\n", "check", 80, 24)
+            .unwrap();
+        wait(&run);
+        assert!(!run.state_file.exists());
+        assert!(!session.finish(&run));
+        // A block can unset PWD, under set -u too.
+        assert!(super::tests::run(&mut session, "set -u\nunset PWD\n").2);
+    }
+
+    #[test]
     fn exported_arrays_stay_out_of_the_state() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
@@ -1137,6 +1192,19 @@ mod tests {
         run.signal(Signal::KILL);
         wait(&run);
         assert_eq!(session_of(&run), []);
+    }
+
+    #[test]
+    fn a_script_runs_to_its_end_after_it_leaves_the_terminal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "exec </dev/null >/dev/null 2>&1\nexport A=1\nsleep 0.3\ntouch marker\n";
+        assert_eq!(
+            run(&mut session, code),
+            (String::new(), Status::Code(0), true)
+        );
+        assert!(tmp.path().join("marker").exists());
+        assert_eq!(var(&session, "A").as_deref(), Some("1"));
     }
 
     #[test]

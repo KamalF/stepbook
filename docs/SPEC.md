@@ -246,7 +246,7 @@ Several blocks can run at the same time. Each one runs in its own PTY.
 
 1. stepbook checks that the session directory exists. If it does not, the run fails with `cannot start: directory <dir> no longer exists`. The session directory then resets to the directory that stepbook started in, and the footer says so. stepbook never falls back to `$HOME` (upmd issue S6, see 18).
 2. stepbook writes the block code to `<workspace>/run-<id>.sh`.
-3. It spawns `bash --noprofile --norc <workspace>/wrapper.sh <run files>` in a new PTY, in the session directory.
+3. It spawns `bash --noprofile --norc <workspace>/wrapper.sh <run files>` in a new PTY, in the session directory. `bash` is the absolute path found on the `PATH` at startup: a relative one would name another file in each directory.
 4. The child gets exactly the session variables, plus:
    - `TERM=xterm-256color`
    - `PWD`: the session directory, so that bash keeps the path that the last `cd` gave through a link, as a terminal does
@@ -282,6 +282,8 @@ When the block script ends, the wrapper writes the state file `<workspace>/run-<
 
 - the working directory, then each exported variable as `NAME=value`, then an empty entry. An exported array is not saved: bash puts no array in the environment;
 - each entry ends with a NUL byte, so values can hold newlines, quotes and any other byte.
+
+The wrapper writes the state only into the file that stepbook made for it: after stepbook ends, its workspace is gone, and a directory of the same name can be another user's.
 
 Without the empty entry, the file is partial, and stepbook ignores it: the wrapper was killed while it wrote it, and the missing variables would count as unset.
 
@@ -341,7 +343,7 @@ Blocks are matched by key between the old and the new file:
 - stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide, as ratatui counts them. On a terminal set to draw them wide, such as VTE with that option or `xterm -cjk_width`, the text after such a character shifts, in code too, and a space can vanish.
 - While it runs, stepbook turns the autowrap of the terminal off: a character that the terminal draws wider than ratatui counts must not wrap into the row below and move what is there.
 - On exit, stepbook restores the terminal, autowrap and bracketed paste included, and ends a synchronized update that a failed frame left open. It also deletes the workspace. It does the same on SIGTERM and SIGHUP.
-- Whenever stepbook ends, after a signal, a panic or a terminal error too, it sends SIGHUP to the processes of the runs that have not ended, those of each session: the close of a PTY reaches only its process group in the foreground.
+- Whenever stepbook ends, after a signal, a panic or a terminal error too, it sends SIGHUP to the processes of the runs that have not ended, those of each session: the close of a PTY reaches only its process group in the foreground. After up to 0.2 s, it sends SIGKILL to those left, then deletes the workspace: a wrapper that outlived stepbook would write its state where the workspace was.
 - A panic hook restores the terminal and deletes the workspace too. Then it ends stepbook, even after a panic in another thread: the main thread would go on drawing on the restored terminal.
 
 ## 12. Log

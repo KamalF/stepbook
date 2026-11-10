@@ -213,7 +213,7 @@ fn open(args: &Args) -> Result<Exit, String> {
     let mut app = App::new(view, session, crossbeam_channel::tick(TICK));
     std::thread::spawn(move || read_terminal(sender));
     let result = event_loop(&mut terminal, &mut app, &control);
-    run::hang_up_runs();
+    run::end_runs();
     restore_terminal();
     result.map_err(|e| format!("terminal error: {}", io_message(&e)))
 }
@@ -238,8 +238,8 @@ fn set_up_terminal(workspace: &Path) -> std::io::Result<DefaultTerminal> {
         if term::in_vt100() {
             return;
         }
+        run::end_runs();
         let _ = std::fs::remove_dir_all(&workspace);
-        run::hang_up_runs();
         restore_terminal();
         default_hook(info);
         std::process::exit(101);
@@ -1020,6 +1020,19 @@ mod tests {
         assert!(app.question.is_some() && !running(&app) && app.view.scroll > 0);
         key(&mut app, KeyCode::Char('y'));
         assert!(app.question.is_none() && running(&app));
+        read_until(&mut app, SIZE, |app| !running(app));
+    }
+
+    #[test]
+    fn enter_on_a_block_off_the_screen_only_shows_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        let steps = "Step.\n\n".repeat(30);
+        let mut app = app(&format!("{steps}```bash\ntrue\n```\n"), tmp.path());
+        assert_eq!((app.view.selected, app.view.scroll), (Some(0), 0));
+        enter(&mut app, SIZE);
+        assert!(!running(&app) && app.view.scroll > 0);
+        enter(&mut app, SIZE);
+        assert!(running(&app));
         read_until(&mut app, SIZE, |app| !running(app));
     }
 

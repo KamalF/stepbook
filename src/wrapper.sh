@@ -31,11 +31,17 @@ __stepbook_trap=
 # turns set -x off first.
 __stepbook_save() {
     local IFS=$' \t\n' __stepbook_name __stepbook_arrays
+    # Only into the file that stepbook made: after stepbook ends, its
+    # workspace is gone, and a directory of the same name can be another
+    # user's.
+    if [ ! -f "$__stepbook_state" ] || [ ! -O "$__stepbook_state" ] || [ -L "$__stepbook_state" ]; then
+        return 0
+    fi
     # bash puts no array in the environment, but compgen -e lists an
     # exported array: the state would get its first element as a string.
     __stepbook_arrays=" $(builtin compgen -A arrayvar) "
     {
-        builtin printf '%s\0' "$PWD"
+        builtin printf '%s\0' "${PWD-}"
         for __stepbook_name in $(builtin compgen -e); do
             # Under set -a, bash exports the variables of the wrapper, and
             # the BASH_TRAPSIG that it sets in a trap.
