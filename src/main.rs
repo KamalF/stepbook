@@ -26,7 +26,7 @@ use ratatui::crossterm::{execute, queue};
 use ratatui::layout::Size;
 use ratatui::{DefaultTerminal, Terminal};
 use rustix::process::Signal;
-use signal_hook::consts::{SIGHUP, SIGTERM};
+use signal_hook::consts::{SIGCHLD, SIGHUP, SIGTERM};
 
 const USAGE: &str = "Usage: stepbook [--log PATH | --no-log] FILE";
 
@@ -183,6 +183,12 @@ fn open(args: &Args) -> Result<Exit, String> {
     let (sender, control) = crossbeam_channel::unbounded();
     // Before the workspace exists, so that these signals always delete it.
     let mut signals = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP])
+        .map_err(|e| format!("cannot handle signals: {}", io_message(&e)))?;
+    // With SIGCHLD ignored, which a parent can leave through exec, the
+    // kernel reaps the wrappers on its own: their exit status would be lost,
+    // and their pid free before the hang-up of their session. Any handler
+    // stops that.
+    signal_hook::flag::register(SIGCHLD, Arc::default())
         .map_err(|e| format!("cannot handle signals: {}", io_message(&e)))?;
     let signal_sender = sender.clone();
     std::thread::spawn(move || {

@@ -9,11 +9,11 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsE
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError, TryLockError};
 
 use crossbeam_channel::{Receiver, Sender};
 use rustix::event::{PollFd, PollFlags, Timespec};
-use rustix::fs::{Mode, OFlags};
+use rustix::fs::{CWD, FileType, Mode, OFlags};
 use rustix::process::{Pid, PidfdFlags, Signal};
 use rustix::pty::OpenptFlags;
 use rustix::termios::Winsize;
@@ -182,6 +182,7 @@ pub struct Session {
     bash: PathBuf,
     workspace: Workspace,
     wrapper: PathBuf,
+    timer: PathBuf,
     /// The absolute paths of the runbook and of the log, for the runs
     /// (spec 8.2).
     file: PathBuf,
@@ -227,6 +228,7 @@ pub struct Run {
     start: State,
     script: PathBuf,
     state_file: PathBuf,
+    env_file: PathBuf,
 }
 
 pub enum Event {
@@ -262,6 +264,16 @@ impl Status {
 const OUTPUT_MESSAGES: usize = 64;
 const READ_SIZE: usize = 32 * 1024;
 
+/// A variable whose NAME=value takes at least this many bytes goes to the
+/// wrapper in a file: in the environment of exec, one of over 128 KiB
+/// (MAX_ARG_STRLEN) fails the start of every run.
+const LARGE: usize = 4096;
+
+/// The wrappers that have not ended, which lead the sessions of the runs.
+/// Children of stepbook that came with an exec, such as a process that a
+/// launcher started before "exec stepbook", are not runs.
+static RUNS: Mutex<Vec<Pid>> = Mutex::new(Vec::new());
+
 impl Session {
     pub fn new(
         workspace: Workspace,
@@ -271,12 +283,17 @@ impl Session {
         log: Option<PathBuf>,
     ) -> std::io::Result<Session> {
         let wrapper = workspace.write("wrapper.sh", WRAPPER.as_bytes())?;
+        // A FIFO with no writer, which the wrapper reads with a timeout, to
+        // wait without a program on the PATH.
+        let timer = workspace.dir().join("timer");
+        rustix::fs::mknodat(CWD, &timer, FileType::Fifo, Mode::RUSR | Mode::WUSR, 0)?;
         Ok(Session {
             origin: state.dir.clone(),
             state,
             bash,
             workspace,
             wrapper,
+            timer,
             file,
             log,
             next_id: 1,
@@ -315,13 +332,30 @@ impl Session {
             .map_err(fail)?;
         let mut start = self.state.clone();
         start.vars.insert("TERM".into(), "xterm-256color".into());
-        let run_files = [&script, &state_file];
-        let (master, child) = (self.spawn(&run_files, &start, block, columns, rows))
+        let (large, small): (Vec<_>, Vec<_>) = (start.vars.iter())
+            .partition(|(name, value)| name.len() + value.len() >= LARGE && is_identifier(name));
+        let mut large_vars = Vec::new();
+        for (name, value) in large {
+            large_vars.extend([name.as_bytes(), b"=", value.as_bytes(), b"\0"].concat());
+        }
+        let env_file = (self.workspace)
+            .write(&format!("run-{id}.env"), &large_vars)
+            .inspect_err(|_| {
+                [&script, &state_file]
+                    .iter()
+                    .for_each(|f| _ = std::fs::remove_file(f))
+            })
+            .map_err(fail)?;
+        let run_files = [&script, &state_file, &env_file];
+        let (master, child) = (self.spawn(&run_files, small, block, columns, rows))
             .inspect_err(|_| run_files.iter().for_each(|f| _ = std::fs::remove_file(f)))
             .map_err(fail)?;
         let reader = master.try_clone().map_err(fail)?;
         let (sender, events) = crossbeam_channel::bounded(OUTPUT_MESSAGES);
         let pid = Pid::from_child(&child);
+        RUNS.lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(pid);
         let screen = Arc::new(term::Shared::new(columns, rows));
         let feed = screen.clone();
         std::thread::spawn(move || read_run(reader, child, sender, &feed));
@@ -333,14 +367,15 @@ impl Session {
             start,
             script,
             state_file,
+            env_file,
         })
     }
 
     /// Spawns the wrapper with the files of a run, in a new PTY.
     fn spawn(
         &self,
-        run_files: &[&PathBuf; 2],
-        start: &State,
+        run_files: &[&PathBuf; 3],
+        vars: Vec<(&OsString, &OsString)>,
         block: &str,
         columns: u16,
         rows: u16,
@@ -352,8 +387,9 @@ impl Session {
             .arg("--norc")
             .arg(&self.wrapper)
             .args(run_files)
+            .arg(&self.timer)
             .env_clear()
-            .envs(&start.vars)
+            .envs(vars)
             // bash keeps a PWD that names its directory: through a link,
             // the run starts in the path that the last cd gave, as in a
             // terminal, and not in the physical path.
@@ -390,8 +426,9 @@ impl Session {
     /// or after exec (spec 9.2).
     pub fn finish(&mut self, run: &Run) -> bool {
         let end = std::fs::read(&run.state_file).ok();
-        let _ = std::fs::remove_file(&run.script);
-        let _ = std::fs::remove_file(&run.state_file);
+        for file in [&run.script, &run.state_file, &run.env_file] {
+            let _ = std::fs::remove_file(file);
+        }
         match end.as_deref().and_then(State::parse) {
             Some(end) => {
                 self.state.apply(&run.start, &end);
@@ -439,7 +476,6 @@ fn winsize(columns: u16, rows: u16) -> Winsize {
 /// A process, from /proc.
 struct Process {
     pid: Pid,
-    parent: i32,
     session: i32,
     /// Ended, but not yet reaped by its parent.
     zombie: bool,
@@ -458,12 +494,10 @@ fn processes() -> Vec<Process> {
         let after = &stat[stat.iter().rposition(|&b| b == b')')? + 1..];
         let mut fields = std::str::from_utf8(after).ok()?.split_whitespace();
         let zombie = fields.next()? == "Z";
-        let parent = fields.next()?.parse().ok()?;
-        let session = fields.nth(1)?.parse().ok()?;
+        let session = fields.nth(2)?.parse().ok()?;
         let pid = Pid::from_raw(pid)?;
         Some(Process {
             pid,
-            parent,
             session,
             zombie,
         })
@@ -483,23 +517,24 @@ fn session_processes(leader: Pid) -> Vec<Pid> {
 }
 
 /// Ends the runs that have not ended, before stepbook ends and deletes
-/// the workspace: the runs are the sessions of the children of stepbook.
+/// the workspace: the sessions of the wrappers in `RUNS`.
 /// SIGHUP first, as the close of their PTYs would, then SIGKILL after up to
 /// 0.2 s. The close itself reaches only the wrapper and the process group in
 /// the foreground: timeout and set -m give a child a process group of its
 /// own. A wrapper that outlived stepbook would write its state where the
 /// workspace was, maybe in a directory that another user made there.
 pub fn end_runs() {
-    let me = std::process::id() as i32;
+    let runs: Vec<i32> = match RUNS.try_lock() {
+        Ok(runs) => runs.iter().map(|pid| pid.as_raw_pid()).collect(),
+        Err(TryLockError::Poisoned(runs)) => runs
+            .into_inner()
+            .iter()
+            .map(|pid| pid.as_raw_pid())
+            .collect(),
+        Err(TryLockError::WouldBlock) => return,
+    };
     let members = || {
-        let all = processes();
-        let runs: Vec<i32> = (all.iter())
-            .filter(|p| p.parent == me)
-            .map(|p| p.pid.as_raw_pid())
-            .collect();
-        let alive = all
-            .into_iter()
-            .filter(|p| !p.zombie && runs.contains(&p.session));
+        let alive = (processes().into_iter()).filter(|p| !p.zombie && runs.contains(&p.session));
         alive.map(|p| p.pid).collect::<Vec<_>>()
     };
     let signal = |pids: Vec<Pid>, signal| {
@@ -587,6 +622,10 @@ fn read_run(reader: File, mut child: Child, sender: Sender<Event>, screen: &term
         }
     }
     let status = child.wait().expect("the child of a run is waited for once");
+    let pid = Pid::from_child(&child);
+    RUNS.lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .retain(|&run| run != pid);
     let status = match status.code() {
         Some(code) => Status::Code(code),
         None => Status::Signal(status.signal().unwrap_or(0)),
@@ -987,11 +1026,14 @@ mod tests {
         let mut session = session(tmp.path());
         let (_, _, saved) = run(&mut session, "export POSIXLY_CORRECT=1\n");
         assert!(saved);
-        let code = "shopt -oq posix && echo posix\nunset POSIXLY_CORRECT\n";
+        // The block runs in POSIX mode, with the variable as it was.
+        let code = "shopt -oq posix && echo posix\nprintenv POSIXLY_CORRECT\n";
         assert_eq!(
             run(&mut session, code),
-            ("posix\n".into(), Status::Code(0), true)
+            ("posix\n1\n".into(), Status::Code(0), true)
         );
+        assert_eq!(var(&session, "POSIXLY_CORRECT").as_deref(), Some("1"));
+        assert!(run(&mut session, "unset POSIXLY_CORRECT\n").2);
         assert_eq!(
             run(&mut session, "shopt -oq posix || echo bash\n").0,
             "bash\n"
@@ -1086,6 +1128,62 @@ mod tests {
         let expected = (String::new(), Status::Code(0), true);
         assert_eq!(run(&mut session, "set -u\nunset PWD\n"), expected);
         assert_eq!(session.state.dir, tmp.path());
+    }
+
+    #[test]
+    fn the_output_of_a_process_substitution_ends_before_the_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        // The logging header of the old runbooks (spec 12.3): when the
+        // wrapper exits, the kernel sends SIGHUP to its tee.
+        let code = "exec > >(tee -a \"$PWD/log\") 2>&1\n\
+            trap 'echo \"=== END b rc=$?\"' EXIT\nseq 1 20000\n";
+        let (output, status, saved) = run(&mut session, code);
+        assert_eq!((status, saved), (Status::Code(0), true));
+        assert!(
+            output.ends_with("\n20000\n=== END b rc=0\n"),
+            "{}",
+            &output[output.len() - 50..]
+        );
+        let log = fs::read_to_string(tmp.path().join("log")).unwrap();
+        assert_eq!(log.lines().count(), 20001);
+    }
+
+    #[test]
+    fn a_variable_too_large_for_exec_goes_to_the_next_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "export BIG=$(printf '%200000s' x)\n";
+        assert!(run(&mut session, code).2);
+        // As in a terminal, a program fails to start with it, not bash.
+        let code = "echo ${#BIG}\nunset BIG\n";
+        assert_eq!(
+            run(&mut session, code),
+            ("200000\n".into(), Status::Code(0), true)
+        );
+        assert_eq!(var(&session, "BIG"), None);
+        assert_eq!(run(&mut session, "printenv X\n").0, "1\n");
+    }
+
+    #[test]
+    fn an_exported_ifs_keeps_its_value() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        assert!(run(&mut session, "export IFS=,\n").2);
+        assert_eq!(var(&session, "IFS").as_deref(), Some(","));
+    }
+
+    #[test]
+    fn a_bash_without_compgen_saves_no_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        // As a bash built without programmable completion.
+        fs::write(tmp.path().join("env.sh"), "enable -n compgen\n").unwrap();
+        let env = tmp.path().join("env.sh").into_os_string();
+        session.state.vars.insert("BASH_ENV".into(), env);
+        let (_, _, saved) = run(&mut session, "unset X\n");
+        assert!(!saved);
+        assert_eq!(var(&session, "X").as_deref(), Some("1"));
     }
 
     #[test]
@@ -1207,8 +1305,7 @@ mod tests {
             .start("echo ready; timeout 30 sleep 30\n", "check", 80, 24)
             .unwrap();
         wait_for(&run, "ready");
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        assert_eq!(session_of(&run).len(), 3);
+        until_session_has(&run, 3);
         run.signal(Signal::KILL);
         wait(&run);
         assert_eq!(session_of(&run), []);
@@ -1239,9 +1336,8 @@ mod tests {
         let code = format!("set -m\n'{}' &\necho ready\nwait\n", name.display());
         let run = session.start(&code, "check", 80, 24).unwrap();
         wait_for(&run, "ready");
-        std::thread::sleep(std::time::Duration::from_millis(100));
         // The wrapper, the script and its sleep.
-        assert_eq!(session_of(&run).len(), 3);
+        until_session_has(&run, 3);
         run.signal(Signal::KILL);
         wait(&run);
         assert_eq!(session_of(&run), []);
@@ -1261,6 +1357,20 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
         assert_eq!(session_of(&run), []);
+    }
+
+    /// Waits until a run has `count` processes, which a loaded machine
+    /// can fork late.
+    fn until_session_has(run: &Run, count: usize) {
+        let deadline = std::time::Instant::now() + WAIT;
+        while session_of(run).len() != count {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{:?}",
+                session_of(run)
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     /// The processes of a run, without the zombies that wait for their
@@ -1289,17 +1399,17 @@ mod tests {
         let mut session = session(tmp.path());
         let workspace = session.workspace().to_owned();
         let code = format!(
-            "stat -c %a {0}/run-1.sh {0}/run-1.state {0}/wrapper.sh\n",
+            "stat -c %a {0}/run-1.sh {0}/run-1.state {0}/run-1.env {0}/wrapper.sh {0}/timer\n",
             workspace.display()
         );
         let (output, _, _) = run(&mut session, &code);
-        assert_eq!(output, "600\n600\n600\n");
+        assert_eq!(output, "600\n600\n600\n600\n600\n");
         let mut files: Vec<_> = fs::read_dir(&workspace)
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();
         files.sort();
-        assert_eq!(files, ["wrapper.sh"]);
+        assert_eq!(files, ["timer", "wrapper.sh"]);
     }
 
     #[test]
@@ -1314,6 +1424,6 @@ mod tests {
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();
-        assert_eq!(files, ["wrapper.sh"]);
+        assert_eq!(files, ["timer", "wrapper.sh"]);
     }
 }
