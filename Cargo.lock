@@ -1612,6 +1612,7 @@ dependencies = [
  "proptest",
  "pulldown-cmark",
  "ratatui",
+ "signal-hook",
  "syntect",
  "tempfile",
 ]

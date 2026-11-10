@@ -8,17 +8,18 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, Sender};
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
 use ratatui::crossterm::terminal::{
     BeginSynchronizedUpdate, Clear, ClearType, DisableLineWrap, EnableLineWrap,
-    EndSynchronizedUpdate,
+    EndSynchronizedUpdate, LeaveAlternateScreen, disable_raw_mode,
 };
 use ratatui::crossterm::{execute, queue};
 use ratatui::layout::Size;
+use signal_hook::consts::{SIGHUP, SIGTERM};
 
 const USAGE: &str = "Usage: stepbook [--log PATH | --no-log] FILE";
 
@@ -130,7 +131,12 @@ fn main() -> ExitCode {
         }
     };
     match open(&args) {
-        Ok(()) => ExitCode::SUCCESS,
+        Ok(Exit::Quit) => ExitCode::SUCCESS,
+        Ok(Exit::Signal(signal)) => {
+            // Dies of the signal, as it would have without the cleanup.
+            let _ = signal_hook::low_level::emulate_default_handler(signal);
+            ExitCode::FAILURE
+        }
         Err(message) => {
             eprintln!("stepbook: {}", doc::escaped_text(&message));
             ExitCode::FAILURE
@@ -138,7 +144,15 @@ fn main() -> ExitCode {
     }
 }
 
-fn open(args: &Args) -> Result<(), String> {
+/// How the event loop ends.
+#[derive(Debug, PartialEq)]
+enum Exit {
+    Quit,
+    /// SIGTERM or SIGHUP.
+    Signal(i32),
+}
+
+fn open(args: &Args) -> Result<Exit, String> {
     let text = read_runbook(&args.file)?;
     let path = std::env::var_os("PATH").unwrap_or_default();
     if run::find_in_path("bash", &path).is_none() {
@@ -148,11 +162,31 @@ fn open(args: &Args) -> Result<(), String> {
         return Err("run stepbook in a terminal: its output is not a terminal".into());
     }
     let doc = doc::parse(&text);
-    let mut terminal =
-        set_up_terminal().map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
+    let (sender, control) = crossbeam_channel::unbounded();
+    // Before the workspace exists, so that these signals always delete it.
+    let mut signals = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP])
+        .map_err(|e| format!("cannot handle signals: {}", io_message(&e)))?;
+    let signal_sender = sender.clone();
+    std::thread::spawn(move || {
+        for signal in signals.forever() {
+            let _ = signal_sender.send(Control::Signal(signal));
+        }
+    });
+    let parent = run::workspace_parent(std::env::var_os("XDG_RUNTIME_DIR"));
+    let workspace = run::Workspace::create(&parent).map_err(|e| {
+        let dir = parent.join(format!("stepbook-{}", std::process::id()));
+        format!(
+            "cannot create the workspace {}: {}",
+            dir.display(),
+            io_message(&e)
+        )
+    })?;
+    let mut terminal = set_up_terminal(workspace.dir())
+        .map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
     let title = args.file.file_name().unwrap_or(args.file.as_os_str());
     let mut view = view::View::new(doc, title.to_string_lossy().into_owned());
-    let result = event_loop(&mut terminal, &mut view);
+    std::thread::spawn(move || read_terminal(sender));
+    let result = event_loop(&mut terminal, &mut view, &control);
     restore_terminal();
     result.map_err(|e| format!("terminal error: {}", io_message(&e)))
 }
@@ -162,12 +196,15 @@ fn open(args: &Args) -> Result<(), String> {
 /// wrap into the row below and move what is there. Bracketed paste is on,
 /// so that a paste never arrives as keys: a line feed in it would run the
 /// selected block. The panic hooks restore all four, and end the
-/// synchronized update of a frame that failed halfway.
-fn set_up_terminal() -> std::io::Result<DefaultTerminal> {
+/// synchronized update of a frame that failed halfway. They also delete
+/// the workspace, and end stepbook: after a panic in another thread, the
+/// main thread would go on drawing on the restored terminal.
+fn set_up_terminal(workspace: &Path) -> std::io::Result<DefaultTerminal> {
     // try_init installs a panic hook that leaves raw mode and the
     // alternate screen. If it fails, it may have turned on raw mode.
     let terminal = ratatui::try_init().inspect_err(|_| restore_terminal())?;
     let ratatui_hook = std::panic::take_hook();
+    let workspace = workspace.to_owned();
     std::panic::set_hook(Box::new(move |info| {
         let _ = execute!(
             std::io::stdout(),
@@ -176,12 +213,16 @@ fn set_up_terminal() -> std::io::Result<DefaultTerminal> {
             DisableBracketedPaste
         );
         ratatui_hook(info);
+        let _ = std::fs::remove_dir_all(&workspace);
+        std::process::exit(101);
     }));
     execute!(std::io::stdout(), DisableLineWrap, EnableBracketedPaste)
         .inspect_err(|_| restore_terminal())?;
     Ok(terminal)
 }
 
+/// Ignores errors: after a SIGHUP, the terminal is gone, and ratatui's
+/// own restore would panic when it reports the error on stderr.
 fn restore_terminal() {
     let _ = execute!(
         std::io::stdout(),
@@ -189,7 +230,8 @@ fn restore_terminal() {
         EnableLineWrap,
         DisableBracketedPaste
     );
-    ratatui::restore();
+    let _ = disable_raw_mode();
+    let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
 }
 
 /// Runbooks are a few KB: the largest of ~/dev/claude/runbooks had 22 KB
@@ -224,6 +266,7 @@ fn read_runbook(path: &Path) -> Result<String, String> {
 /// and the other threads only send these (spec 13).
 enum Control {
     Terminal(std::io::Result<Event>),
+    Signal(i32),
 }
 
 /// Sends the terminal events, until the first error.
@@ -237,9 +280,11 @@ fn read_terminal(control: Sender<Control>) {
     }
 }
 
-fn event_loop(terminal: &mut DefaultTerminal, view: &mut view::View) -> std::io::Result<()> {
-    let (sender, control) = crossbeam_channel::unbounded();
-    std::thread::spawn(move || read_terminal(sender));
+fn event_loop(
+    terminal: &mut DefaultTerminal,
+    view: &mut view::View,
+    control: &Receiver<Control>,
+) -> std::io::Result<Exit> {
     loop {
         // A terminal can draw a grapheme of prose wider than ratatui counts
         // it, and shift the rest of its row. ratatui sends only the cells
@@ -254,15 +299,18 @@ fn event_loop(terminal: &mut DefaultTerminal, view: &mut view::View) -> std::io:
         terminal.swap_buffers();
         terminal.draw(|frame| view.draw(frame))?;
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
-        let Ok(Control::Terminal(event)) = control.recv() else {
-            return Err(std::io::Error::other(
-                "the thread that reads the keys stopped",
-            ));
+        let event = match control.recv() {
+            Ok(Control::Terminal(event)) => event?,
+            Ok(Control::Signal(signal)) => return Ok(Exit::Signal(signal)),
+            Err(_) => {
+                return Err(std::io::Error::other(
+                    "the thread that reads the keys stopped",
+                ));
+            }
         };
-        let event = event?;
         let size = terminal.size()?;
         match action(&event, size) {
-            Some(Action::Quit) => return Ok(()),
+            Some(Action::Quit) => return Ok(Exit::Quit),
             Some(Action::Select(step)) => view.select_by(step, size),
             Some(Action::First) => view.select_first(size),
             Some(Action::Last) => view.select_last(size),

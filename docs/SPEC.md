@@ -52,7 +52,8 @@ stepbook [--log PATH | --no-log] FILE
 | `-h`, `--help` / `-V`, `--version` | Prints help or the version. |
 
 - The first run starts in the current directory of the stepbook process.
-- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, not a regular file, larger than 1 MB or nested too deep, `bash` not found, stdout not a terminal, terminal setup failed) or terminal error during the session, such as a failed read of the keys. Exit code 2: invalid arguments.
+- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, not a regular file, larger than 1 MB or nested too deep, `bash` not found, stdout not a terminal, workspace or terminal setup failed) or terminal error during the session, such as a failed read of the keys. Exit code 2: invalid arguments. Exit code 101: a panic, which is a bug.
+- On SIGTERM or SIGHUP, stepbook cleans up (11), then dies of the signal.
 
 ## 5. Document
 
@@ -255,6 +256,7 @@ stepbook checks at startup that `bash` is on the `PATH` and fails if it is not. 
 
 - The workspace is `$XDG_RUNTIME_DIR/stepbook-<pid>/`, or `<temp dir>/stepbook-<pid>/` if `XDG_RUNTIME_DIR` is not set.
 - The directory has mode 0700 and its files have mode 0600 (upmd issue S4, see 18).
+- If the directory exists, stepbook fails at startup: in a shared temp dir, another user could have made it.
 - stepbook deletes the workspace when it exits, including after a panic or a SIGTERM or SIGHUP.
 
 ## 9. Session state
@@ -325,7 +327,8 @@ Blocks are matched by key between the old and the new file:
   3. It writes their `END` lines to the log and quits.
 - stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide, as ratatui counts them. On a terminal set to draw them wide, such as VTE with that option or `xterm -cjk_width`, the text after such a character shifts, in code too, and a space can vanish.
 - While it runs, stepbook turns the autowrap of the terminal off: a character that the terminal draws wider than ratatui counts must not wrap into the row below and move what is there.
-- On exit, stepbook restores the terminal, autowrap and bracketed paste included, and ends a synchronized update that a failed frame left open. It also deletes the workspace. A panic hook restores the terminal too.
+- On exit, stepbook restores the terminal, autowrap and bracketed paste included, and ends a synchronized update that a failed frame left open. It also deletes the workspace. It does the same on SIGTERM and SIGHUP.
+- A panic hook restores the terminal and deletes the workspace too. Then it ends stepbook, even after a panic in another thread: the main thread would go on drawing on the restored terminal.
 
 ## 12. Log
 
@@ -520,3 +523,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | A run that cannot start fails, and "Cannot run" keeps the problems of the file (6.2): `Enter` could not run the block again before a reload | 2026-11-10 |
 | Questions show in the footer (7.4), at Kamal's choice: they hide no part of the document | 2026-11-10 |
 | Program output keeps its colors (6.3), and stepbook blinks the `●` of a running block itself (6.2) | 2026-11-10 |
+| A panic in any thread ends stepbook with exit code 101 (4, 11), and an existing workspace directory is a startup error (8.3) | 2026-11-10 |
