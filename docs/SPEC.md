@@ -63,6 +63,7 @@ stepbook [--log PATH | --no-log] FILE
 - The metadata-block extensions stay off. If the file starts with a `---` line, stepbook shows the lines up to the next `---` line as dimmed frontmatter. Without that closing line, the file has no frontmatter. A `---` anywhere else is a thematic break or a setext heading, as in CommonMark. This avoids upmd issue K1 (see 18).
 - If the file could make more than 200,000 table cells, stepbook shows its tables as text. The bound is its lines, ended by LF or by CR, times one more than the most `|` on one line. pulldown-cmark pads each short row up to the columns of its header, so 1 MB of crafted tables takes gigabytes.
 - A fenced code block with the language token `bash` or `sh` is a block. Both run with bash.
+- The code of a block ends with a line feed, even if the file ends inside the fence with no final line feed: bash runs a last `\` otherwise.
 - Other code blocks, including indented ones, are shown as code and cannot run.
 
 ### 5.2 Attributes
@@ -491,6 +492,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | In code, a tab shows a dim `⇥`, and a space that ends a row a dim `␣` (6.5), at Kamal's choice, like vim's listchars: a trailing space after `\` and a tab under `<<-` changed what bash ran, and looked like nothing | 2026-11-10 |
 | The gutter is `▐`, not `▌` (6.5), at Kamal's choice: `▌` has an ambiguous East Asian width, and a terminal that draws it wide shifts the code after it, so that a space can vanish | 2026-11-10 |
 | Code escapes `␣` and `⇥` (6.5): a literal `␣` passed for the mark of a space, and only the dim style told them apart | 2026-11-10 |
+| The code of a block ends with a line feed (5.1): in a fence left open at the end of the file, a last `\` showed the same and ran otherwise | 2026-11-10 |
 | The `↪` of a wrapped row moves into the gutter (5.3), at Kamal's choice: a code line that started with `↪ ` passed for the rest of a wrapped comment | 2026-11-09 |
 | Code escapes the regional indicators (6.5): ratatui counts one as 1 column, and the width tables that follow Emoji_Presentation count 2 | 2026-11-09 |
 | Code escapes all the Prepend characters, and a first grapheme that would join the space of the gutter (6.5) | 2026-11-09 |

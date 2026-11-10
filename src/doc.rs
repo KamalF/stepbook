@@ -318,7 +318,12 @@ impl Builder {
                 self.end_text();
             }
             TagEnd::CodeBlock => {
-                if let Some((code, info)) = self.code.take() {
+                if let Some((mut code, info)) = self.code.take() {
+                    // A fence that the file leaves open at its end, with no
+                    // final line feed: bash runs a last "\\" otherwise.
+                    if !code.is_empty() && !code.ends_with('\n') {
+                        code.push('\n');
+                    }
                     let block = block(&info, &code).map(|block| {
                         self.blocks.push(block);
                         self.blocks.len() - 1
@@ -1227,6 +1232,13 @@ mod tests {
             names("```bash [name:a]\n```\n```sh\n```\n"),
             [Some("a".into()), None]
         );
+    }
+
+    #[test]
+    fn the_code_of_a_block_open_at_the_end_of_the_file_ends_with_a_line_feed() {
+        // bash runs "x=1 \\" with no final line feed as the command "\\".
+        assert_eq!(parse("```bash\nx=1 \\").blocks[0].code, "x=1 \\\n");
+        assert_eq!(parse("```bash\n").blocks[0].code, "");
     }
 
     #[test]
