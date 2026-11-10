@@ -66,7 +66,8 @@ The test of commit 15 is ignored, because CI has no runbooks: `cargo test --rele
   - Round 10: the security reviewer found nothing. The code reviewer found 2 should-fix, fixed: a row that goes on from a wrapped line of code starts with a dim `↪ ` (Kamal's choice), and j shows the whole block when it fits.
   - Round 11: 2 should-fix, fixed: the `↪` mark moves into the gutter, where code text cannot fake it (Kamal's choice), and a property test checks it.
   - Round 12: 1 blocker and 3 should-fix, fixed: in code, a tab shows a dim `⇥`, a space that ends a row a dim `␣` (Kamal's choice, like vim's listchars), and wrapped rows of the info line get the `↪` gutter. A nit fix: an empty log path is an error. Then `cargo mutants` ran again: 535 caught, 1 timeout, and 1 equivalent mutant, now excluded.
-  - Round 13: the code reviewer found no defect. The security reviewer found 1 should-fix, fixed: property tests now check the `␣` and the `↪` of info rows, which only snapshots checked.
+  - Round 13: the code reviewer found only nits. The security reviewer found 1 should-fix, fixed: property tests now check the `␣` and the `↪` of info rows, which only snapshots checked. Nit fixes: the nesting bound reads `1-` as text, and `main::action` ignores keys on a screen that is too small, under a test.
+  - Round 14: 2 should-fix, fixed: the gutter is `▐`, not `▌` (Kamal's choice), and the space after the `│` of a quote has no style, so that a terminal that draws glyphs of ambiguous width wide cannot shift code; code escapes `␣` and `⇥`, which passed for the marks. A nit fix: the code of a block always ends with a line feed.
 
 ### Kamal's manual checklist
 
