@@ -116,11 +116,6 @@ Done when (spec 16): the integration tests of 14.3 pass, except the log tests, a
 
 The 12 commits are in, with three more: a fix, since a hangup of the terminal could abort stepbook with a core dump; a chore that ignores the pending snapshots of insta; and a fix of the wrapper, since `set -x` in a block printed the value of each exported variable at its exit. The check in tmux of commit 9: a block that runs `export` and `cd` changes what the next block sees.
 
-### After the 12 commits
-
-- `cargo mutants`: 654 caught, 18 missed, 72 timeouts and 47 unviable, in 33 minutes. The tests that wait for a run had no time limit, so a mutant that lost an event hung them: they now fail after 10 s. The misses got tests (the file descriptors of a run, a key release with a question open, the end of a row of output, the layout cache, the top of a block under output), or an exclusion with its reason in `.cargo/mutants.toml`.
-- `/simplify`, with 4 cleanup agents: 2 commits. The altitude agent found 2 bugs of the wrapper, fixed: a handler that chained `trap -p EXIT` called the wrapper's handler without end, and under `set -a` the state took `BASH_TRAPSIG` on most exit paths. The efficiency agent measured 7 MB of output 12 times faster once the rows of output are made once per frame, not once per read of the PTY.
-
 Kamal signed off the plan and these choices on 2026-11-10. The spec records them (19).
 
 - `rustix`, not `portable-pty`, opens the PTY (about 80 lines of our own). portable-pty reports a death by signal only as the text of `strsignal`, such as `Interrupt`, so `rc=130 SIGINT` would parse that text. Its kill reaches only the shell, and spec 11 sends SIGKILL to every process of the run. It also brings about 10 crates. rustix is already in the tree through crossterm.
@@ -129,10 +124,26 @@ Kamal signed off the plan and these choices on 2026-11-10. The spec records them
 - Program output keeps its colors, 256 colors and RGB included, as in a terminal. The look and feel review can change that.
 - stepbook blinks the `●` of a running block itself, every 0.5 s: terminals differ on the blink attribute.
 
+### After the 12 commits
+
+- `cargo mutants`: 654 caught, 18 missed, 72 timeouts and 47 unviable, in 33 minutes. The tests that wait for a run had no time limit, so a mutant that lost an event hung them: they now fail after 10 s. The misses got tests (the file descriptors of a run, a key release with a question open, the end of a row of output, the layout cache, the top of a block under output), or an exclusion with its reason in `.cargo/mutants.toml`.
+- `/simplify`, with 4 cleanup agents: 2 commits. The altitude agent found 2 bugs of the wrapper, fixed: a handler that chained `trap -p EXIT` called the wrapper's handler without end, and under `set -a` the state took `BASH_TRAPSIG` on most exit paths. The efficiency agent measured 7 MB of output 12 times faster once the rows of output are made once per frame, not once per read of the PTY.
+
+- Review loop, with a code reviewer and a security reviewer each round. Accepted findings per round: 6, 4, 5, 4, 1, 5, 3, all fixed, in the commits from 85eb695 to c4dcf48. Among them:
+  - Round 1: crafted output made vt100 panic, which ended stepbook (caught now); no frame during a flood of output; keys typed ahead; POSIX mode broke the wrapper; `set -x` showed the wrapper.
+  - Round 2: a run ended only when the PTY closed (now when the wrapper exits); `timeout` escaped the signals of a quit (now the whole session); REP stalled the main thread; a relative `TMPDIR`.
+  - Round 3: vt100 moved to the reader thread of each run, so that crafted output slows only its run; jobs that `timeout` or `set -m` moved got no SIGHUP; the logical `PWD`; exported arrays.
+  - Round 4: vt100 without its `std` feature (an OSC that never ends grew the memory); the runs end before the workspace goes; the wrapper writes only into its own state file.
+  - Round 5: `/proc/<pid>/stat` read as bytes.
+  - Round 6: the `tee` of the old logging header lost the end of its output to the kernel's SIGHUP (the wrapper now closes its files and waits up to 1 s); variables of 4 KiB or more go in a file; a bash without `compgen` saves no state.
+  - Round 7: the end of the wrapper runs free of the script's options and traps.
+  - Round 8: reported, not yet triaged: 2 blockers, 2 should-fix and 1 nit, listed in `~/.cache/stepbook-review/m2-review-loop-log.md` under "Round 8". The loop had not converged.
+
 ## Next
 
-1. The review loop of milestone 2, then `cargo mutants` again, the check in tmux and Kamal's checklist. Then the merge into `main`.
-2. The look and feel review, before milestone 3.
+1. The review loop of milestone 2 goes on from round 8. Its log, with the Decisions, Follow-ups and Nits deferred to give each reviewer, is `~/.cache/stepbook-review/m2-review-loop-log.md`: copy it to `<scratchpad>/review-loop/log.md` of the new session, run `/review-loop resume`, triage and fix the findings of round 8 first, then run round 9. Kamal chose to run the loop until it converges.
+2. Then `cargo mutants` again, the check in tmux and Kamal's checklist. Then the merge into `main`.
+3. The look and feel review, before milestone 3.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
 
