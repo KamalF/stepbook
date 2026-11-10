@@ -82,7 +82,9 @@ What tmux cannot show, in herdr in Ghostty:
 
 ## Next
 
-1. The next round of the review loop, until a round has nothing to fix. Then the merge of `m1-document-view` into `main`.
+1. The next round of the review loop, until a round has nothing to fix.
+2. `cargo mutants` again: the code changed after the run of round 12.
+3. The check in tmux, then the merge of `m1-document-view` into `main`.
 
 ## Open points
 

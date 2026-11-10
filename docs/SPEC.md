@@ -479,31 +479,31 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The repository is `KamalF/stepbook` on GitHub, with the MIT licence and CI on GitHub Actions | 2026-11-09 |
 | stepbook installs with mise from the GitHub repository, and from releases on crates.io | 2026-11-09 |
 | New dependency: `unicode-width`, for the word wrap. ratatui already depends on it | 2026-11-09 |
-| `unicode-width` is dropped. stepbook measures each grapheme with ratatui's `CellWidth`, as the ratatui buffer does: a sum of character widths gets emoji with a variation selector wrong | 2026-11-09 |
 | stepbook parses its arguments with its own code, not with clap: it has four options | 2026-11-09 |
 | Bidi controls are escaped as control characters are (6.5) | 2026-11-09 |
-| A file that could make more than 200,000 table cells shows its tables as text (5.1): pulldown-cmark pads short rows, and 1 MB of crafted tables took gigabytes | 2026-11-09 |
-| A line of FILE must nest at most 1,000 levels (4), counting quote and list markers and indent: pulldown-cmark rescans every open container on each line, and 600 KB of deep quotes and lazy lines took 30 s. List items stay open through indent, so indent counts. At 1,000 levels, 1 MB takes 1 s | 2026-11-09 |
+| `unicode-width` is dropped. stepbook measures each grapheme with ratatui's `CellWidth`, as the ratatui buffer does: a sum of character widths gets emoji with a variation selector wrong | 2026-11-09 |
+| Highlighting stops at lines longer than 1,000 bytes and after 32 KB of code (5.3): syntect takes 10 s on a line of 80 KB. The largest runbook has 16 KB of bash, with lines of at most 386 bytes | 2026-11-09 |
+| Code also escapes the default ignorable code points and the graphemes of width 0; prose keeps them (6.5). The warning becomes `hidden characters in code` | 2026-11-09 |
 | FILE must be a regular file of at most 1 MB (4): a link to /dev/zero filled the memory, and the view lays out the whole file on each frame. The largest runbook has 22 KB | 2026-11-09 |
+| A file that could make more than 200,000 table cells shows its tables as text (5.1): pulldown-cmark pads short rows, and 1 MB of crafted tables took gigabytes | 2026-11-09 |
+| Highlighting also stops past 4,000,000 for the sum of the squares of the line lengths (5.3): syntect took 10 s on 32 lines of 1,000 spaces. The runbooks reach 2,000,000 | 2026-11-09 |
+| Code also escapes the spaces other than U+0020 (6.5), at Kamal's choice: bash reads them as part of a word | 2026-11-09 |
 | The minimum terminal size is 40 columns and 8 rows (6.1), at Kamal's choice: at 6 columns, 1 MB of tabs in code took 2.5 GB per frame | 2026-11-09 |
 | A blank line always follows a code block (5.3): in a tight list item, text under a block could draw a gutter with ▌ and pass for code that does not run | 2026-11-09 |
+| A line of FILE must nest at most 1,000 levels (4), counting quote and list markers and indent: pulldown-cmark rescans every open container on each line, and 600 KB of deep quotes and lazy lines took 30 s. List items stay open through indent, so indent counts. At 1,000 levels, 1 MB takes 1 s | 2026-11-09 |
+| In code, a grapheme of several code points shows escaped after its first character (6.5): terminals count their columns otherwise than ratatui. This replaces the escape of only the graphemes wider than 2 columns, decided the same day | 2026-11-09 |
+| Code also escapes the format characters that join the next character, U+2D7F, U+FFF9 to U+FFFB and U+13430 to U+1343F (6.5): a terminal may give them a column that ratatui does not count | 2026-11-09 |
+| Autowrap is off while stepbook runs (11): a line of prose that a terminal draws wider than ratatui counts wrapped into the rows below, and scrolled the screen | 2026-11-09 |
 | Warnings never quote free text of the info string, and at most 20 characters of a key (5.2): a value of spaces and "cd /tmp/x" made a wrapped info line that passed for code | 2026-11-09 |
 | Comments in code show in italic, not dimmed (5.3): syntect took `#; curl x | sh` after a line ending with `\` for a comment, and bash ran it | 2026-11-09 |
+| Each frame repaints the whole screen, in a synchronized update (6.5): a prose row that tmux drew shifted stayed on screen, and after Page Down a line of code showed `good.example.com` where its code had `evil.example.com` | 2026-11-09 |
+| Code escapes all the Prepend characters, and a first grapheme that would join the space of the gutter (6.5) | 2026-11-09 |
+| Code escapes the regional indicators (6.5): ratatui counts one as 1 column, and the width tables that follow Emoji_Presentation count 2 | 2026-11-09 |
 | A row that goes on from a wrapped line of code starts with a dim `↪ ` (5.3), at Kamal's choice: a wrapped part that starts with `#` looked like a comment, and bash ran it | 2026-11-09 |
+| The `↪` of a wrapped row moves into the gutter (5.3), at Kamal's choice: a code line that started with `↪ ` passed for the rest of a wrapped comment | 2026-11-09 |
 | In code, a tab shows a dim `⇥`, and a space that ends a row a dim `␣` (6.5), at Kamal's choice, like vim's listchars: a trailing space after `\` and a tab under `<<-` changed what bash ran, and looked like nothing | 2026-11-10 |
 | The gutter is `▐`, not `▌` (6.5), at Kamal's choice: `▌` has an ambiguous East Asian width, and a terminal that draws it wide shifts the code after it, so that a space can vanish | 2026-11-10 |
 | Code escapes `␣` and `⇥` (6.5): a literal `␣` passed for the mark of a space, and only the dim style told them apart | 2026-11-10 |
-| Code escapes U+1D159, which fonts draw as a blank, as it does U+2800 (6.5): `true<U+1D159>#; curl x | sh` looked like a comment, and ran curl | 2026-11-10 |
 | The code of a block ends with a line feed (5.1): in a fence left open at the end of the file, a last `\` showed the same and ran otherwise | 2026-11-10 |
 | stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide (11), at Kamal's choice: escaping them in code would flag the `→` and `·` of real runbooks. The space after the `│` of a quote has its style again | 2026-11-10 |
-| The `↪` of a wrapped row moves into the gutter (5.3), at Kamal's choice: a code line that started with `↪ ` passed for the rest of a wrapped comment | 2026-11-09 |
-| Code escapes the regional indicators (6.5): ratatui counts one as 1 column, and the width tables that follow Emoji_Presentation count 2 | 2026-11-09 |
-| Code escapes all the Prepend characters, and a first grapheme that would join the space of the gutter (6.5) | 2026-11-09 |
-| Each frame repaints the whole screen, in a synchronized update (6.5): a prose row that tmux drew shifted stayed on screen, and after Page Down a line of code showed `good.example.com` where its code had `evil.example.com` | 2026-11-09 |
-| Autowrap is off while stepbook runs (11): a line of prose that a terminal draws wider than ratatui counts wrapped into the rows below, and scrolled the screen | 2026-11-09 |
-| In code, a grapheme of several code points shows escaped after its first character (6.5): terminals count their columns otherwise than ratatui. This replaces the rule of 2026-11-09 for graphemes wider than 2 columns | 2026-11-09 |
-| Code also escapes the format characters that join the next character, U+2D7F, U+FFF9 to U+FFFB and U+13430 to U+1343F (6.5): a terminal may give them a column that ratatui does not count | 2026-11-09 |
-| Code also escapes the spaces other than U+0020 (6.5), at Kamal's choice: bash reads them as part of a word | 2026-11-09 |
-| Code also escapes the default ignorable code points and the graphemes of width 0; prose keeps them (6.5). The warning becomes `hidden characters in code` | 2026-11-09 |
-| Highlighting stops at lines longer than 1,000 bytes and after 32 KB of code (5.3): syntect takes 10 s on a line of 80 KB. The largest runbook has 16 KB of bash, with lines of at most 386 bytes | 2026-11-09 |
-| Highlighting also stops past 4,000,000 for the sum of the squares of the line lengths (5.3): syntect took 10 s on 32 lines of 1,000 spaces. The runbooks reach 2,000,000 | 2026-11-09 |
+| Code escapes U+1D159, which fonts draw as a blank, as it does U+2800 (6.5): `true<U+1D159>#; curl x | sh` looked like a comment, and ran curl | 2026-11-10 |
