@@ -131,9 +131,8 @@ Kamal signed off the plan and these choices on 2026-11-10. The spec records them
 
 ## Next
 
-1. Build milestone 2, one commit per line of the plan.
-2. `cargo mutants`, the review loop, the check in tmux and Kamal's checklist. Then the merge into `main`.
-3. The look and feel review, before milestone 3.
+1. The review loop of milestone 2, then `cargo mutants` again, the check in tmux and Kamal's checklist. Then the merge into `main`.
+2. The look and feel review, before milestone 3.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
 
@@ -141,7 +140,8 @@ Kamal pushes later: the repository has no remote yet (see the first open point).
 
 - Before the first push, Kamal creates `KamalF/stepbook` on GitHub and adds the remote. The sandbox cannot write `.git/config`.
 - Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
-- Look and feel review, between milestones 2 and 3, once blocks show their output and state (Kamal, 2026-11-10). From the first screenshot: prose lines of about 200 characters on a wide terminal (a maximum text width of about 100 columns?); the selection in terminal cyan, which Kamal's theme draws green; the contrast between a block that runs and other code.
+- Look and feel review, between milestones 2 and 3, once blocks show their output and state (Kamal, 2026-11-10). From the first screenshot: prose lines of about 200 characters on a wide terminal (a maximum text width of about 100 columns?); the selection in terminal cyan, which Kamal's theme draws green; the contrast between a block that runs and other code. From the review of milestone 2: output rows have no mark of their own, so output can draw a fake info line and gutter in the column of a nested block.
 - Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal). Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
+- Background jobs: when a block ends, the kernel sends SIGHUP to its background jobs, as when a terminal closes, so `kubectl port-forward … &` dies with its block. Spec 8.2 says so; `nohup` or `setsid` keeps one alive. Kamal decides if a background job should outlive its block.
 - Before milestone 4 writes the log: the default log of a FILE named `x.log` is the runbook itself. Spec 4 needs a rule.
 - Claude drives stepbook in tmux from the sandbox with `scripts/tui.sh` and one steps file per check: it starts tmux, sends the keys and captures the pane. The sandbox stops the tmux server when a command ends. Checked on 2026-11-09.

@@ -129,7 +129,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 - **Sidebar:** one row per block, with a status glyph and the name. An unnamed block shows `#<n>`, where n is its position among all the blocks of the file, from 1. Its width, with its left border, is the longest name plus 4, between 12 and 30 columns. A longer name ends with `…`. The sidebar scrolls to keep the selected row visible, and it is hidden on terminals under 80 columns.
 - **Document view:** the rendered runbook. The selected block has a highlighted gutter and sidebar row.
 - **Footer:** the mode, then the keys that apply now. A notification or a question (7.4) shows in place of the keys. A notification lasts 3 seconds.
-- **Minimum size:** on a terminal smaller than 40 columns or 8 rows, stepbook shows only `Enlarge the terminal to at least 40 columns and 8 rows.`, and only the keys that quit work. Below that size, code under a list marker has no room, and the layout of a crafted file costs too much.
+- **Minimum size:** on a terminal smaller than 40 columns or 8 rows, stepbook shows only `Enlarge the terminal to at least 40 columns and 8 rows.`, and only the keys that quit work. A question (7.4) waits for a screen large enough to show it. Below that size, code under a list marker has no room, and the layout of a crafted file costs too much.
 
 ### 6.2 Block states
 
@@ -154,6 +154,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 - PTY size: the columns of the block's code, which are the text width of the document view without the prefixes and the gutter of the block, by the terminal height minus 1. It follows terminal resizes.
 - Output keeps the colors of the program, 256 colors and RGB included, as in a terminal.
 - Scrollback keeps 5,000 lines per run.
+- If the vt100 screen fails on the output of a run, the output so far is lost, and a row of the output says so. stepbook and the other runs go on.
 - A UTF-8 character that is split across two reads of the PTY shows whole (upmd issue K18, see 18).
 - When the selected running block switches to the alternate screen (vim, less, top), stepbook opens the full-screen view in input mode. When the program leaves the alternate screen, stepbook returns to the document view. If the block is not selected, its info line shows `full-screen program, press o`.
 - When the selected block's output grows past the bottom of the view, the view scrolls to keep its last row visible.
@@ -197,7 +198,7 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 | `↓`, `j` / `↑`, `k` | Select the next / previous block, and scroll so that the block and the paragraph above it are visible. If they do not fit, the whole block shows, with the end of the paragraph. A block taller than the view shows from its paragraph, or from its info line. |
 | `Home` / `End` | Select the first / last block. Without blocks, scroll to the top / bottom. |
 | `PageDown` / `PageUp` | Scroll one page. The selection moves to the first block whose info line is in view, else to the first block in view. `PageDown` never moves it to an earlier block, and `PageUp` never to a later one. |
-| `Enter` | Run the selected block (8.1). If `j` or `k` would scroll to show the block, `Enter` only does that scroll: it never runs code that is off the screen, such as after the startup or a resize. |
+| `Enter` | Run the selected block (8.1). If `j` or `k` would scroll to show the block, `Enter` only does that scroll: it never runs code that is off the screen, such as after the startup or a resize. `Enter` and the answer to a question act on the screen as drawn: after other events, such as keys typed ahead, they wait for the next frame. |
 | `i` | Enter input mode, if the selected block is running. |
 | `o` | Open the full-screen view of the selected block, if it has run. |
 | `ctrl-r` | Reload the file now. |
@@ -254,6 +255,8 @@ Several blocks can run at the same time. Each one runs in its own PTY.
 6. The run ends when the process exits and its output has been read. Its exit code is the shell's exit code. A shell killed by signal N reports 128+N.
 
 stepbook checks at startup that `bash` is on the `PATH` and fails if it is not. There is no timeout on runs.
+
+When the wrapper ends, the kernel sends SIGHUP to the processes of the run, background jobs included, as when a terminal closes. `nohup` or `setsid` keeps one alive.
 
 ### 8.3 Workspace
 
@@ -383,7 +386,7 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 - Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `rustix` (the PTY and the signals to a process group), `vt100`, `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
 - The main thread owns all state. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events.
 - Control events (keys, paste, resize, signals, file change) go to their own channel. The loop handles them before pending output, so keys stay responsive while a block prints a lot.
-- After output, the loop reads the events of the next 16 ms before it draws: a program that prints a lot redraws the view at most about 60 times a second.
+- After output, the loop reads the events of the next 16 ms before it draws: a program that prints a lot redraws the view at most about 60 times a second, and at least as often, since the frame ends after 16 ms even while output keeps coming.
 - Each run sends its output, then its exit status, through its own bounded channel, so that the end of a run never comes before its output. A slow UI slows the program, and no output is lost.
 - The channel of a run goes away with the run, so that a message from an old run never reaches a new run of the same block (upmd issue K5, see 18).
 

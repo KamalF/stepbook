@@ -1,6 +1,8 @@
 //! The terminal of a run: a vt100 screen, and its rows as lines of the
 //! view (spec 6.3).
+use std::cell::Cell;
 use std::num::NonZeroU16;
+use std::panic::AssertUnwindSafe;
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
@@ -13,65 +15,111 @@ const SCROLLBACK: usize = 5_000;
 /// The rows of output under a block (spec 6.3).
 const OUTPUT_ROWS: usize = 15;
 
+/// What the terminal of a run shows after vt100 failed on its output.
+const LOST: &[u8] = b"[stepbook: the terminal of this run failed, and lost the output above]\r\n";
+
+thread_local! {
+    /// Whether vt100 runs on this thread, under `catch_unwind`.
+    static IN_VT100: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Whether a panic comes from vt100, which `Terminal` catches: the panic
+/// hook must then neither print nor end stepbook.
+pub fn in_vt100() -> bool {
+    IN_VT100.get()
+}
+
 /// The screen of a run. Program output reaches the outer terminal only
 /// through it, as text and styles: never as escape sequences (spec 6.4).
 pub struct Terminal {
     parser: vt100::Parser,
+    columns: u16,
+    rows: u16,
 }
 
 fn size(n: u16) -> NonZeroU16 {
     NonZeroU16::new(n).unwrap_or(NonZeroU16::MIN)
 }
 
+fn parser(columns: u16, rows: u16) -> vt100::Parser {
+    vt100::Parser::new(size(rows), size(columns), SCROLLBACK)
+}
+
 impl Terminal {
     pub fn new(columns: u16, rows: u16) -> Terminal {
         Terminal {
-            parser: vt100::Parser::new(size(rows), size(columns), SCROLLBACK),
+            parser: parser(columns, rows),
+            columns,
+            rows,
         }
+    }
+
+    /// Runs `f` on the parser. vt100 can panic on the output of a run: 18
+    /// crafted bytes made it unwrap a None. The panic must not end stepbook
+    /// and the other runs: the terminal starts again, with a row that says
+    /// so, and `f` gives nothing.
+    fn guarded<T>(&mut self, f: impl FnOnce(&mut vt100::Parser) -> T) -> Option<T> {
+        IN_VT100.set(true);
+        let result = std::panic::catch_unwind(AssertUnwindSafe(|| f(&mut self.parser)));
+        IN_VT100.set(false);
+        if result.is_err() {
+            self.parser = parser(self.columns, self.rows);
+            self.parser.process(LOST);
+        }
+        result.ok()
     }
 
     /// Reads the output of a run. vt100 keeps the start of a UTF-8
     /// character that ends in the next read (upmd issue K18).
     pub fn process(&mut self, bytes: &[u8]) {
-        self.parser.process(bytes);
+        self.guarded(|parser| parser.process(bytes));
     }
 
     pub fn resize(&mut self, columns: u16, rows: u16) {
-        self.parser.set_size(size(rows), size(columns));
+        (self.columns, self.rows) = (columns, rows);
+        self.guarded(|parser| parser.set_size(size(rows), size(columns)));
     }
 
     /// The last `OUTPUT_ROWS` rows of the terminal, scrollback included,
     /// without the blank rows at the end. If `cursor`, the rows go down to
     /// the row of the cursor at least: a running program writes there next.
     pub fn last_rows(&mut self, cursor: bool) -> Vec<Line<'static>> {
-        let screen = self.parser.screen();
-        let (rows, columns) = screen.size();
-        let (rows, columns) = (rows.get(), columns.get());
-        let mut end = (0..rows)
-            .rev()
-            .find(|&row| (0..columns).any(|column| screen.cell(row, column).is_some_and(shows)))
-            .map_or(0, |row| row + 1);
-        if cursor {
-            end = end.max(screen.cursor_position().0 + 1);
+        match self.guarded(|parser| last_rows(parser, cursor)) {
+            Some(rows) => rows,
+            None => last_rows(&mut self.parser, cursor),
         }
-        let start = end.saturating_sub(OUTPUT_ROWS as u16);
-        let mut lines: Vec<_> = (start..end).map(|row| line(screen, row, columns)).collect();
-        if lines.len() < OUTPUT_ROWS {
-            // The scrollback shows above the screen. With an offset of n,
-            // the first row of the screen shows the n-th line above it.
-            let screen = self.parser.screen_mut();
-            let above = (OUTPUT_ROWS - lines.len()).min(screen.scrollback_len());
-            let mut all = Vec::with_capacity(OUTPUT_ROWS);
-            for offset in (1..=above).rev() {
-                screen.set_scrollback(offset);
-                all.push(line(screen, 0, columns));
-            }
-            screen.set_scrollback(0);
-            all.append(&mut lines);
-            lines = all;
-        }
-        lines
     }
+}
+
+/// The last `OUTPUT_ROWS` rows of the terminal: see `Terminal::last_rows`.
+fn last_rows(parser: &mut vt100::Parser, cursor: bool) -> Vec<Line<'static>> {
+    let screen = parser.screen();
+    let (rows, columns) = screen.size();
+    let (rows, columns) = (rows.get(), columns.get());
+    let mut end = (0..rows)
+        .rev()
+        .find(|&row| (0..columns).any(|column| screen.cell(row, column).is_some_and(shows)))
+        .map_or(0, |row| row + 1);
+    if cursor {
+        end = end.max(screen.cursor_position().0 + 1);
+    }
+    let start = end.saturating_sub(OUTPUT_ROWS as u16);
+    let mut lines: Vec<_> = (start..end).map(|row| line(screen, row, columns)).collect();
+    if lines.len() < OUTPUT_ROWS {
+        // The scrollback shows above the screen. With an offset of n,
+        // the first row of the screen shows the n-th line above it.
+        let screen = parser.screen_mut();
+        let above = (OUTPUT_ROWS - lines.len()).min(screen.scrollback_len());
+        let mut all = Vec::with_capacity(OUTPUT_ROWS);
+        for offset in (1..=above).rev() {
+            screen.set_scrollback(offset);
+            all.push(line(screen, 0, columns));
+        }
+        screen.set_scrollback(0);
+        all.append(&mut lines);
+        lines = all;
+    }
+    lines
 }
 
 /// Whether a cell shows: text, or a background.
@@ -252,7 +300,57 @@ mod tests {
         assert_eq!(rows(&mut terminal, false), "0123456789\nabc");
     }
 
+    #[test]
+    fn a_failure_of_vt100_loses_the_output_and_ends_nothing() {
+        // vt100 0.18.1 unwraps a None on these 18 bytes, at any size.
+        let mut terminal = after(b"a\r\n", 80, 24);
+        terminal.process(b"\x1b[999;999H8\xef\xb8\x8f\x1b[A\x1b[999Gx");
+        terminal.process(b"b");
+        let lost = String::from_utf8_lossy(LOST).trim_end().to_string();
+        assert_eq!(rows(&mut terminal, false), format!("{lost}\nb"));
+    }
+
+    /// A read of a run, or a resize of its PTY.
+    #[derive(Clone, Debug)]
+    enum Step {
+        Read(Vec<u8>),
+        Resize(u16, u16),
+    }
+
+    fn steps() -> impl Strategy<Value = Vec<Step>> {
+        // Escape sequences that move the cursor and widen characters make
+        // the failures of vt100 likely.
+        let pieces = prop_oneof![
+            prop::collection::vec(any::<u8>(), 0..20),
+            Just(b"\x1b[999;999H".to_vec()),
+            Just(b"\x1b[A".to_vec()),
+            Just(b"\x1b[999G".to_vec()),
+            Just("\u{fe0f}".as_bytes().to_vec()),
+            Just("\u{4e2d}".as_bytes().to_vec()),
+            Just(b"8".to_vec()),
+        ];
+        let read = prop::collection::vec(pieces, 1..8).prop_map(|p| Step::Read(p.concat()));
+        let resize = (0..12u16, 0..6u16).prop_map(|(c, r)| Step::Resize(c, r));
+        prop::collection::vec(prop_oneof![3 => read, 1 => resize], 0..12)
+    }
+
     proptest! {
+        // A panic of vt100 that escapes would end stepbook and its runs.
+        #[test]
+        fn no_output_or_resize_makes_the_terminal_panic(
+            steps in steps(),
+            (columns, rows) in (1..12u16, 1..6u16),
+        ) {
+            let mut terminal = Terminal::new(columns, rows);
+            for step in steps {
+                match step {
+                    Step::Read(bytes) => terminal.process(&bytes),
+                    Step::Resize(columns, rows) => terminal.resize(columns, rows),
+                }
+                terminal.last_rows(true);
+            }
+        }
+
         #[test]
         fn no_control_character_of_a_run_reaches_the_view(
             reads in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..40), 0..8),

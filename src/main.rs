@@ -222,13 +222,18 @@ fn open(args: &Args) -> Result<Exit, String> {
 ///
 /// The panic hook deletes the workspace, restores the terminal, and ends
 /// stepbook: after a panic in another thread, the main thread would go on
-/// drawing on the restored terminal. stepbook sets up the terminal itself:
+/// drawing on the restored terminal. A panic of vt100 is the exception:
+/// term.rs catches it. stepbook sets up the terminal itself:
 /// the panic hook of ratatui reports a failed restore with eprintln, which
 /// panics again when the terminal is gone, and the process aborts.
 fn set_up_terminal(workspace: &Path) -> std::io::Result<DefaultTerminal> {
     let default_hook = std::panic::take_hook();
     let workspace = workspace.to_owned();
     std::panic::set_hook(Box::new(move |info| {
+        // term.rs catches a panic of vt100, and the run goes on.
+        if term::in_vt100() {
+            return;
+        }
         let _ = std::fs::remove_dir_all(&workspace);
         restore_terminal();
         default_hook(info);
@@ -452,7 +457,9 @@ impl App {
         }
         if let Some(question) = self.question.take() {
             match event {
-                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                // On a screen too small for the view, the question does not
+                // show, and no key answers it (spec 6.1).
+                Event::Key(key) if key.kind == KeyEventKind::Press && !view::too_small(size) => {
                     self.view.question = None;
                     let yes = key.code == KeyCode::Char('y') && key.modifiers.is_empty();
                     match question {
@@ -490,6 +497,16 @@ impl App {
             }
         }
         None
+    }
+
+    /// Whether a key starts or stops runs: `Enter`, or the answer to a
+    /// question.
+    fn acts(&self, event: &Event, size: Size) -> bool {
+        let Event::Key(key) = event else {
+            return false;
+        };
+        let run = action(event, size) == Some(Action::Run);
+        key.kind == KeyEventKind::Press && (self.question.is_some() || run)
     }
 
     /// What `Enter` does on block `i`, by its state (spec 8.1).
@@ -646,6 +663,8 @@ fn event_loop(
     control: &Receiver<Control>,
 ) -> std::io::Result<Exit> {
     let mut size = terminal.size()?;
+    // A key that waits for the next frame.
+    let mut waiting = None;
     loop {
         app.refresh(size);
         // A terminal can draw a grapheme of prose wider than ratatui counts
@@ -663,16 +682,28 @@ fn event_loop(
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
         // The events of one frame: after a key, those that wait; after
         // output, those of the next FRAME. A deadline of the app also ends
-        // the frame.
+        // the frame. crossbeam returns a ready event even after the
+        // deadline, so the loop checks the end of the frame itself: else a
+        // block that prints without a pause would let no frame end.
         let mut frame = None;
+        if let Some(event) = waiting.take() {
+            if let Some(exit) = app.handle(&event, size) {
+                return Ok(exit);
+            }
+            frame = Some(Instant::now());
+        }
         loop {
+            app.expire();
+            if app.stopped() {
+                return Ok(Exit::Quit);
+            }
+            if frame.is_some_and(|frame| Instant::now() >= frame) {
+                break;
+            }
             let deadline = [frame, app.deadline()].into_iter().flatten().min();
             let Some(incoming) = app.next(control, deadline) else {
-                app.expire();
-                if app.stopped() {
-                    return Ok(Exit::Quit);
-                }
-                break;
+                frame.get_or_insert(Instant::now());
+                continue;
             };
             let Ok(incoming) = incoming else {
                 let error = "the thread that reads the keys stopped";
@@ -683,6 +714,13 @@ fn event_loop(
                     let event = event?;
                     if let Event::Resize(columns, rows) = event {
                         size = Size::new(columns, rows);
+                    }
+                    // Such a key acts on what the screen shows: after other
+                    // events, it waits for the frame that shows them (spec
+                    // 7.1).
+                    if frame.is_some() && app.acts(&event, size) {
+                        waiting = Some(event);
+                        break;
                     }
                     if let Some(exit) = app.handle(&event, size) {
                         return Ok(exit);
@@ -699,9 +737,6 @@ fn event_loop(
                     FRAME
                 }
             };
-            if app.stopped() {
-                return Ok(Exit::Quit);
-            }
             frame.get_or_insert(Instant::now() + wait);
         }
     }
@@ -920,6 +955,10 @@ mod tests {
         // A resize is no answer, and every key but y says no.
         assert_eq!(app.handle(&Event::Resize(80, 24), SIZE), None);
         assert!(app.question.is_some());
+        // A screen too small for the view does not show the question.
+        let y = Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert_eq!(app.handle(&y, Size::new(30, 6)), None);
+        assert!(app.question.is_some() && !running(&app));
         key(&mut app, KeyCode::Enter);
         assert_eq!(
             (app.question.as_ref(), app.view.question.as_ref()),
@@ -947,6 +986,21 @@ mod tests {
         release.kind = KeyEventKind::Release;
         assert_eq!(app.handle(&Event::Key(release), SIZE), None);
         assert_eq!(app.question, Some(Question::Rerun(0)));
+    }
+
+    #[test]
+    fn enter_and_the_answers_act_on_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\ntrue\n```\n", tmp.path());
+        let press = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        assert!(app.acts(&press(KeyCode::Enter), SIZE));
+        assert!(!app.acts(&press(KeyCode::Char('j')), SIZE));
+        assert!(!app.acts(&Event::Resize(80, 24), SIZE));
+        app.question = Some(Question::Quit);
+        assert!(app.acts(&press(KeyCode::Char('j')), SIZE));
+        let mut release = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        assert!(!app.acts(&Event::Key(release), SIZE));
     }
 
     #[test]
