@@ -8,6 +8,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use crossbeam_channel::Sender;
 use ratatui::DefaultTerminal;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
@@ -219,7 +220,26 @@ fn read_runbook(path: &Path) -> Result<String, String> {
     Ok(text)
 }
 
+/// What the event loop reacts to. The main thread owns all the state,
+/// and the other threads only send these (spec 13).
+enum Control {
+    Terminal(std::io::Result<Event>),
+}
+
+/// Sends the terminal events, until the first error.
+fn read_terminal(control: Sender<Control>) {
+    loop {
+        let event = event::read();
+        let failed = event.is_err();
+        if control.send(Control::Terminal(event)).is_err() || failed {
+            return;
+        }
+    }
+}
+
 fn event_loop(terminal: &mut DefaultTerminal, view: &mut view::View) -> std::io::Result<()> {
+    let (sender, control) = crossbeam_channel::unbounded();
+    std::thread::spawn(move || read_terminal(sender));
     loop {
         // A terminal can draw a grapheme of prose wider than ratatui counts
         // it, and shift the rest of its row. ratatui sends only the cells
@@ -234,7 +254,12 @@ fn event_loop(terminal: &mut DefaultTerminal, view: &mut view::View) -> std::io:
         terminal.swap_buffers();
         terminal.draw(|frame| view.draw(frame))?;
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
-        let event = event::read()?;
+        let Ok(Control::Terminal(event)) = control.recv() else {
+            return Err(std::io::Error::other(
+                "the thread that reads the keys stopped",
+            ));
+        };
+        let event = event?;
         let size = terminal.size()?;
         match action(&event, size) {
             Some(Action::Quit) => return Ok(()),
