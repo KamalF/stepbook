@@ -254,13 +254,13 @@ Several blocks can run at the same time. Each one runs in its own PTY.
    - `STEPBOOK_LOG`: the absolute path of the log, or empty
    - `STEPBOOK_BLOCK`: the block name
 5. The wrapper sources the block script in its own shell, so `export`, `cd` and shell options work as in a terminal.
-6. The run ends when the wrapper exits, once stepbook has read the output that waits in the PTY. A background job that keeps the PTY open, such as one under `setsid`, does not hold the block in "running", nor its state. The exit code of the run is the shell's exit code. A shell killed by signal N reports 128+N.
+6. The run ends when the wrapper exits, once stepbook has read the output that waits in the PTY. A background job, which can keep the PTY open, does not hold the block in "running", nor its state. The exit code of the run is the shell's exit code. A shell killed by signal N reports 128+N.
 
 stepbook checks at startup that `bash` is on the `PATH` and fails if it is not. There is no timeout on runs.
 
-Before the wrapper exits, it closes its files and waits up to 1 s for its children to end: the kernel sends SIGHUP to the process group in the foreground when the wrapper exits, and a process substitution, such as the `tee` of the old logging header (12.3), would lose the end of its output. A background job, which keeps the files open, costs that second. It does so after the script's `EXIT` handler, or at the `exit` of that handler, whatever the options and traps of the script. A failure under `set -e` in the handler ends the shell at once: the wrapper then neither saves the state a second time nor waits.
+Before the wrapper exits, it closes its files and waits up to 1 s for its children to end: when the run ends, a process substitution, such as the `tee` of the old logging header (12.3), would lose the end of its output. A background job, which keeps the files open, costs that second. It does so after the script's `EXIT` handler, or at the `exit` of that handler, whatever the options and traps of the script. A failure under `set -e` in the handler ends the shell at once: the wrapper then neither saves the state a second time nor waits.
 
-When the wrapper ends, stepbook sends SIGHUP to the processes left in the session of the run, background jobs included, as when a terminal closes. The kernel sends it only to the process group in the foreground, and `timeout` or `set -m` give a job a group of its own. `nohup` or `setsid` keeps a job alive.
+A background job, such as `kubectl port-forward … &`, outlives its block, as in a terminal, until stepbook ends (11). When the wrapper exits, the kernel sends SIGHUP to the process group in the foreground of the PTY, which holds the jobs of the script. So, after its wait, the wrapper hands the PTY to a process group that has ended: a `bash -m` takes it, then dies of SIGKILL before it can give it back. After its block, a job's output goes nowhere: stepbook reads it and drops it. A block that replaces its shell with `exec`, or that fails under `set -e` in its `EXIT` handler, skips that step: its jobs get SIGHUP. A job that left the session with `setsid` outlives stepbook too.
 
 ### 8.3 Workspace
 
@@ -341,7 +341,7 @@ Blocks are matched by key between the old and the new file:
 
 ## 11. Quit
 
-- If no run is active, `q` and `ctrl-c` quit at once.
+- If no run is active, `q` and `ctrl-c` quit at once. The background jobs of the blocks that have ended do not count: they end with stepbook.
 - If runs are active, stepbook asks `N blocks running. Stop them and quit? (y/N)`, or `1 block running. Stop it and quit? (y/N)`. On `y`:
   1. It sends SIGHUP to the processes of each run, as the close of its PTY would: those of the session of its wrapper. `timeout` and `set -m` give a child a process group of its own, in the same session. A process that left the session with `setsid` does not get it. The footer says `stopping the blocks that run`, and keys do nothing.
   2. It waits up to 2 seconds, then sends SIGKILL to the processes of the runs still alive.
@@ -349,7 +349,7 @@ Blocks are matched by key between the old and the new file:
 - stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide, as ratatui counts them. On a terminal set to draw them wide, such as VTE with that option or `xterm -cjk_width`, the text after such a character shifts, in code too, and a space can vanish.
 - While it runs, stepbook turns the autowrap of the terminal off: a character that the terminal draws wider than ratatui counts must not wrap into the row below and move what is there.
 - On exit, stepbook restores the terminal, autowrap and bracketed paste included, and ends a synchronized update that a failed frame left open. It also deletes the workspace. It does the same on SIGTERM and SIGHUP.
-- Whenever stepbook ends, after a signal, a panic or a terminal error too, it sends SIGHUP to the processes of the runs that have not ended, those of the session of each wrapper that it spawned: the close of a PTY reaches only its process group in the foreground. After up to 0.2 s, it sends SIGKILL to those left, then deletes the workspace: a wrapper that outlived stepbook would write its state where the workspace was.
+- Whenever stepbook ends, after a signal, a panic or a terminal error too, it sends SIGHUP to the processes of the runs that have not ended, and to the background jobs of those that have: the processes of the session of each wrapper that it spawned. The close of a PTY reaches only its process group in the foreground. After up to 0.2 s, it sends SIGKILL to those left, then deletes the workspace: a wrapper that outlived stepbook would write its state where the workspace was.
 - A panic hook restores the terminal and deletes the workspace too. Then it ends stepbook, even after a panic in another thread: the main thread would go on drawing on the restored terminal.
 
 ## 12. Log
@@ -548,3 +548,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | Program output keeps its colors (6.3), and stepbook blinks the `●` of a running block itself (6.2) | 2026-11-10 |
 | A panic in any thread ends stepbook with exit code 101 (4, 11), and an existing workspace directory is a startup error (8.3) | 2026-11-10 |
 | The output of a run does not show its C1 characters, U+FFFD and invalid bytes (6.5): the vt100 screen drops them, and has no hook to draw them | 2026-11-10 |
+| A background job outlives its block, until stepbook ends (8.2, 11), at Kamal's choice: `kubectl port-forward … &` died with its block, and needed `nohup` or `setsid` | 2026-11-10 |

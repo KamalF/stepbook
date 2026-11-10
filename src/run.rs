@@ -6,7 +6,7 @@ use std::io::{Read, Write};
 use std::os::fd::{BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use std::os::unix::process::{CommandExt, ExitStatusExt};
+use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use crossbeam_channel::{Receiver, Sender};
 use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::fs::{CWD, FileType, Mode, OFlags};
-use rustix::process::{Pid, PidfdFlags, Signal};
+use rustix::process::{Pid, PidfdFlags, Signal, WaitId, WaitIdOptions};
 use rustix::pty::OpenptFlags;
 use rustix::termios::Winsize;
 
@@ -269,9 +269,10 @@ const READ_SIZE: usize = 32 * 1024;
 /// (MAX_ARG_STRLEN) fails the start of every run.
 const LARGE: usize = 4096;
 
-/// The wrappers that have not ended, which lead the sessions of the runs.
-/// Children of stepbook that came with an exec, such as a process that a
-/// launcher started before "exec stepbook", are not runs.
+/// The wrappers not reaped yet, which lead the sessions of the runs: those
+/// that have not ended, and those whose background jobs go on. Children of
+/// stepbook that came with an exec, such as a process that a launcher
+/// started before "exec stepbook", are not runs.
 static RUNS: Mutex<Vec<Pid>> = Mutex::new(Vec::new());
 
 impl Session {
@@ -450,7 +451,7 @@ impl Run {
     /// the wrapper. timeout and set -m put their children in process groups
     /// of their own, but in the same session. A process that has left the
     /// session, with setsid, does not get it: that is the way to keep a job
-    /// alive. The run may have ended already.
+    /// alive after stepbook. The run may have ended already.
     pub fn signal(&self, signal: Signal) {
         for pid in session_processes(self.pid) {
             let _ = rustix::process::kill_process(pid, signal);
@@ -516,19 +517,25 @@ fn session_processes(leader: Pid) -> Vec<Pid> {
     members.map(|p| p.pid).collect()
 }
 
-/// Ends the runs that have not ended, before stepbook ends and deletes
-/// the workspace: the sessions of the wrappers in `RUNS`.
-/// SIGHUP first, as the close of their PTYs would, then SIGKILL after up to
-/// 0.2 s. The close itself reaches only the wrapper and the process group in
-/// the foreground: timeout and set -m give a child a process group of its
-/// own. A wrapper that outlived stepbook would write its state where the
-/// workspace was, maybe in a directory that another user made there.
+/// Ends the runs that have not ended, and the background jobs of those that
+/// have, before stepbook ends and deletes the workspace: the sessions of the
+/// wrappers in `RUNS`. A wrapper that outlived stepbook would write its
+/// state where the workspace was, maybe in a directory that another user
+/// made there.
 pub fn end_runs() {
     // Held only around a push or a retain, which cannot panic: the lock
     // cannot block for long, nor be held by the thread of a panic.
     let runs: Vec<i32> = (RUNS.lock().unwrap_or_else(PoisonError::into_inner).iter())
         .map(|pid| pid.as_raw_pid())
         .collect();
+    end_sessions(&runs);
+}
+
+/// Sends SIGHUP to the processes of the sessions `runs`, as the close of
+/// their PTYs would, then SIGKILL after up to 0.2 s. The close itself
+/// reaches only the wrapper and the process group in the foreground:
+/// timeout and set -m give a child a process group of its own.
+fn end_sessions(runs: &[i32]) {
     let members = || {
         let alive = (processes().into_iter()).filter(|p| !p.zombie && runs.contains(&p.session));
         alive.map(|p| p.pid).collect::<Vec<_>>()
@@ -604,29 +611,69 @@ fn read_run(reader: File, mut child: Child, sender: Sender<Event>, screen: &term
         }
     }
     // The PTY can end first: a script that moves its stdio off the PTY goes
-    // on with no terminal. The run ends when the wrapper exits.
-    if let Some(exit) = &exit {
-        let mut fds = [PollFd::new(exit, PollFlags::IN)];
-        while rustix::event::poll(&mut fds, None) == Err(rustix::io::Errno::INTR) {}
-        // As when a terminal closes, the processes that the run leaves in
-        // its session get SIGHUP, background jobs included. The kernel
-        // sends it only to the process group in the foreground. The
-        // wrapper, not reaped yet, keeps its pid, so that no other session
-        // can take it.
-        for pid in session_processes(Pid::from_child(&child)) {
-            let _ = rustix::process::kill_process(pid, Signal::HUP);
-        }
-    }
-    let status = child.wait().expect("the child of a run is waited for once");
+    // on with no terminal. The run ends when the wrapper exits. NOWAIT
+    // leaves the wrapper a zombie, for wait_for_jobs.
     let pid = Pid::from_child(&child);
+    let status = loop {
+        let options = WaitIdOptions::EXITED | WaitIdOptions::NOWAIT;
+        match rustix::process::waitid(WaitId::Pid(pid), options) {
+            Ok(Some(status)) => break status,
+            Ok(None) | Err(rustix::io::Errno::INTR) => {}
+            Err(e) => panic!("cannot wait for the wrapper of a run: {e}"),
+        }
+    };
+    let status = match status.terminating_signal() {
+        Some(signal) => Status::Signal(signal),
+        None => Status::Code(status.exit_status().unwrap_or(0)),
+    };
+    let _ = sender.send(Event::Exit(status));
+    wait_for_jobs(&reader, pid, &mut buffer);
+    let _ = child.wait();
     RUNS.lock()
         .unwrap_or_else(PoisonError::into_inner)
         .retain(|&run| run != pid);
-    let status = match status.code() {
-        Some(code) => Status::Code(code),
-        None => Status::Signal(status.signal().unwrap_or(0)),
+}
+
+/// How often `wait_for_jobs` checks the session of a run.
+const JOB_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
+
+/// Waits while the background jobs of a run go on: they outlive their
+/// run, until stepbook ends (spec 8.2, 11). Meanwhile, it reads their
+/// output and drops it: once its buffer is full, a write to a PTY that
+/// nobody reads would block. The wrapper stays a zombie until then: its pid
+/// names their session, and no other session can take it before
+/// `end_runs`.
+fn wait_for_jobs(reader: &File, wrapper: Pid, buffer: &mut [u8]) {
+    let mut open = true;
+    let jobs = || {
+        let session = |p: &Process| p.session == wrapper.as_raw_pid() && !p.zombie;
+        processes().iter().any(session)
     };
-    let _ = sender.send(Event::Exit(status));
+    while jobs() {
+        let deadline = std::time::Instant::now() + JOB_CHECK;
+        loop {
+            let left = deadline.saturating_duration_since(std::time::Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            if !open {
+                std::thread::sleep(left);
+                break;
+            }
+            let timeout = Timespec::try_from(left).unwrap_or_default();
+            let mut fds = [PollFd::new(reader, PollFlags::IN)];
+            match rustix::event::poll(&mut fds, Some(&timeout)) {
+                Ok(0) | Err(rustix::io::Errno::INTR) => {}
+                // Once the jobs close the PTY, a read fails with EIO.
+                Ok(_) => match (&*reader).read(buffer) {
+                    Ok(0) => open = false,
+                    Ok(_) => {}
+                    Err(e) => open = e.kind() == std::io::ErrorKind::Interrupted,
+                },
+                Err(_) => open = false,
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -1450,18 +1497,45 @@ mod tests {
     }
 
     #[test]
-    fn the_jobs_of_a_run_get_sighup_when_it_ends() {
+    fn a_background_job_outlives_its_run_until_stepbook_ends() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
-        // timeout puts itself and its child in a process group of their own,
-        // which the kernel does not hang up.
-        let code = "timeout 30 sleep 30 &\nsleep 0.1\necho started\n";
+        // The job is in the process group of the wrapper, which the kernel
+        // hangs up when the wrapper exits. It writes after the run, more
+        // than the buffer of a PTY holds.
+        let code = "(sleep 1.2; seq 1 200000; echo $? > \"$PWD/seq\"; sleep 30) &\necho started\n";
         let run = session.start(code, "check", 80, 24).unwrap();
         assert_eq!(wait(&run), ("started\n".into(), Status::Code(0)));
+        let seq = tmp.path().join("seq");
         let deadline = std::time::Instant::now() + WAIT;
-        while !session_of(&run).is_empty() && std::time::Instant::now() < deadline {
+        while !fs::read_to_string(&seq).is_ok_and(|s| s.ends_with('\n')) {
+            assert!(std::time::Instant::now() < deadline);
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
+        assert_eq!(fs::read_to_string(&seq).unwrap(), "0\n");
+        assert!(RUNS.lock().unwrap().contains(&run.pid));
+        end_sessions(&[run.pid.as_raw_pid()]);
+        assert_eq!(session_of(&run), []);
+        // The reader reaps the wrapper once its jobs end.
+        while RUNS.lock().unwrap().contains(&run.pid) {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn a_run_ends_when_the_terminal_is_in_the_hands_of_another_group() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        // A bash with job control that dies leaves the PTY to its group: the
+        // wrapper must not wait for its turn.
+        let code = "(exec -c /proc/self/exe -m -c 'kill -KILL $$') 2>/dev/tty\n\
+            sleep 30 &\necho started\n";
+        let run = session.start(code, "check", 80, 24).unwrap();
+        let (output, status) = wait(&run);
+        assert_eq!(status, Status::Code(0));
+        assert!(output.ends_with("started\n"), "{output}");
+        end_sessions(&[run.pid.as_raw_pid()]);
         assert_eq!(session_of(&run), []);
     }
 

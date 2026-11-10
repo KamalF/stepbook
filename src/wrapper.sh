@@ -93,11 +93,11 @@ __stepbook_status() {
 }
 
 # The process substitutions of the script, such as the tee of the old
-# logging header (spec 12.3), can still have output to write. The kernel
-# sends SIGHUP to them when the wrapper exits, since it leads the session
-# of the PTY. So the wrapper first closes its files, so that they read the
-# end of their input, and waits up to 1 s for its children to end. A
-# background job, which keeps them open, costs that second.
+# logging header (spec 12.3), can still have output to write: the run ends
+# when the wrapper exits. So the wrapper first closes its files, so that
+# they read the end of their input, and waits up to 1 s for its children to
+# end. A background job, which keeps them open, costs that second. Then the
+# children left keep running (spec 8.2).
 #
 # The shell exits right after, so the drain drops the options and the
 # traps of the script, which would act on its lines: set -f would keep the
@@ -127,6 +127,24 @@ __stepbook_drain() {
         read -r -t 0.05 -u "$__stepbook_fd" || :
         __stepbook_tries=$((__stepbook_tries - 1))
     done
+    __stepbook_keep_jobs
+}
+
+# When the wrapper exits, the kernel sends SIGHUP to the process group in
+# the foreground of its PTY, since the wrapper leads the session: that is
+# the group of the wrapper, background jobs included. So the wrapper hands
+# the PTY to a group that is gone by then: a bash with job control takes it
+# for a group of its own, and dies before it can give it back. Only while
+# the group of the wrapper has the PTY: otherwise that bash would stop the
+# group with SIGTTIN, to wait for its turn.
+__stepbook_keep_jobs() {
+    local __stepbook_stat
+    read -r __stepbook_stat <"/proc/$BASHPID/stat" || return 0
+    # After the name of the program: state, ppid, pgrp, session, tty, and
+    # the group in the foreground of the tty.
+    [[ ${__stepbook_stat##*) } =~ ^[^\ ]+\ [0-9]+\ ([0-9]+)\ [0-9]+\ [0-9]+\ ([0-9]+)\  ]] || return 0
+    [ "${BASH_REMATCH[1]}" = "${BASH_REMATCH[2]}" ] || return 0
+    (exec -c /proc/self/exe -m -c 'kill -KILL $$') 2>/dev/tty
 }
 
 # While the handler of the script runs: its exit would skip the second
