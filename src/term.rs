@@ -229,6 +229,14 @@ mod tests {
     }
 
     #[test]
+    fn a_row_ends_at_its_last_text_or_background() {
+        let mut terminal = after(b"a\r\nb\x1b[41m  \x1b[0m", 80, 24);
+        let rows = terminal.last_rows(OUTPUT_ROWS, false);
+        let widths: Vec<_> = rows.iter().map(Line::width).collect();
+        assert_eq!(widths, [1, 3]);
+    }
+
+    #[test]
     fn wide_characters_take_one_span() {
         assert_eq!(rows(&mut after("中a文".as_bytes(), 80, 24), false), "中a文");
     }

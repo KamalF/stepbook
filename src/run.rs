@@ -630,11 +630,15 @@ mod tests {
         }
     }
 
+    /// A run in a test takes less: a bug that loses an event fails the
+    /// test, and does not hang it.
+    const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
     /// The output of a run without its carriage returns, and its status.
     fn wait(run: &Run) -> (String, Status) {
         let mut output = Vec::new();
         loop {
-            match run.events.recv().unwrap() {
+            match run.events.recv_timeout(WAIT).unwrap() {
                 Event::Output(bytes) => output.extend(bytes),
                 Event::Exit(status) => {
                     let output = String::from_utf8_lossy(&output).replace('\r', "");
@@ -717,6 +721,29 @@ mod tests {
         );
         assert_eq!(var(&session, "A").as_deref(), Some("1"));
         assert_eq!(var(&session, "B").as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn a_run_gets_no_file_descriptor_of_stepbook() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let runs: Vec<_> = (0..2)
+            .map(|_| {
+                let run = session.start("echo ready; read\n", &env(), 80, 24).unwrap();
+                wait_for(&run, "ready");
+                run
+            })
+            .collect();
+        // The second run started while the PTY of the first was open. bash
+        // keeps the wrapper on fd 255.
+        let fds = fs::read_dir(format!("/proc/{}/fd", runs[1].pid)).unwrap();
+        let mut fds: Vec<_> = fds.map(|fd| fd.unwrap().file_name()).collect();
+        fds.sort();
+        assert_eq!(fds, ["0", "1", "2", "255"]);
+        for run in &runs {
+            run.write(b"\n").unwrap();
+            wait(run);
+        }
     }
 
     #[test]
@@ -803,7 +830,7 @@ mod tests {
     fn wait_for(run: &Run, text: &str) -> String {
         let mut output = Vec::new();
         while !String::from_utf8_lossy(&output).contains(text) {
-            match run.events.recv().unwrap() {
+            match run.events.recv_timeout(WAIT).unwrap() {
                 Event::Output(bytes) => output.extend(bytes),
                 Event::Exit(_) => panic!("the run ended before {text:?}"),
             }

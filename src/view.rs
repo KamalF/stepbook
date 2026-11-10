@@ -459,12 +459,10 @@ impl Shown {
         code.start + self.above[i]..code.end + self.above[i] + self.infos[i]
     }
 
-    /// The row of the paragraph above block `i`, else its first row.
+    /// The row of the paragraph above block `i`, else its first row: the
+    /// page gives the start of its code, where its info rows go.
     fn top(&self, i: usize) -> usize {
-        match self.page.tops[i] {
-            top if top == self.page.blocks[i].start => self.block(i).start,
-            top => top + self.above[i],
-        }
+        self.page.tops[i] + self.above[i]
     }
 
     fn row(&self, row: usize) -> Row {
@@ -2134,6 +2132,19 @@ pub(crate) mod tests {
         assert_eq!(position(&view), (Some(1), 15));
         view.select_last(SMALL);
         assert_eq!(position(&view), (Some(3), 33));
+        // Block 1 shows from its paragraph, below the output of block 0.
+        view.select_by(-2, SMALL);
+        assert_eq!(position(&view), (Some(1), 16));
+    }
+
+    #[test]
+    fn the_view_lays_out_the_document_once_per_width() {
+        let view = view(BLOCKS);
+        let first = view.shown_at(60).page;
+        assert!(Rc::ptr_eq(&first, &view.shown_at(60).page));
+        let other = view.shown_at(50).page;
+        assert_eq!((first.width, other.width), (60, 50));
+        assert!(!Rc::ptr_eq(&first, &view.shown_at(60).page));
     }
 
     #[test]

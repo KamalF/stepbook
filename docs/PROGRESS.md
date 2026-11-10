@@ -114,7 +114,11 @@ The plan, one commit per line:
 
 Done when (spec 16): the integration tests of 14.3 pass, except the log tests, and in tmux a block that runs `export` and `cd` changes what the next block sees.
 
-The 12 commits are in, with two more: a fix, since a hangup of the terminal could abort stepbook with a core dump, and a chore that ignores the pending snapshots of insta. The check in tmux of commit 9: a block that runs `export` and `cd` changes what the next block sees.
+The 12 commits are in, with three more: a fix, since a hangup of the terminal could abort stepbook with a core dump; a chore that ignores the pending snapshots of insta; and a fix of the wrapper, since `set -x` in a block printed the value of each exported variable at its exit. The check in tmux of commit 9: a block that runs `export` and `cd` changes what the next block sees.
+
+### After the 12 commits
+
+- `cargo mutants`: 654 caught, 18 missed, 72 timeouts and 47 unviable, in 33 minutes. The tests that wait for a run had no time limit, so a mutant that lost an event hung them: they now fail after 10 s. The misses got tests (the file descriptors of a run, a key release with a question open, the end of a row of output, the layout cache, the top of a block under output), or an exclusion with its reason in `.cargo/mutants.toml`.
 
 Kamal signed off the plan and these choices on 2026-11-10. The spec records them (19).
 

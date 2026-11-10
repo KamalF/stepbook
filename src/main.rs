@@ -924,6 +924,19 @@ mod tests {
     }
 
     #[test]
+    fn a_key_release_answers_no_question() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\ntrue\n```\n", tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        enter(&mut app, SIZE);
+        let mut release = KeyEvent::new(KeyCode::Char('n'), KeyModifiers::NONE);
+        release.kind = KeyEventKind::Release;
+        assert_eq!(app.handle(&Event::Key(release), SIZE), None);
+        assert_eq!(app.question, Some(Question::Rerun(0)));
+    }
+
+    #[test]
     fn enter_says_why_a_block_does_not_run() {
         let tmp = tempfile::tempdir().unwrap();
         let mut app = app(
@@ -1038,9 +1051,11 @@ mod tests {
     /// Reads the messages of the runs until `done`.
     fn read_until(app: &mut App, size: Size, done: impl Fn(&App) -> bool) {
         let (_sender, control) = crossbeam_channel::unbounded();
+        // A bug that loses an event fails the test, and does not hang it.
+        let deadline = Instant::now() + Duration::from_secs(10);
         while !done(app) {
-            let Some(Ok(Incoming::Run(i, event))) = app.next(&control, None) else {
-                panic!("not a message of a run");
+            let Some(Ok(Incoming::Run(i, event))) = app.next(&control, Some(deadline)) else {
+                panic!("no message of a run");
             };
             app.read(i, event, size);
         }
