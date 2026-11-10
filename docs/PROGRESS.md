@@ -65,6 +65,7 @@ The test of commit 15 is ignored, because CI has no runbooks: `cargo test --rele
   - Round 9: the security reviewer found no defect. The code reviewer found 2 should-fix, fixed: the restore ends the synchronized update of a failed frame, and code escapes the regional indicators.
   - Round 10: the security reviewer found nothing. The code reviewer found 2 should-fix, fixed: a row that goes on from a wrapped line of code starts with a dim `↪ ` (Kamal's choice), and j shows the whole block when it fits.
   - Round 11: 2 should-fix, fixed: the `↪` mark moves into the gutter, where code text cannot fake it (Kamal's choice), and a property test checks it.
+  - Round 12: 1 blocker and 3 should-fix, fixed: in code, a tab shows a dim `⇥`, a space that ends a row a dim `␣` (Kamal's choice, like vim's listchars), and wrapped rows of the info line get the `↪` gutter.
 
 ### Kamal's manual checklist
 
