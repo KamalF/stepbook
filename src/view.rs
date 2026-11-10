@@ -704,7 +704,7 @@ fn join_styles(glyphs: &[Glyph]) -> Vec<Span<'static>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use crate::doc::{escaped, needs_escape, parse};
     use insta::assert_snapshot;
@@ -714,7 +714,7 @@ mod tests {
 
     /// The lines as text, with each styled span as «style:text». Trailing
     /// spaces are trimmed.
-    fn markup(lines: &[Line]) -> String {
+    pub(crate) fn markup(lines: &[Line]) -> String {
         let lines: Vec<String> = lines
             .iter()
             .map(|line| {
@@ -746,6 +746,9 @@ mod tests {
         let mut tags = Vec::new();
         if let Some(fg) = style.fg.filter(|c| *c != Color::Reset) {
             tags.push(fg.to_string().to_lowercase());
+        }
+        if let Some(bg) = style.bg.filter(|c| *c != Color::Reset) {
+            tags.push(format!("bg={}", bg.to_string().to_lowercase()));
         }
         let modifiers = [
             (Modifier::BOLD, "b"),

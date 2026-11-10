@@ -1,5 +1,6 @@
 mod doc;
 mod run;
+mod term;
 mod view;
 
 use std::ffi::{OsStr, OsString};

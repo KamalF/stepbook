@@ -183,6 +183,7 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 - If the code of a block holds a character that code escapes, other than a tab or a line feed, its info line shows the warning `hidden characters in code`. The block can still run.
 - The view and the run use the same code text, so what runs is what the view shows.
 - Program output reaches the terminal only through the vt100 screen. See 6.4.
+- In the output of a run, the vt100 screen drops the C1 characters, U+FFFD and the bytes that are not valid UTF-8: they do not show. A program cannot send a control character through it.
 - Each frame clears the screen and draws every cell, in a synchronized update (mode 2026) that does not flicker. ratatui alone sends only the cells that changed, so a row that a terminal drew shifted would stay shifted, and a line of code could later take that row.
 
 ## 7. Keys
@@ -526,3 +527,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | Questions show in the footer (7.4), at Kamal's choice: they hide no part of the document | 2026-11-10 |
 | Program output keeps its colors (6.3), and stepbook blinks the `●` of a running block itself (6.2) | 2026-11-10 |
 | A panic in any thread ends stepbook with exit code 101 (4, 11), and an existing workspace directory is a startup error (8.3) | 2026-11-10 |
+| The output of a run does not show its C1 characters, U+FFFD and invalid bytes (6.5): the vt100 screen drops them, and has no hook to draw them | 2026-11-10 |
