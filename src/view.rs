@@ -1354,7 +1354,10 @@ mod tests {
             prop_assert_eq!(text, name);
         }
 
-        // Text right under a code block would look like more code.
+        // Text right under a code block would look like more code. The
+        // unit test doc::tests::a_code_block_is_followed_by_a_blank_line
+        // pins the tight list item, where the rule started; this property
+        // lives here, with the generator of Markdown, to try any nesting.
         #[test]
         fn a_code_block_never_touches_the_next_item(text in markdown()) {
             let items = parse(&text).items;
