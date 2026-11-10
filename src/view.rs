@@ -1222,6 +1222,14 @@ mod tests {
     }
 
     #[test]
+    fn code_shows_the_glyphs_of_its_marks_escaped() {
+        assert_snapshot!(render("```bash\necho a␣b⇥c\n```", 50), @"
+        ▐ «b:#1»  «yellow:hidden characters in code»
+        ▐ «blue:echo» a«yellow:<2423>»b«yellow:<21e5>»c
+        ");
+    }
+
+    #[test]
     fn a_space_that_ends_a_row_of_code_shows_a_mark() {
         // The first row of the rm line takes 38 columns, and ends with the
         // space before "/".
