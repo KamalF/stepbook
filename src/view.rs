@@ -17,7 +17,8 @@ const BLOCK_GUTTER: Style = Style::new();
 const SELECTED: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 const GUTTER: &str = "▌ ";
 /// The second column of the gutter on a row that goes on from a wrapped
-/// line of code. Code text never reaches the gutter, so it cannot fake it.
+/// line of code or info line. Text never reaches the gutter, so it cannot
+/// fake the mark.
 const WRAP_MARK: &str = "↪";
 /// The sidebar shows on terminals at least this wide.
 const SIDEBAR_SCREEN_WIDTH: u16 = 80;
@@ -1270,6 +1271,8 @@ mod tests {
             Just("↪".to_string()),
             Just("echo".to_string()),
             Just("\"aaaaaaaa\"#;".to_string()),
+            // Two spaces in a row, or a space at the end of the line.
+            Just(String::new()),
             "[a-z]{1,30}",
         ];
         let line = prop::collection::vec(words, 0..12).prop_map(|w| w.join(" "));
@@ -1300,6 +1303,9 @@ mod tests {
             };
             let mut lines: Vec<String> = Vec::new();
             for row in rows {
+                // A space at the end of a row would not show.
+                let last = row.spans[1..].last().map_or("", |s| s.content.as_ref());
+                prop_assert!(!last.ends_with(' '), "{:?}", row);
                 let text = text_of(&row.spans[1..]);
                 match row.spans[0].content.as_ref() {
                     "▌ " => lines.push(text),
@@ -1312,6 +1318,29 @@ mod tests {
             }
             let code = &doc.blocks[0].code;
             prop_assert_eq!(lines.join("\n"), code.strip_suffix('\n').unwrap_or(code));
+        }
+
+        // Without the mark, the rest of a long name would pass for a line
+        // of code.
+        #[test]
+        fn the_rows_that_go_on_from_an_info_line_have_the_mark(
+            name in prop::collection::vec("[a-z]{1,30}", 1..8).prop_map(|w| w.join("-")),
+            width in 40..100usize,
+        ) {
+            let doc = parse(&format!("```bash [name:{name}]\nls\n```\n"));
+            let page = layout(&doc, width, None);
+            let (start, end) = (page.blocks[0].start, page.blocks[0].end);
+            let text_of = |spans: &[Span]| -> String { spans.iter().map(|s| s.content.as_ref()).collect() };
+            prop_assert_eq!(text_of(&page.lines[end - 1].spans), "▌ ls");
+            let rows = &page.lines[start..end - 1];
+            prop_assert_eq!(rows[0].spans[0].content.as_ref(), GUTTER);
+            let mut text = text_of(&rows[0].spans[1..]);
+            for row in &rows[1..] {
+                let mark = [Span::styled("▌", BLOCK_GUTTER), Span::styled(WRAP_MARK, DIM)];
+                prop_assert_eq!(&row.spans[..2], &mark);
+                text.push_str(&text_of(&row.spans[2..]));
+            }
+            prop_assert_eq!(text, name);
         }
 
         // Text right under a code block would look like more code.

@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 28f05c34f953d01b7cf4bad04a8256c8489d4fda78f9e4a30dd1e0b876a9f239 # shrinks to code = "\n", width = 40
 cc 2c2d25b8b88c5f355ba1aec5084d3b2f77cdd55e76404f33a859e8b37511a328 # shrinks to code = "\"aaaaaaaa\"#; echo ls echo echo echo # ls", width = 40
+cc e09dd9a3d37ce2b1d8d86090dbab5f3d8100fd8fb270df2f6485e890ba1cd023 # shrinks to code = "", width = 40
