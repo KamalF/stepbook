@@ -66,12 +66,15 @@ fn parse_args(args: impl IntoIterator<Item = OsString>) -> Result<Command, Strin
             "--" => options_end = true,
             "--no-log" => no_log = true,
             "--log" => match args.next() {
-                Some(path) => log = Some(set_once(log, PathBuf::from(path))?),
-                None => return Err("--log needs a PATH".into()),
+                Some(path) if !path.is_empty() => {
+                    log = Some(set_once(log, PathBuf::from(path))?);
+                }
+                _ => return Err("--log needs a PATH".into()),
             },
             // The bytes of the argument, not its text: a path need not be
             // UTF-8.
             _ => match arg.as_bytes().strip_prefix(b"--log=") {
+                Some([]) => return Err("--log needs a PATH".into()),
                 Some(path) => log = Some(set_once(log, PathBuf::from(OsStr::from_bytes(path)))?),
                 None => return Err(format!("unknown option '{text}'")),
             },
@@ -334,6 +337,8 @@ mod tests {
             (&["a.md", "b.md"], "unexpected argument 'b.md'"),
             (&["-x", "a.md"], "unknown option '-x'"),
             (&["a.md", "--log"], "--log needs a PATH"),
+            (&["a.md", "--log", ""], "--log needs a PATH"),
+            (&["a.md", "--log="], "--log needs a PATH"),
             (
                 &["--log", "x", "--log", "y", "a.md"],
                 "--log is given twice",
