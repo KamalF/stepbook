@@ -508,7 +508,7 @@ fn line_nesting(line: &str) -> usize {
                 // A list marker is a bullet, or 1 to 9 digits and . or ),
                 // then a space or the end of the line.
                 Some(after)
-                    if (digits == 0) == rest.starts_with(['-', '*', '+'])
+                    if (digits == 0) == rest[digits..].starts_with(['-', '*', '+'])
                         && digits <= 9
                         && (after.is_empty() || after.starts_with([' ', '\t'])) =>
                 {
@@ -1628,6 +1628,7 @@ mod tests {
             ("--- a", 0),
             ("-a", 0),
             ("1234567890. a", 0),
+            ("1- a", 0),
             ("a\r>>\n> > >", 4),
         ];
         for (text, expected) in cases {
