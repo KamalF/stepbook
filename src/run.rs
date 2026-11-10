@@ -762,17 +762,29 @@ mod tests {
 
     #[test]
     fn set_a_keeps_the_variables_of_the_wrapper_out_of_the_state() {
+        // bash sets BASH_TRAPSIG in a trap, and exports it under set -a.
+        let codes: [(&str, &[&str]); 3] = [
+            ("set -a; trap 'exit 4' EXIT", &["PATH", "X"]),
+            ("set -a; set -e; false", &["PATH", "X"]),
+            ("set -a\ntrap 'Y=2' EXIT\nX=3\n", &["PATH", "X", "Y"]),
+        ];
+        for (code, expected) in codes {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut session = session(tmp.path());
+            assert!(run(&mut session, code).2, "{code}");
+            let names = session.state.vars.keys().map(|n| n.to_string_lossy());
+            assert_eq!(names.collect::<Vec<_>>(), expected, "{code}");
+        }
+    }
+
+    #[test]
+    fn a_handler_can_chain_the_handler_that_trap_shows() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
-        let (_, _, saved) = run(&mut session, "set -a\ntrap 'Y=2' EXIT\nX=3\n");
-        assert!(saved);
-        let names: Vec<_> = session
-            .state
-            .vars
-            .keys()
-            .map(|n| n.to_string_lossy())
-            .collect();
-        assert_eq!(names, ["PATH", "X", "Y"]);
+        let code = "trap 'echo a' EXIT\n\
+            trap \"echo b; $(trap -p EXIT | sed \"s/^trap -- '//; s/' EXIT$//\")\" EXIT\n";
+        let (output, _, saved) = run(&mut session, code);
+        assert_eq!((output.as_str(), saved), ("b\na\n", true));
     }
 
     #[test]
@@ -781,9 +793,11 @@ mod tests {
         let mut session = session(tmp.path());
         let code = "trap 'echo a' EXIT; trap - EXIT\ntrap 'echo b' 0; trap EXIT\n\
             trap 'echo int' INT; trap -p INT\n( trap 'echo sub' EXIT; true )\n\
-            echo \"$(trap 'echo cmd' EXIT)\"\ntrap -- 'echo c' exit\n";
+            echo \"$(trap 'echo cmd' EXIT)\"\ntrap -- 'echo c' exit\n\
+            trap -p EXIT; trap\n";
         let (output, status, saved) = run(&mut session, code);
-        let expected = "trap -- 'echo int' SIGINT\nsub\ncmd\nc\n";
+        let expected = "trap -- 'echo int' SIGINT\nsub\ncmd\n\
+            trap -- 'echo c' EXIT\ntrap -- 'echo c' EXIT\ntrap -- 'echo int' SIGINT\nc\n";
         assert_eq!(
             (output.as_str(), status, saved),
             (expected, Status::Code(0), true)

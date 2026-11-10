@@ -6,11 +6,14 @@
 #
 # bash runs the EXIT trap after the last line, after exit, after a failure
 # under set -e, and on SIGINT, SIGTERM and SIGHUP, and the trap keeps the
-# exit status. The names of the wrapper start with __stepbook_, and its
-# variables are not exported, so that the state never holds them.
+# exit status. The names of the wrapper start with __stepbook_.
 __stepbook_script=$1
 __stepbook_state=$2
 __stepbook_pid=$BASHPID
+# The EXIT handler of the wrapper. It keeps the exit status and the flags,
+# then turns set -x and set -a off, with no trace.
+__stepbook_handler='{ __stepbook_code=$? __stepbook_flags=$-; set +ax; } 2>/dev/null
+__stepbook_exit'
 # The EXIT handler of the script, which the wrapper runs from its own.
 __stepbook_trap=
 
@@ -23,6 +26,9 @@ __stepbook_save() {
     {
         builtin printf '%s\0' "$PWD"
         for __stepbook_name in $(builtin compgen -e); do
+            # Under set -a, bash exports the variables of the wrapper, and
+            # the BASH_TRAPSIG that it sets in a trap.
+            case $__stepbook_name in __stepbook_* | BASH_TRAPSIG) continue ;; esac
             builtin printf '%s=%s\0' "$__stepbook_name" "${!__stepbook_name}"
         done
         builtin printf '\0'
@@ -52,65 +58,49 @@ __stepbook_exit() {
     else
         __stepbook_status "$__stepbook_code" || eval "$__stepbook_trap"
     fi
-    # Under set -a, bash 5.3 exports the BASH_TRAPSIG that it sets in a
-    # trap.
     set +a
-    export -n BASH_TRAPSIG
     __stepbook_save
 }
 
-# Keeps the EXIT handler of the script apart, so that the wrapper still
-# saves the state. A subshell runs its own EXIT trap.
-trap() {
-    if [ "$BASHPID" != "$__stepbook_pid" ] || [ $# -eq 0 ]; then
-        builtin trap "$@"
-        return
-    fi
-    case $1 in
-    --) shift ;;
-    -) ;;
-    -*)
-        builtin trap "$@"
-        return
-        ;;
-    esac
-    if [ $# -eq 0 ]; then
-        builtin trap
-        return
-    fi
-    # "trap SIGNAL" resets the signal, as "trap - SIGNAL" does.
-    local __stepbook_action=- __stepbook_signal __stepbook_rest=()
-    if [ $# -gt 1 ]; then
-        __stepbook_action=$1
-        shift
-    fi
-    for __stepbook_signal; do
-        case ${__stepbook_signal^^} in
-        EXIT | 0 | SIGEXIT)
-            if [ "$__stepbook_action" = - ]; then
-                __stepbook_trap=
-            else
-                __stepbook_trap=$__stepbook_action
-            fi
-            # Under set -a, the state would hold it.
-            export -n __stepbook_trap
-            ;;
-        *) __stepbook_rest+=("$__stepbook_signal") ;;
-        esac
-    done
-    if [ ${#__stepbook_rest[@]} -gt 0 ]; then
-        builtin trap -- "$__stepbook_action" "${__stepbook_rest[@]}"
-    fi
+# Sets __stepbook_slot to the handler in the EXIT slot of bash. In a
+# subshell that has set no trap, bash shows the traps of its parent.
+__stepbook_read_slot() {
+    eval "set -- $(builtin trap -p EXIT)"
+    __stepbook_slot=${3-}
 }
 
-# The trap keeps the exit status and the flags, then turns set -x and
-# set -a off, with no trace: under set -a, its variables would be
-# exported, and the state would hold them.
-builtin trap '{
-    __stepbook_code=$? __stepbook_flags=$-
-    set +ax
-    export -n __stepbook_code __stepbook_flags
-} 2>/dev/null
-__stepbook_exit' EXIT
+# The script sees its own handler in the EXIT slot: bash parses each form
+# of trap, and answers each query, with the handler of the script in place
+# of the wrapper's. So "trap -p EXIT" and "$(trap -p EXIT)" give the
+# handler of the script, and a handler that chains them never calls the
+# wrapper's.
+trap() {
+    local __stepbook_slot __stepbook_rc=0
+    __stepbook_read_slot
+    # A subshell that set its own EXIT trap.
+    if [ "$__stepbook_slot" != "$__stepbook_handler" ]; then
+        builtin trap "$@"
+        return
+    fi
+    if [ -n "$__stepbook_trap" ]; then
+        builtin trap -- "$__stepbook_trap" EXIT
+    else
+        builtin trap - EXIT
+    fi
+    # Under set -e, a failure here would end the script with the handler
+    # of the script in the slot: the state would not be saved.
+    builtin trap "$@" || __stepbook_rc=$?
+    __stepbook_read_slot
+    if [ "$BASHPID" = "$__stepbook_pid" ]; then
+        __stepbook_trap=$__stepbook_slot
+        builtin trap -- "$__stepbook_handler" EXIT
+    elif [ "$__stepbook_slot" = "$__stepbook_trap" ]; then
+        # A subshell that did not set an EXIT trap has none.
+        builtin trap - EXIT
+    fi
+    return "$__stepbook_rc"
+}
+
+builtin trap -- "$__stepbook_handler" EXIT
 set --
 . "$__stepbook_script"

@@ -289,7 +289,7 @@ The wrapper saves the state in all these cases:
 | Runs to its last line, whatever the exit code | Yes |
 | Calls `exit N` | Yes |
 | Stops because of `set -e` | Yes |
-| Installs its own `EXIT` trap | Yes. The wrapper runs its handler and the script's handler. |
+| Installs its own `EXIT` trap | Yes. The wrapper runs the script's handler, then its own. `trap -p EXIT` shows the script's handler, so that a handler can chain it. |
 | Stops on `ctrl-c` (SIGINT), SIGTERM or SIGHUP | Yes |
 | Killed with SIGKILL, or replaces itself with `exec` | No. The info line shows `state not saved`. |
 
