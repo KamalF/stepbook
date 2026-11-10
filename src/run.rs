@@ -11,8 +11,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
 
 use crossbeam_channel::{Receiver, Sender};
+use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::fs::{Mode, OFlags};
-use rustix::process::{Pid, Signal};
+use rustix::process::{Pid, PidfdFlags, Signal};
 use rustix::pty::OpenptFlags;
 use rustix::termios::Winsize;
 
@@ -372,11 +373,15 @@ impl Run {
         (&self.master).write_all(bytes)
     }
 
-    /// Sends a signal to the processes of the run: the wrapper's process
-    /// group. A process that has left it, with setsid for one, does not get
-    /// it. The run may have ended already.
+    /// Sends a signal to the processes of the run: those of the session of
+    /// the wrapper. timeout and set -m put their children in process groups
+    /// of their own, but in the same session. A process that has left the
+    /// session, with setsid, does not get it: that is the way to keep a job
+    /// alive. The run may have ended already.
     pub fn signal(&self, signal: Signal) {
-        let _ = rustix::process::kill_process_group(self.pid, signal);
+        for pid in session_processes(self.pid) {
+            let _ = rustix::process::kill_process(pid, signal);
+        }
     }
 
     /// Sets the size of the PTY. The kernel sends SIGWINCH to the program.
@@ -395,6 +400,17 @@ fn winsize(columns: u16, rows: u16) -> Winsize {
     }
 }
 
+/// The processes of a session, from /proc.
+fn session_processes(leader: Pid) -> Vec<Pid> {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return vec![leader];
+    };
+    let pids = entries.filter_map(|entry| entry.ok()?.file_name().to_str()?.parse().ok());
+    let pids = pids.filter_map(Pid::from_raw);
+    pids.filter(|&pid| rustix::process::getsid(Some(pid)) == Ok(leader))
+        .collect()
+}
+
 /// Opens a PTY of `columns` by `rows`: its side for stepbook, and its
 /// side for the run.
 fn open_pty(columns: u16, rows: u16) -> std::io::Result<(File, OwnedFd)> {
@@ -409,13 +425,38 @@ fn open_pty(columns: u16, rows: u16) -> std::io::Result<(File, OwnedFd)> {
     Ok((File::from(master), slave))
 }
 
-/// Sends the output of a run until the PTY ends, then its exit status. On
-/// Linux, a read fails with EIO once the run and its children have closed
-/// the PTY, after the last output.
-fn read_run(mut reader: File, mut child: Child, sender: Sender<Event>) {
+/// Sends the output of a run, then its exit status. The run ends when the
+/// wrapper exits: a background job, such as one under setsid, can keep the
+/// PTY open long after its block, and the block would stay running, with
+/// its state held back. After the exit, the reader takes only the output
+/// that waits in the PTY. On Linux, a read fails with EIO once every
+/// process has closed the PTY.
+fn read_run(reader: File, mut child: Child, sender: Sender<Event>) {
+    let exit = rustix::process::pidfd_open(Pid::from_child(&child), PidfdFlags::empty()).ok();
     let mut buffer = vec![0; READ_SIZE];
-    loop {
-        match reader.read(&mut buffer) {
+    // The reads after the exit: a job that writes without a pause must
+    // not hold the end back.
+    let mut left = None;
+    while left != Some(0) {
+        let now = Timespec::default();
+        let mut fds = vec![PollFd::new(&reader, PollFlags::IN)];
+        if let (None, Some(exit)) = (left, &exit) {
+            fds.push(PollFd::new(exit, PollFlags::IN));
+        }
+        match rustix::event::poll(&mut fds, left.map(|_| &now)) {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(rustix::io::Errno::INTR) => continue,
+            Err(_) => break,
+        }
+        if fds.get(1).is_some_and(|fd| !fd.revents().is_empty()) {
+            left = Some(16);
+        }
+        if fds[0].revents().is_empty() {
+            continue;
+        }
+        left = left.map(|left: u32| left - 1);
+        match (&reader).read(&mut buffer) {
             Ok(0) => break,
             Ok(n) => {
                 if sender.send(Event::Output(buffer[..n].to_vec())).is_err() {
@@ -931,6 +972,49 @@ mod tests {
         assert_eq!(var(&session, "A").as_deref(), Some("1"));
         assert_eq!(var(&session, "B").as_deref(), Some("2"));
         assert_eq!(var(&session, "X"), None);
+    }
+
+    #[test]
+    fn a_run_ends_when_its_shell_exits_though_a_job_keeps_the_terminal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let started = std::time::Instant::now();
+        let code = "export A=1\nsetsid sleep 3 &\necho started\n";
+        assert_eq!(
+            run(&mut session, code),
+            ("started\n".into(), Status::Code(0), true)
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+        assert_eq!(var(&session, "A").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn a_signal_reaches_the_processes_that_timeout_moves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        // timeout puts itself and its child in a process group of its own.
+        let run = session
+            .start("echo ready; timeout 30 sleep 30\n", "check", 80, 24)
+            .unwrap();
+        wait_for(&run, "ready");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        assert_eq!(session_of(&run).len(), 3);
+        run.signal(Signal::KILL);
+        wait(&run);
+        assert_eq!(session_of(&run), []);
+    }
+
+    /// The processes of a run, without the zombies that wait for their
+    /// parent.
+    fn session_of(run: &Run) -> Vec<Pid> {
+        let alive = |pid: &Pid| {
+            let stat = fs::read_to_string(format!("/proc/{}/stat", pid.as_raw_pid()));
+            stat.is_ok_and(|stat| !stat.rsplit(')').next().unwrap().starts_with(" Z"))
+        };
+        session_processes(run.pid)
+            .into_iter()
+            .filter(alive)
+            .collect()
     }
 
     #[test]

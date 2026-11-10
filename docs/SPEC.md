@@ -252,7 +252,7 @@ Several blocks can run at the same time. Each one runs in its own PTY.
    - `STEPBOOK_LOG`: the absolute path of the log, or empty
    - `STEPBOOK_BLOCK`: the block name
 5. The wrapper sources the block script in its own shell, so `export`, `cd` and shell options work as in a terminal.
-6. The run ends when the process exits and its output has been read. Its exit code is the shell's exit code. A shell killed by signal N reports 128+N.
+6. The run ends when the wrapper exits, once stepbook has read the output that waits in the PTY. A background job that keeps the PTY open, such as one under `setsid`, does not hold the block in "running", nor its state. The exit code of the run is the shell's exit code. A shell killed by signal N reports 128+N.
 
 stepbook checks at startup that `bash` is on the `PATH` and fails if it is not. There is no timeout on runs.
 
@@ -331,8 +331,8 @@ Blocks are matched by key between the old and the new file:
 
 - If no run is active, `q` and `ctrl-c` quit at once.
 - If runs are active, stepbook asks `N blocks running. Stop them and quit? (y/N)`, or `1 block running. Stop it and quit? (y/N)`. On `y`:
-  1. It sends SIGHUP to the process group of each run, as the close of its PTY would. The footer says `stopping the blocks that run`, and keys do nothing.
-  2. It waits up to 2 seconds, then sends SIGKILL to the process groups of the runs still alive.
+  1. It sends SIGHUP to the processes of each run, as the close of its PTY would: those of the session of its wrapper. `timeout` and `set -m` give a child a process group of its own, in the same session. A process that left the session with `setsid` does not get it. The footer says `stopping the blocks that run`, and keys do nothing.
+  2. It waits up to 2 seconds, then sends SIGKILL to the processes of the runs still alive.
   3. It writes their `END` lines to the log and quits.
 - stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide, as ratatui counts them. On a terminal set to draw them wide, such as VTE with that option or `xterm -cjk_width`, the text after such a character shifts, in code too, and a space can vanish.
 - While it runs, stepbook turns the autowrap of the terminal off: a character that the terminal draws wider than ratatui counts must not wrap into the row below and move what is there.
