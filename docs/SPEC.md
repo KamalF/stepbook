@@ -52,7 +52,7 @@ stepbook [--log PATH | --no-log] FILE
 | `-h`, `--help` / `-V`, `--version` | Prints help or the version. |
 
 - The first run starts in the current directory of the stepbook process.
-- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, not a regular file, larger than 1 MB or nested too deep, `bash` not found, stdout not a terminal, workspace or terminal setup failed) or terminal error during the session, such as a failed read of the keys. Exit code 2: invalid arguments. Exit code 101: a panic, which is a bug.
+- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, not a regular file, larger than 1 MB or nested too deep, `bash` not found, current directory unreadable, stdout not a terminal, workspace or terminal setup failed) or terminal error during the session, such as a failed read of the keys. Exit code 2: invalid arguments. Exit code 101: a panic, which is a bug.
 - On SIGTERM or SIGHUP, stepbook cleans up (11), then dies of the signal.
 
 ## 5. Document
@@ -257,7 +257,7 @@ stepbook checks at startup that `bash` is on the `PATH` and fails if it is not. 
 - The workspace is `$XDG_RUNTIME_DIR/stepbook-<pid>/`, or `<temp dir>/stepbook-<pid>/` if `XDG_RUNTIME_DIR` is not set.
 - The directory has mode 0700 and its files have mode 0600 (upmd issue S4, see 18).
 - If the directory exists, stepbook fails at startup: in a shared temp dir, another user could have made it.
-- stepbook deletes the workspace when it exits, including after a panic or a SIGTERM or SIGHUP.
+- stepbook deletes the workspace when it exits, including after a panic or a SIGTERM or SIGHUP. It deletes the files of a run when the run ends.
 
 ## 9. Session state
 
@@ -378,9 +378,9 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 - Rust, one crate, no async runtime, no component framework. The target size is 2,000 to 3,000 lines without tests.
 - Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `rustix` (the PTY and the signals to a process group), `vt100`, `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
 - The main thread owns all state. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events.
-- Control events (keys, paste, resize, process exit, file change) go to their own channel. The loop handles them before pending output, so keys stay responsive while a block prints a lot.
-- Output goes through a bounded channel per run. A slow UI slows the program, and no output is lost.
-- Every message from a run carries its run ID. Messages from a run that is no longer current for its block are dropped (upmd issue K5, see 18).
+- Control events (keys, paste, resize, signals, file change) go to their own channel. The loop handles them before pending output, so keys stay responsive while a block prints a lot.
+- Each run sends its output, then its exit status, through its own bounded channel, so that the end of a run never comes before its output. A slow UI slows the program, and no output is lost.
+- The channel of a run goes away with the run, so that a message from an old run never reaches a new run of the same block (upmd issue K5, see 18).
 
 ## 14. Tests and tooling
 

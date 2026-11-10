@@ -155,9 +155,11 @@ enum Exit {
 fn open(args: &Args) -> Result<Exit, String> {
     let text = read_runbook(&args.file)?;
     let path = std::env::var_os("PATH").unwrap_or_default();
-    if run::find_in_path("bash", &path).is_none() {
+    let Some(bash) = run::find_in_path("bash", &path) else {
         return Err("cannot find bash on the PATH".into());
-    }
+    };
+    let dir = std::env::current_dir()
+        .map_err(|e| format!("cannot read the current directory: {}", io_message(&e)))?;
     if !std::io::stdout().is_terminal() {
         return Err("run stepbook in a terminal: its output is not a terminal".into());
     }
@@ -173,15 +175,15 @@ fn open(args: &Args) -> Result<Exit, String> {
         }
     });
     let parent = run::workspace_parent(std::env::var_os("XDG_RUNTIME_DIR"));
-    let workspace = run::Workspace::create(&parent).map_err(|e| {
-        let dir = parent.join(format!("stepbook-{}", std::process::id()));
-        format!(
-            "cannot create the workspace {}: {}",
-            dir.display(),
-            io_message(&e)
-        )
-    })?;
-    let mut terminal = set_up_terminal(workspace.dir())
+    let workspace_dir = parent.join(format!("stepbook-{}", std::process::id()));
+    let fail = |e: std::io::Error| {
+        let dir = workspace_dir.display();
+        format!("cannot create the workspace {dir}: {}", io_message(&e))
+    };
+    let workspace = run::Workspace::create(&parent).map_err(fail)?;
+    let state = run::State::new(dir, std::env::vars_os());
+    let session = run::Session::new(workspace, bash, state).map_err(fail)?;
+    let mut terminal = set_up_terminal(session.workspace())
         .map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
     let title = args.file.file_name().unwrap_or(args.file.as_os_str());
     let mut view = view::View::new(doc, title.to_string_lossy().into_owned());

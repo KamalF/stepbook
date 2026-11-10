@@ -1,9 +1,26 @@
+//! Runs: the workspace, the session state, and the PTY of each run.
+#![cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Enter starts runs in a later commit")
+)]
+
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
-use std::fs::DirBuilder;
+use std::fs::{DirBuilder, File, OpenOptions};
+use std::io::{Read, Write};
+use std::os::fd::{BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
-use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
+use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
+use std::process::{Child, Command};
+
+use crossbeam_channel::{Receiver, Sender};
+use rustix::fs::{Mode, OFlags};
+use rustix::pty::OpenptFlags;
+use rustix::termios::Winsize;
+
+use crate::io_message;
 
 /// The first executable file called `name` in the directories of `path`.
 pub fn find_in_path(name: &str, path: &OsStr) -> Option<PathBuf> {
@@ -32,6 +49,16 @@ impl Workspace {
 
     pub fn dir(&self) -> &Path {
         &self.dir
+    }
+
+    /// Writes a new file that only the user can read.
+    fn write(&self, name: &str, contents: &[u8]) -> std::io::Result<PathBuf> {
+        let path = self.dir.join(name);
+        let mut file = (OpenOptions::new().write(true).create_new(true))
+            .mode(0o600)
+            .open(&path)?;
+        file.write_all(contents)?;
+        Ok(path)
     }
 }
 
@@ -72,10 +99,6 @@ fn is_identifier(name: &OsStr) -> bool {
         && name.iter().all(|c| c.is_ascii_alphanumeric() || *c == b'_')
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the runs of the next commit use it")
-)]
 impl State {
     pub fn new(dir: PathBuf, vars: impl IntoIterator<Item = (OsString, OsString)>) -> State {
         let vars = vars.into_iter().filter(|(name, _)| !is_excluded(name));
@@ -124,6 +147,239 @@ impl State {
             self.dir = end.dir.clone();
         }
     }
+}
+
+const WRAPPER: &str = include_str!("wrapper.sh");
+
+/// Where runs start, and the session state that they share (spec 8.2, 9).
+pub struct Session {
+    pub state: State,
+    /// The directory that stepbook started in. The session goes back to it
+    /// if its directory no longer exists.
+    origin: PathBuf,
+    bash: PathBuf,
+    workspace: Workspace,
+    wrapper: PathBuf,
+    next_id: u64,
+}
+
+/// The variables that a run gets besides the session (spec 8.2).
+pub struct Env<'a> {
+    /// The absolute path of the runbook.
+    pub file: &'a Path,
+    /// The absolute path of the log.
+    pub log: Option<&'a Path>,
+    pub block: &'a str,
+}
+
+/// A run in its own PTY. Its reader thread sends its output, then the exit
+/// status, so that the end of a run never comes before its output.
+pub struct Run {
+    pub events: Receiver<Event>,
+    master: File,
+    /// The state that the run started with.
+    start: State,
+    script: PathBuf,
+    state_file: PathBuf,
+}
+
+pub enum Event {
+    Output(Vec<u8>),
+    Exit(Status),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Status {
+    Code(i32),
+    Signal(i32),
+}
+
+impl Status {
+    /// The exit code, as a shell reports it: 128 + N for signal N.
+    pub fn rc(self) -> i32 {
+        match self {
+            Status::Code(code) => code,
+            Status::Signal(signal) => 128 + signal,
+        }
+    }
+}
+
+/// Output messages in flight per run. When they are all waiting, the
+/// reader stops reading, and the program waits on its writes: a slow
+/// view slows the program, and loses no output.
+const OUTPUT_MESSAGES: usize = 64;
+const READ_SIZE: usize = 32 * 1024;
+
+impl Session {
+    pub fn new(workspace: Workspace, bash: PathBuf, state: State) -> std::io::Result<Session> {
+        let wrapper = workspace.write("wrapper.sh", WRAPPER.as_bytes())?;
+        Ok(Session {
+            origin: state.dir.clone(),
+            state,
+            bash,
+            workspace,
+            wrapper,
+            next_id: 1,
+        })
+    }
+
+    pub fn workspace(&self) -> &Path {
+        self.workspace.dir()
+    }
+
+    /// Starts a run of `code` in the session directory, in a new PTY of
+    /// `columns` by `rows`. If the session directory no longer exists, the
+    /// run does not start, and the session goes back to the directory that
+    /// stepbook started in: never to `$HOME` (spec 8.2).
+    pub fn start(&mut self, code: &str, env: &Env, columns: u16, rows: u16) -> Result<Run, String> {
+        if !self.state.dir.is_dir() {
+            let dir = std::mem::replace(&mut self.state.dir, self.origin.clone());
+            return Err(format!(
+                "cannot start: directory {} no longer exists",
+                dir.display()
+            ));
+        }
+        let fail = |e: std::io::Error| format!("cannot start: {}", io_message(&e));
+        let id = self.next_id;
+        self.next_id += 1;
+        let script = (self.workspace)
+            .write(&format!("run-{id}.sh"), code.as_bytes())
+            .map_err(fail)?;
+        // Made here, so that it has the mode of the workspace files: the
+        // wrapper truncates it.
+        let state_file = (self.workspace)
+            .write(&format!("run-{id}.state"), b"")
+            .map_err(fail)?;
+        let mut start = self.state.clone();
+        start.vars.insert("TERM".into(), "xterm-256color".into());
+        let run_files = [&script, &state_file];
+        let (master, child) = (self.spawn(&run_files, &start, env, columns, rows))
+            .inspect_err(|_| run_files.iter().for_each(|f| _ = std::fs::remove_file(f)))
+            .map_err(fail)?;
+        let reader = master.try_clone().map_err(fail)?;
+        let (sender, events) = crossbeam_channel::bounded(OUTPUT_MESSAGES);
+        std::thread::spawn(move || read_run(reader, child, sender));
+        Ok(Run {
+            events,
+            master,
+            start,
+            script,
+            state_file,
+        })
+    }
+
+    /// Spawns the wrapper with the files of a run, in a new PTY.
+    fn spawn(
+        &self,
+        run_files: &[&PathBuf; 2],
+        start: &State,
+        env: &Env,
+        columns: u16,
+        rows: u16,
+    ) -> std::io::Result<(File, Child)> {
+        let (master, slave) = open_pty(columns, rows)?;
+        let mut command = Command::new(&self.bash);
+        command
+            .arg("--noprofile")
+            .arg("--norc")
+            .arg(&self.wrapper)
+            .args(run_files)
+            .env_clear()
+            .envs(&start.vars)
+            .env("STEPBOOK_FILE", env.file)
+            .env("STEPBOOK_LOG", env.log.unwrap_or(Path::new("")))
+            .env("STEPBOOK_BLOCK", env.block)
+            .current_dir(&self.state.dir)
+            .stdin(slave.try_clone()?)
+            .stdout(slave.try_clone()?)
+            .stderr(slave);
+        // SAFETY: the closure runs in the child between fork and exec, where
+        // only async-signal-safe calls are allowed. setsid and ioctl are
+        // plain system calls, and the closure allocates nothing.
+        unsafe {
+            command.pre_exec(|| {
+                rustix::process::setsid()?;
+                // The PTY is on fd 0 now: it becomes the controlling
+                // terminal of the new session, so that ctrl-c and the
+                // window size reach the run.
+                rustix::process::ioctl_tiocsctty(BorrowedFd::borrow_raw(0))?;
+                Ok(())
+            });
+        }
+        let child = command.spawn()?;
+        // Drops the parent's copies of the PTY's other side: while they are
+        // open, the reader never sees the end of the output.
+        drop(command);
+        Ok((master, child))
+    }
+
+    /// Applies the state that a run saved, and deletes the files of the run.
+    /// Returns whether the run saved its state: it does not after SIGKILL,
+    /// or after exec (spec 9.2).
+    pub fn finish(&mut self, run: &Run) -> bool {
+        let end = std::fs::read(&run.state_file).ok();
+        let _ = std::fs::remove_file(&run.script);
+        let _ = std::fs::remove_file(&run.state_file);
+        match end.as_deref().and_then(State::parse) {
+            Some(end) => {
+                self.state.apply(&run.start, &end);
+                true
+            }
+            None => false,
+        }
+    }
+}
+
+impl Run {
+    /// Writes to the program, as keys would.
+    pub fn write(&self, bytes: &[u8]) -> std::io::Result<()> {
+        (&self.master).write_all(bytes)
+    }
+}
+
+/// Opens a PTY of `columns` by `rows`: its side for stepbook, and its
+/// side for the run.
+fn open_pty(columns: u16, rows: u16) -> std::io::Result<(File, OwnedFd)> {
+    let flags = OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC;
+    let master = rustix::pty::openpt(flags)?;
+    rustix::pty::grantpt(&master)?;
+    rustix::pty::unlockpt(&master)?;
+    let name = rustix::pty::ptsname(&master, Vec::new())?;
+    let flags = OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC;
+    let slave = rustix::fs::open(name.as_c_str(), flags, Mode::empty())?;
+    let size = Winsize {
+        ws_row: rows,
+        ws_col: columns,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    rustix::termios::tcsetwinsize(&master, size)?;
+    Ok((File::from(master), slave))
+}
+
+/// Sends the output of a run until the PTY ends, then its exit status. On
+/// Linux, a read fails with EIO once the run and its children have closed
+/// the PTY, after the last output.
+fn read_run(mut reader: File, mut child: Child, sender: Sender<Event>) {
+    let mut buffer = vec![0; READ_SIZE];
+    loop {
+        match reader.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => {
+                if sender.send(Event::Output(buffer[..n].to_vec())).is_err() {
+                    return;
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(_) => break,
+        }
+    }
+    let status = child.wait().expect("the child of a run is waited for once");
+    let status = match status.code() {
+        Some(code) => Status::Code(code),
+        None => Status::Signal(status.signal().unwrap_or(0)),
+    };
+    let _ = sender.send(Event::Exit(status));
 }
 
 #[cfg(test)]
@@ -336,5 +592,261 @@ mod tests {
             session.apply(&start, &end);
             prop_assert_eq!(session, end);
         }
+    }
+
+    /// A session in a temporary directory, with only PATH and X=1.
+    fn session(tmp: &Path) -> Session {
+        let workspace = Workspace::create(tmp).unwrap();
+        let path = std::env::var_os("PATH").unwrap();
+        let bash = find_in_path("bash", &path).unwrap();
+        let vars = [("PATH".into(), path), ("X".into(), "1".into())];
+        Session::new(workspace, bash, State::new(tmp.into(), vars)).unwrap()
+    }
+
+    fn env() -> Env<'static> {
+        Env {
+            file: Path::new("/r/run.md"),
+            log: Some(Path::new("/r/run.log")),
+            block: "check",
+        }
+    }
+
+    /// The output of a run without its carriage returns, and its status.
+    fn wait(run: &Run) -> (String, Status) {
+        let mut output = Vec::new();
+        loop {
+            match run.events.recv().unwrap() {
+                Event::Output(bytes) => output.extend(bytes),
+                Event::Exit(status) => {
+                    let output = String::from_utf8_lossy(&output).replace('\r', "");
+                    return (output, status);
+                }
+            }
+        }
+    }
+
+    /// Runs `code` to its end, and applies its state.
+    fn run(session: &mut Session, code: &str) -> (String, Status, bool) {
+        let run = session.start(code, &env(), 80, 24).unwrap();
+        let (output, status) = wait(&run);
+        (output, status, session.finish(&run))
+    }
+
+    fn var(session: &Session, name: &str) -> Option<String> {
+        let value = session.state.vars.get(OsStr::new(name));
+        value.map(|v| v.to_string_lossy().into_owned())
+    }
+
+    #[test]
+    fn export_unset_and_cd_carry_over_to_the_next_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "export A=1; unset X; mkdir sub; cd sub\n";
+        assert_eq!(
+            run(&mut session, code),
+            (String::new(), Status::Code(0), true)
+        );
+        let code = "echo \"$A ${X-unset} $PWD\"\n";
+        let sub = tmp.path().join("sub");
+        let (output, _, _) = run(&mut session, code);
+        assert_eq!(output, format!("1 unset {}\n", sub.display()));
+        assert_eq!(session.state.dir, sub);
+    }
+
+    #[test]
+    fn a_run_gets_the_session_and_the_variables_of_stepbook() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "compgen -e | tr '\\n' ' '; echo; echo \"$TERM|$STEPBOOK_FILE|$STEPBOOK_LOG|$STEPBOOK_BLOCK|$X\"; pwd\n";
+        let (output, _, _) = run(&mut session, code);
+        let expected = format!(
+            "PATH PWD SHLVL STEPBOOK_BLOCK STEPBOOK_FILE STEPBOOK_LOG TERM X \nxterm-256color|/r/run.md|/r/run.log|check|1\n{}\n",
+            tmp.path().display()
+        );
+        assert_eq!(output, expected);
+        // TERM is not a change of the run.
+        assert_eq!(var(&session, "TERM"), None);
+    }
+
+    #[test]
+    fn exit_saves_the_state_and_gives_the_exit_code() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let (_, status, saved) = run(&mut session, "export A=1\nexit 3\nexport A=2\n");
+        assert_eq!((status.rc(), saved), (3, true));
+        assert_eq!(var(&session, "A").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn a_failure_under_set_e_saves_the_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let (_, status, saved) = run(&mut session, "set -e\nexport A=1\nfalse\nexport A=2\n");
+        assert_eq!((status, saved), (Status::Code(1), true));
+        assert_eq!(var(&session, "A").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn the_exit_trap_of_a_script_runs_and_the_state_is_saved() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "trap 'echo \"trap $?\"; export B=2' EXIT\nexport A=1\nexit 4\n";
+        let (output, status, saved) = run(&mut session, code);
+        assert_eq!(
+            (output.as_str(), status, saved),
+            ("trap 4\n", Status::Code(4), true)
+        );
+        assert_eq!(var(&session, "A").as_deref(), Some("1"));
+        assert_eq!(var(&session, "B").as_deref(), Some("2"));
+    }
+
+    #[test]
+    fn trap_keeps_its_other_forms() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "trap 'echo a' EXIT; trap - EXIT\ntrap 'echo b' 0; trap EXIT\n\
+            trap 'echo int' INT; trap -p INT\n( trap 'echo sub' EXIT; true )\n\
+            echo \"$(trap 'echo cmd' EXIT)\"\ntrap -- 'echo c' exit\n";
+        let (output, status, saved) = run(&mut session, code);
+        let expected = "trap -- 'echo int' SIGINT\nsub\ncmd\nc\n";
+        assert_eq!(
+            (output.as_str(), status, saved),
+            (expected, Status::Code(0), true)
+        );
+    }
+
+    #[test]
+    fn values_with_newlines_quotes_and_escapes_survive_the_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "export A=$'a\\nb' B=\"it's \\\"q\\\"\" C=$'\\e[31m\\\\' D=\nmkdir $'d\\nE=1'; cd $'d\\nE=1'\n";
+        let (_, _, saved) = run(&mut session, code);
+        assert!(saved);
+        assert_eq!(var(&session, "A").as_deref(), Some("a\nb"));
+        assert_eq!(var(&session, "B").as_deref(), Some("it's \"q\""));
+        assert_eq!(var(&session, "C").as_deref(), Some("\u{1b}[31m\\"));
+        assert_eq!(var(&session, "D").as_deref(), Some(""));
+        assert_eq!(var(&session, "E"), None);
+        assert_eq!(session.state.dir, tmp.path().join("d\nE=1"));
+        let code = "[ \"$A\" = $'a\\nb' ] && [ \"$C\" = $'\\e[31m\\\\' ] && echo same\n";
+        assert_eq!(run(&mut session, code).0, "same\n");
+    }
+
+    #[test]
+    fn a_removed_directory_fails_the_run_and_resets_the_session_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        run(&mut session, "mkdir gone; cd gone\n");
+        fs::remove_dir(tmp.path().join("gone")).unwrap();
+        let error = session.start("pwd\n", &env(), 80, 24).err();
+        let message = format!(
+            "cannot start: directory {} no longer exists",
+            tmp.path().join("gone").display()
+        );
+        assert_eq!(error, Some(message));
+        assert_eq!(session.state.dir, tmp.path());
+        assert_eq!(
+            run(&mut session, "pwd\n").0,
+            format!("{}\n", tmp.path().display())
+        );
+    }
+
+    /// Waits for `text` in the output of a run, and returns the output.
+    fn wait_for(run: &Run, text: &str) -> String {
+        let mut output = Vec::new();
+        while !String::from_utf8_lossy(&output).contains(text) {
+            match run.events.recv().unwrap() {
+                Event::Output(bytes) => output.extend(bytes),
+                Event::Exit(_) => panic!("the run ended before {text:?}"),
+            }
+        }
+        String::from_utf8_lossy(&output).into_owned()
+    }
+
+    #[test]
+    fn ctrl_c_ends_the_run_with_rc_130_and_saves_the_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let run = session
+            .start("export A=1\necho ready\nsleep 5\n", &env(), 80, 24)
+            .unwrap();
+        wait_for(&run, "ready");
+        run.write(b"\x03").unwrap();
+        let (_, status) = wait(&run);
+        assert_eq!((status, status.rc()), (Status::Signal(2), 130));
+        assert!(session.finish(&run));
+        assert_eq!(var(&session, "A").as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn a_run_that_replaces_its_shell_saves_no_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let (_, status, saved) = run(&mut session, "export A=1\nexec true\n");
+        assert_eq!((status, saved), (Status::Code(0), false));
+        assert_eq!(var(&session, "A"), None);
+    }
+
+    #[test]
+    fn two_runs_at_the_same_time_keep_each_other_s_changes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let first = session
+            .start("export A=1; echo ready; read\n", &env(), 80, 24)
+            .unwrap();
+        wait_for(&first, "ready");
+        let (_, _, saved) = run(&mut session, "export B=2; unset X\n");
+        assert!(saved);
+        first.write(b"\n").unwrap();
+        wait(&first);
+        assert!(session.finish(&first));
+        assert_eq!(var(&session, "A").as_deref(), Some("1"));
+        assert_eq!(var(&session, "B").as_deref(), Some("2"));
+        assert_eq!(var(&session, "X"), None);
+    }
+
+    #[test]
+    fn a_run_ends_after_all_its_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let (output, _, _) = run(&mut session, "seq 1 50000\n");
+        assert_eq!(output.lines().count(), 50000);
+        assert!(output.ends_with("\n50000\n"));
+    }
+
+    #[test]
+    fn the_files_of_a_run_are_private_and_go_away_at_its_end() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let workspace = session.workspace().to_owned();
+        let code = format!(
+            "stat -c %a {0}/run-1.sh {0}/run-1.state {0}/wrapper.sh\n",
+            workspace.display()
+        );
+        let (output, _, _) = run(&mut session, &code);
+        assert_eq!(output, "600\n600\n600\n");
+        let mut files: Vec<_> = fs::read_dir(&workspace)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        files.sort();
+        assert_eq!(files, ["wrapper.sh"]);
+    }
+
+    #[test]
+    fn a_run_that_cannot_start_leaves_no_files() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        session.bash = tmp.path().join("no-bash");
+        let error = session.start("ls\n", &env(), 80, 24).err();
+        assert_eq!(
+            error.as_deref(),
+            Some("cannot start: No such file or directory")
+        );
+        let files: Vec<_> = fs::read_dir(session.workspace())
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(files, ["wrapper.sh"]);
     }
 }
