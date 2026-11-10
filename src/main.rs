@@ -242,6 +242,9 @@ fn event_loop(terminal: &mut DefaultTerminal, view: &mut view::View) -> std::io:
             Some(Action::First) => view.select_first(size),
             Some(Action::Last) => view.select_last(size),
             Some(Action::Page(pages)) => view.scroll_pages(pages, size),
+            Some(Action::Run) => {
+                view.reveal(size);
+            }
             None => {}
         }
     }
@@ -257,6 +260,8 @@ enum Action {
     Last,
     /// Scroll this many pages.
     Page(isize),
+    /// Run the selected block, if the view shows it (spec 7.1).
+    Run,
 }
 
 /// On a screen too small for the view, only the keys that quit work. A
@@ -278,6 +283,7 @@ fn action(event: &Event, size: Size) -> Option<Action> {
         KeyCode::End => Action::Last,
         KeyCode::PageDown => Action::Page(1),
         KeyCode::PageUp => Action::Page(-1),
+        KeyCode::Enter => Action::Run,
         _ => return None,
     };
     (action == Action::Quit || !view::too_small(size)).then_some(action)
@@ -390,6 +396,7 @@ mod tests {
             (key(KeyCode::End), Some(Action::Last)),
             (key(KeyCode::PageDown), Some(Action::Page(1))),
             (key(KeyCode::PageUp), Some(Action::Page(-1))),
+            (key(KeyCode::Enter), Some(Action::Run)),
             (key(KeyCode::Char('x')), None),
         ];
         for (key, expected) in cases {

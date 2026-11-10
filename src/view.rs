@@ -182,9 +182,21 @@ impl View {
 
     fn select(&mut self, i: usize, size: Size) {
         self.selected = Some(i);
+        self.reveal(size);
+    }
+
+    /// Scrolls to show the selected block as `j` and `k` do, and returns
+    /// whether the view showed it so already. `Enter` runs only such a
+    /// block: after the startup or a resize, the selection can be off the
+    /// screen.
+    pub fn reveal(&mut self, size: Size) -> bool {
+        let Some(i) = self.selected else {
+            return false;
+        };
         let (page, text, scroll) = self.page(screen(size));
         let height = usize::from(text.height);
         self.scroll = scroll_to(scroll, page.tops[i], &page.blocks[i], height);
+        self.scroll == scroll
     }
 
     /// Scrolls one page down (`pages` = 1) or up (-1). The selection moves
@@ -1644,6 +1656,29 @@ mod tests {
         assert_eq!(position(&view), (Some(3), 29));
         view.select_first(SMALL);
         assert_eq!(position(&view), (Some(0), 3));
+    }
+
+    #[test]
+    fn reveal_scrolls_to_a_block_that_the_view_does_not_show_whole() {
+        // At the startup, the view shows the info line of block 0, but not
+        // its code.
+        let mut view = steps();
+        assert!(!view.reveal(SMALL));
+        assert_eq!(position(&view), (Some(0), 2));
+        assert!(view.reveal(SMALL));
+        assert_eq!(position(&view), (Some(0), 2));
+        // A view 1 line shorter cuts the last line of block 1.
+        view.select_by(1, SMALL);
+        assert_eq!(view.scroll, 11);
+        let shorter = Size::new(60, 8);
+        assert!(!view.reveal(shorter));
+        assert_eq!(view.scroll, 12);
+    }
+
+    #[test]
+    fn reveal_shows_nothing_without_blocks() {
+        let mut view = view("Text.\n");
+        assert!(!view.reveal(SMALL));
     }
 
     #[test]
