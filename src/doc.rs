@@ -1606,6 +1606,9 @@ mod tests {
             Just('\\'),
             Just('⇥'),
             Just('␣'),
+            // A comment, which must never show dim.
+            Just('#'),
+            Just(' '),
         ];
         prop::collection::vec(chars, 0..60).prop_map(|c| c.into_iter().collect())
     }
