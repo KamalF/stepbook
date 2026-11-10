@@ -31,4 +31,7 @@ exclude_re = [
     "view.rs:\\d+:68: replace < with <= in View::scroll_pages",
     # With a room equal to the columns, the shrink also ends at width 1.
     "replace < with <= in table",
+    # One more pending space shows only before a word of width 0, which the
+    # buffer drops: the row is spaces either way.
+    "replace < with <= in wrap",
 ]
