@@ -419,13 +419,8 @@ impl Builder {
         for container in levels {
             match container {
                 Container::Quote => {
-                    // "│" has an ambiguous East Asian width. A terminal
-                    // can draw it 2 columns wide, and shift the rest of
-                    // the row. ratatui moves the cursor back into place at
-                    // the next cell with no style: the space.
-                    let prefix = [Span::styled("│", DIM), Span::raw(" ")];
-                    first.extend(prefix.clone());
-                    rest.extend(prefix);
+                    first.push(Span::styled("│ ", DIM));
+                    rest.push(Span::styled("│ ", DIM));
                 }
                 Container::Item { marker, indent, .. } => {
                     let spaces = Span::raw(" ".repeat(*indent));

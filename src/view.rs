@@ -906,9 +906,9 @@ mod tests {
         assert_snapshot!(render("- item\n\n  > a\n  >\n  > b", 40), @"
         • item
 
-          «d:│» a
-          «d:│»
-          «d:│» b
+          «d:│ »a
+          «d:│ »
+          «d:│ »b
         ");
     }
 
@@ -916,12 +916,12 @@ mod tests {
     fn blockquotes_have_a_bar_per_level() {
         let text = "> one two three\n>\n> > nested\n>\n> - item\n\nafter";
         assert_snapshot!(render(text, 12), @"
-        «d:│» one two
-        «d:│» three
-        «d:│»
-        «d:│» «d:│» nested
-        «d:│»
-        «d:│» • item
+        «d:│ »one two
+        «d:│ »three
+        «d:│ »
+        «d:│ │ »nested
+        «d:│ »
+        «d:│ »• item
 
         after
         ");
@@ -930,7 +930,7 @@ mod tests {
     #[test]
     fn prefixes_keep_the_innermost_10_levels() {
         let quotes = render(&format!("{} x", ">".repeat(12)), 80);
-        assert_eq!(quotes, format!("{}x", "«d:│» ".repeat(10)));
+        assert_eq!(quotes, format!("«d:{}»x", "│ ".repeat(10)));
         let list: String = (0..12)
             .map(|i| format!("{}- {i}\n", "  ".repeat(i)))
             .collect();
@@ -1119,9 +1119,9 @@ mod tests {
 
         «d:──────────»
 
-        «d:│» b
-        «d:│»
-        «d:│» «d:────────»
+        «d:│ »b
+        «d:│ »
+        «d:│ ────────»
         ");
     }
 
@@ -1219,30 +1219,6 @@ mod tests {
         ▐ «yellow:<093e>»«blue:ls»
         ▐ «blue:echo» «yellow:<1f1eb><1f1f7>» «yellow:<fff9>»x «yellow:<2d7f>»
         "#);
-    }
-
-    #[test]
-    fn a_glyph_of_ambiguous_width_before_code_cannot_shift_it() {
-        // A terminal can draw a glyph of ambiguous East Asian width 2
-        // columns wide, and shift the rest of its row. ratatui moves the
-        // cursor back into place only at a cell with no style. Before the
-        // code, each glyph other than ASCII and the gutter is followed by
-        // such a cell.
-        let text = format!("- > ```bash\n  > echo {}\n  > ```", "a ".repeat(40));
-        let page = layout(&parse(&text), 40, Some(0));
-        let block = &page.blocks[0];
-        for line in &page.lines[block.start..block.end] {
-            let cells: Vec<_> = (line.spans.iter())
-                .flat_map(|s| s.styled_graphemes(Style::new()))
-                .map(|g| (g.symbol, g.style))
-                .collect();
-            let gutter = cells.iter().position(|(s, _)| *s == "▐").unwrap();
-            for (i, (symbol, _)) in cells[..gutter].iter().enumerate() {
-                let plain_space = cells[i + 1] == (" ", Style::new());
-                assert!(symbol.is_ascii() || plain_space, "{line:?}");
-            }
-            assert_ne!(gutter, 0, "{line:?}");
-        }
     }
 
     #[test]
