@@ -1,0 +1,19 @@
+[package]
+name = "stepbook"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Run the bash blocks of a Markdown runbook one at a time, in a terminal UI"
+repository = "https://github.com/KamalF/stepbook"
+keywords = ["runbook", "markdown", "tui", "bash", "terminal"]
+categories = ["command-line-utilities"]
+
+[dependencies]
+pulldown-cmark = { version = "0.13.6", default-features = false }
+ratatui = "0.30.2"
+syntect = { version = "5.3.0", default-features = false, features = ["default-syntaxes", "parsing", "regex-fancy"] }
+
+[dev-dependencies]
+insta = "1.49.0"
+proptest = "1.12.0"
+tempfile = "3.27.0"

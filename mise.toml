@@ -1,0 +1,13 @@
+[tools]
+cargo-insta = "1.49.0"
+"github:sourcefrog/cargo-mutants" = "27.1.0"
+rust = { version = "1.99.0", components = "rust-analyzer,clippy,rustfmt" }
+
+[tasks.fmt]
+run = "cargo fmt"
+
+[tasks.lint]
+run = "cargo clippy --all-targets -- -D warnings"
+
+[tasks.test]
+run = "cargo test --no-fail-fast"
