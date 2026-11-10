@@ -58,7 +58,7 @@ stepbook [--log PATH | --no-log] FILE
 
 ### 5.1 Parsing
 
-- stepbook reads FILE as UTF-8. A byte that is not valid UTF-8 becomes U+FFFD, in the view and in the code that runs, so that both stay the same.
+- stepbook reads FILE as UTF-8. A byte that is not valid UTF-8 becomes U+FFFD, in the view and in the code that runs, so that both stay the same. So does U+0000 (NUL), as CommonMark says: bash drops it, so that `r<U+0000>m` would run as `rm`.
 - stepbook parses CommonMark with GFM tables, task lists and strikethrough (pulldown-cmark).
 - The metadata-block extensions stay off. If the file starts with a `---` line, stepbook shows the lines up to the next `---` line as dimmed frontmatter. Without that closing line, the file has no frontmatter. A `---` anywhere else is a thematic break or a setext heading, as in CommonMark. This avoids upmd issue K1 (see 18).
 - If the file could make more than 200,000 table cells, stepbook shows its tables as text. The bound is its lines, ended by LF or by CR, times one more than the most `|` on one line. pulldown-cmark pads each short row up to the columns of its header, so 1 MB of crafted tables takes gigabytes.
@@ -507,3 +507,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The code of a block ends with a line feed (5.1): in a fence left open at the end of the file, a last `\` showed the same and ran otherwise | 2026-11-10 |
 | stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide (11), at Kamal's choice: escaping them in code would flag the `→` and `·` of real runbooks. The space after the `│` of a quote has its style again | 2026-11-10 |
 | Code escapes U+1D159, which fonts draw as a blank, as it does U+2800 (6.5): `true<U+1D159>#; curl x | sh` looked like a comment, and ran curl | 2026-11-10 |
+| U+0000 (NUL) in FILE becomes U+FFFD (5.1): bash drops NUL bytes, so `r<U+0000>m` showed as `r^@m` and would run as `rm` | 2026-11-10 |

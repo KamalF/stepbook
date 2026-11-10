@@ -81,6 +81,9 @@ pub fn parse(text: &str) -> Document {
 }
 
 fn parse_with(mut builder: Builder, text: &str) -> Document {
+    // CommonMark replaces U+0000 with U+FFFD, but pulldown-cmark keeps it
+    // in code. bash drops it: "r<U+0000>m" would show "r^@m" and run "rm".
+    let text = &text.replace('\0', "\u{fffd}");
     let (frontmatter, body) = split_frontmatter(text);
     if let Some(frontmatter) = frontmatter {
         let lines = source_lines(&format!("---\n{frontmatter}---"));
@@ -1236,6 +1239,17 @@ mod tests {
         // bash runs "x=1 \\" with no final line feed as the command "\\".
         assert_eq!(parse("```bash\nx=1 \\").blocks[0].code, "x=1 \\\n");
         assert_eq!(parse("```bash\n").blocks[0].code, "");
+    }
+
+    #[test]
+    fn a_nul_becomes_u_fffd_in_code_and_text() {
+        let doc = parse("a\0b\n\n```bash\nr\0m -rf x\n```\n");
+        assert_eq!(doc.blocks[0].code, "r\u{fffd}m -rf x\n");
+        let Kind::Text(spans) = &doc.items[0].kind else {
+            panic!("{:?}", doc.items[0])
+        };
+        let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "a\u{fffd}b");
     }
 
     #[test]
