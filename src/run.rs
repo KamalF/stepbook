@@ -451,9 +451,12 @@ fn processes() -> Vec<Process> {
         return Vec::new();
     };
     let process = |pid: i32| {
-        // The name of the program, in parentheses, can hold any byte.
-        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
-        let mut fields = stat.rsplit_once(')')?.1.split_whitespace();
+        // The name of the program, in parentheses, can hold any byte, and
+        // the kernel cuts it at 15 bytes, inside a UTF-8 character too. The
+        // fields after it are ASCII.
+        let stat = std::fs::read(format!("/proc/{pid}/stat")).ok()?;
+        let after = &stat[stat.iter().rposition(|&b| b == b')')? + 1..];
+        let mut fields = std::str::from_utf8(after).ok()?.split_whitespace();
         let zombie = fields.next()? == "Z";
         let parent = fields.next()?.parse().ok()?;
         let session = fields.nth(1)?.parse().ok()?;
@@ -1064,8 +1067,25 @@ mod tests {
         wait(&run);
         assert!(!run.state_file.exists());
         assert!(!session.finish(&run));
-        // A block can unset PWD, under set -u too.
-        assert!(super::tests::run(&mut session, "set -u\nunset PWD\n").2);
+        // Or a link in its place.
+        let code = "ln -sf \"$PWD/other\" \"$__stepbook_state\"\nexport A=1\n";
+        let run = session.start(code, "check", 80, 24).unwrap();
+        fs::write(tmp.path().join("other"), "kept").unwrap();
+        wait(&run);
+        assert_eq!(
+            fs::read_to_string(tmp.path().join("other")).unwrap(),
+            "kept"
+        );
+        assert!(!session.finish(&run));
+    }
+
+    #[test]
+    fn a_block_can_unset_pwd_under_set_u() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let expected = (String::new(), Status::Code(0), true);
+        assert_eq!(run(&mut session, "set -u\nunset PWD\n"), expected);
+        assert_eq!(session.state.dir, tmp.path());
     }
 
     #[test]
@@ -1208,6 +1228,26 @@ mod tests {
     }
 
     #[test]
+    fn a_process_with_a_name_cut_inside_a_character_is_in_its_session() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        // The kernel keeps the first 15 bytes of the name: "a", 4 Japanese
+        // characters of 3 bytes, and 2 bytes of the 5th.
+        let name = tmp.path().join("aデプロイスクリプト");
+        fs::write(&name, "#!/bin/sh\nsleep 30\ntrue\n").unwrap();
+        fs::set_permissions(&name, fs::Permissions::from_mode(0o755)).unwrap();
+        let code = format!("set -m\n'{}' &\necho ready\nwait\n", name.display());
+        let run = session.start(&code, "check", 80, 24).unwrap();
+        wait_for(&run, "ready");
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        // The wrapper, the script and its sleep.
+        assert_eq!(session_of(&run).len(), 3);
+        run.signal(Signal::KILL);
+        wait(&run);
+        assert_eq!(session_of(&run), []);
+    }
+
+    #[test]
     fn the_jobs_of_a_run_get_sighup_when_it_ends() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
@@ -1226,13 +1266,11 @@ mod tests {
     /// The processes of a run, without the zombies that wait for their
     /// parent.
     fn session_of(run: &Run) -> Vec<Pid> {
-        let alive = |pid: &Pid| {
-            let stat = fs::read_to_string(format!("/proc/{}/stat", pid.as_raw_pid()));
-            stat.is_ok_and(|stat| !stat.rsplit(')').next().unwrap().starts_with(" Z"))
-        };
-        session_processes(run.pid)
+        let session = |p: &Process| p.session == run.pid.as_raw_pid() && !p.zombie;
+        processes()
             .into_iter()
-            .filter(alive)
+            .filter(session)
+            .map(|p| p.pid)
             .collect()
     }
 

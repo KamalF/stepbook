@@ -176,9 +176,10 @@ fn last_rows(parser: &mut vt100::Parser, cursor: bool) -> Vec<Line<'static>> {
     lines
 }
 
-/// Whether a cell shows: text, or a background.
+/// Whether a cell shows: text other than a space, or a style, such as a
+/// background. A program can write spaces over a line to clear it.
 fn shows(cell: &vt100::Cell) -> bool {
-    cell.has_contents() || style(cell) != Style::new()
+    (cell.has_contents() && cell.contents() != " ") || style(cell) != Style::new()
 }
 
 /// A row as a line, without its blank cells at the end. Control and bidi
@@ -307,6 +308,9 @@ mod tests {
         assert_eq!(rows(&mut terminal, true), numbers(17..=30) + "\n");
         let mut terminal = after(b"a\r\n\r\nb\r\n\r\n\r\n", 80, 24);
         assert_eq!(rows(&mut terminal, false), "a\n\nb");
+        // A row of spaces is blank too.
+        let mut terminal = after(b"a\r\n\r     \r\n\r\n", 80, 24);
+        assert_eq!(terminal.last_rows(false).len(), 1);
     }
 
     #[test]
