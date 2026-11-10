@@ -9,7 +9,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 - One branch per milestone, cut from `main` after the merge of the one before.
 - Small commits, with conventional prefixes: `feat:`, `fix:`, `docs:`, `refactor:`, `tests:`, `chore:`.
 - Each commit passes `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings` and the tests. The spec and this file change in the same commit as the code that they describe.
-- A milestone ends with `cargo mutants`, then the review loop, until a round finds nothing to fix. Claude checks the TUI in tmux. Kamal's manual checklist keeps only what tmux cannot show: copy and paste in herdr and Ghostty, and the look in his terminal. Then Claude merges into `main`, and Kamal pushes.
+- A milestone ends with `cargo mutants`, then the review loop, until a round finds nothing to fix, then `cargo mutants` again if the code changed. `/tmp` is a small tmpfs, so mutants runs with `TMPDIR=~/.cache/stepbook-mutants mise exec -- cargo mutants -j 6`, and each reviewer works in its own directory under `~/.cache/stepbook-review/`. Claude checks the TUI in tmux. Kamal's manual checklist keeps only what tmux cannot show: copy and paste in herdr and Ghostty, and the look in his terminal. Then Claude merges into `main`, and Kamal pushes.
 - `docs/runbook.md`, excluded from git, logs each command that changes the setup, such as `cargo add` or `mise use`.
 
 ## Milestones
@@ -17,7 +17,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 | # | Milestone | Status |
 |---|---|---|
 | 1 | Document view | Done, merged into `main` on 2026-11-10 |
-| 2 | Running blocks | — |
+| 2 | Running blocks | Next, on `m2-running-blocks` |
 | 3 | Input and full-screen view | — |
 | 4 | Log and reload | — |
 | 5 | Migration | — |
@@ -83,19 +83,33 @@ What tmux cannot show, in herdr in Ghostty:
 1. `stepbook ~/dev/claude/runbooks/<a runbook>.md`: the headings, the code highlighting, the gutters, the dimmed text and the cyan selection read well in your theme.
 2. Select text with the mouse: herdr copies it, because stepbook does not capture the mouse.
 3. `j`, `k`, `PageDown`, `End`, `Home`, then `q`: the shell prompt comes back clean.
-4. Ambiguous width (spec 11): `printf '→→→→|\n····|\n|||||\n'` shows the three `|` of the right edge in one column, so your terminal draws these characters 1 column wide.
+4. Ambiguous width (spec 11): `printf '→→→→|\n····|\n|||||\n'` shows the three `|` of the right edge in one column, so your terminal draws these characters 1 column wide. `~/dev/claude/runbooks/2026-11-10-stepbook-ambiguous-width.md` shows the same check in stepbook.
+
+Kamal ran the checklist on 2026-11-10: the four checks pass.
+
+### Review notes for the next milestones
+
+Findings that the review loop of milestone 1 rejected or deferred, so that later rounds do not raise them again without a new argument:
+
+- Rejected: tab stops in prose count from the start of the line (spec 6.5). Prose can draw `▐` and the style of the selection: a Markdown viewer shows what the author writes. A table too wide for the view keeps its clipped last column. Code does not escape look-alikes of the marks, such as `⌴`, only `␣` and `⇥`. Code does not escape characters of ambiguous width: spec 11 requires a terminal that draws them narrow.
+- Deferred nits, display only: a loose list whose first item has no paragraph gets no blank line after item 1; in prose, a combining mark after a styled span is dropped; in code, a tab after an escaped grapheme, or after a grapheme that syntect splits, stops short of the next multiple of 8; a tab whose padding ends a row of code shows `␣` in its last column.
+- Deferred nits, other: `read_runbook` checks the path, then opens it, so a link swapped to a FIFO in between blocks the open, before raw mode; the palette lives in both `doc.rs` and `view.rs`.
 
 ## Next
 
-1. Kamal runs the manual checklist above, creates `KamalF/stepbook`, adds the remote and pushes `main`.
-2. Milestone 2, running blocks, on `m2-running-blocks`. Two open points below come first: keep the selected block in view, and bracketed paste.
+1. Plan milestone 2 in this file, one commit per line, from spec 16 and the sections that it names: 8.3, 8.2, 6.3, 6.2, 8.1, 7.4, 9 and 11. The two open points "before Enter runs blocks" come first. Kamal signs off the plan and each new dependency.
+2. Build it, then `cargo mutants`, the review loop, the check in tmux and Kamal's checklist. Then the merge into `main`.
+3. The look and feel review, before milestone 3.
+
+Kamal pushes later: the repository has no remote yet (see the first open point).
 
 ## Open points
 
 - Before the first push, Kamal creates `KamalF/stepbook` on GitHub and adds the remote. The sandbox cannot write `.git/config`.
 - Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
+- Look and feel review, between milestones 2 and 3, once blocks show their output and state (Kamal, 2026-11-10). From the first screenshot: prose lines of about 200 characters on a wide terminal (a maximum text width of about 100 columns?); the selection in terminal cyan, which Kamal's theme draws green; the contrast between a block that runs and other code.
 - Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal); each key lays out the page twice, and each frame lays out the whole document: 1 MB of tabs in code takes about 0.9 s per frame. Milestone 2 needs a layout cache per width to redraw output, which removes both. Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
 - Before Enter runs blocks in milestone 2: nothing keeps the selected block in view, at startup or after a resize. Scroll to the selection, or run only a block in view.
 - Before Enter runs blocks in milestone 2: a paste into the document view arrives as key presses, so a pasted line feed would run the selected block. Turn on bracketed paste, and ignore a paste there. Milestone 3 needs bracketed paste anyway (spec 7.2).
 - Before milestone 4 writes the log: the default log of a FILE named `x.log` is the runbook itself. Spec 4 needs a rule.
-- Claude drives stepbook in tmux from the sandbox with one script per check: the script starts tmux, sends the keys and captures the pane. The sandbox stops the tmux server when a command ends. Checked on 2026-11-09.
+- Claude drives stepbook in tmux from the sandbox with `scripts/tui.sh` and one steps file per check: it starts tmux, sends the keys and captures the pane. The sandbox stops the tmux server when a command ends. Checked on 2026-11-09.
