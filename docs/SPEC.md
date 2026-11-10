@@ -276,6 +276,7 @@ A background job, such as `kubectl port-forward … &`, outlives its block, as i
 The session state is a map of exported variables and one working directory.
 
 - At startup, it is stepbook's own environment and current directory. The directory is `$PWD` if it names the current directory, so that a path through a link stays as the user typed it.
+- The directory is a path, which each run resolves again: if a link on it changes between two blocks, the next block runs in the new target.
 - These variables are excluded: `_`, `SHLVL`, `PWD`, `OLDPWD`, and all `STEPBOOK_*`.
 
 ### 9.2 Capture
@@ -549,3 +550,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | A panic in any thread ends stepbook with exit code 101 (4, 11), and an existing workspace directory is a startup error (8.3) | 2026-11-10 |
 | The output of a run does not show its C1 characters, U+FFFD and invalid bytes (6.5): the vt100 screen drops them, and has no hook to draw them | 2026-11-10 |
 | A background job outlives its block, until stepbook ends (8.2, 11), at Kamal's choice: `kubectl port-forward … &` died with its block, and needed `nohup` or `setsid` | 2026-11-10 |
+| The session directory stays a path, which each run resolves again (9.1), at Kamal's choice: a link that changes between two blocks moves the next block | 2026-11-10 |
