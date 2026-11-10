@@ -619,7 +619,8 @@ pub fn needs_escape(c: char) -> bool {
 /// Whether stepbook shows `c` escaped in code. Code also escapes the
 /// default ignorable code points of Unicode, which a terminal draws as
 /// nothing, such as U+200B (zero-width space): `"prod<U+200B>"` would look
-/// like `"prod"`. It escapes the spaces other than U+0020, which bash
+/// like `"prod"`. It escapes the spaces other than U+0020, and the
+/// characters that fonts draw as a blank, U+2800 and U+1D159, which bash
 /// reads as part of a word: `true<U+00A0>#; curl x | sh` looks like a
 /// comment, and runs curl. It escapes the format characters that join the
 /// next character, such as U+070F, U+2D7F and the regional indicators: a
@@ -658,6 +659,7 @@ pub fn needs_escape_in_code(c: char) -> bool {
                 | '\u{202f}'
                 | '\u{205f}'
                 | '\u{2800}'
+                | '\u{1d159}'
                 | '\u{21e5}'
                 | '\u{2423}'
                 | '\u{3000}'
@@ -1520,10 +1522,19 @@ mod tests {
     }
 
     #[test]
-    fn code_escapes_the_spaces_other_than_u_0020() {
+    fn code_escapes_the_spaces_other_than_u_0020_and_the_blanks() {
         let spaces = [
-            '\u{a0}', '\u{1680}', '\u{2000}', '\u{200a}', '\u{2028}', '\u{2029}', '\u{202f}',
-            '\u{205f}', '\u{2800}', '\u{3000}',
+            '\u{a0}',
+            '\u{1680}',
+            '\u{2000}',
+            '\u{200a}',
+            '\u{2028}',
+            '\u{2029}',
+            '\u{202f}',
+            '\u{205f}',
+            '\u{2800}',
+            '\u{3000}',
+            '\u{1d159}',
         ];
         for c in spaces {
             assert!(needs_escape_in_code(c) && !needs_escape(c), "{c:?}");
