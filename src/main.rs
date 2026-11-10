@@ -26,7 +26,7 @@ use ratatui::crossterm::{execute, queue};
 use ratatui::layout::Size;
 use ratatui::{DefaultTerminal, Terminal};
 use rustix::process::Signal;
-use signal_hook::consts::{SIGCHLD, SIGHUP, SIGTERM};
+use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 
 const USAGE: &str = "Usage: stepbook [--log PATH | --no-log] FILE";
 
@@ -163,7 +163,7 @@ fn print_error(text: &str) {
 #[derive(Debug, PartialEq)]
 enum Exit {
     Quit,
-    /// SIGTERM or SIGHUP.
+    /// SIGTERM, SIGHUP, SIGINT or SIGQUIT.
     Signal(i32),
 }
 
@@ -181,8 +181,10 @@ fn open(args: &Args) -> Result<Exit, String> {
     }
     let doc = doc::parse(&text);
     let (sender, control) = crossbeam_channel::unbounded();
-    // Before the workspace exists, so that these signals always delete it.
-    let mut signals = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP])
+    // Before the workspace exists, so that these signals always delete it,
+    // with the state files of the runs. In raw mode, ctrl-c and ctrl-\ are
+    // keys: SIGINT and SIGQUIT come only from kill.
+    let mut signals = signal_hook::iterator::Signals::new([SIGTERM, SIGHUP, SIGINT, SIGQUIT])
         .map_err(|e| format!("cannot handle signals: {}", io_message(&e)))?;
     // With SIGCHLD ignored, which a parent can leave through exec, the
     // kernel reaps the wrappers on its own: their exit status would be lost,
