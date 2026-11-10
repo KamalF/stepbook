@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use ratatui::DefaultTerminal;
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+};
 use ratatui::crossterm::terminal::{
     BeginSynchronizedUpdate, Clear, ClearType, DisableLineWrap, EnableLineWrap,
     EndSynchronizedUpdate,
@@ -156,24 +158,36 @@ fn open(args: &Args) -> Result<(), String> {
 
 /// Enters raw mode and the alternate screen, and turns autowrap off: a
 /// character that the terminal draws wider than ratatui counts must not
-/// wrap into the row below and move what is there. The panic hooks
-/// restore all three, and end the synchronized update of a frame that
-/// failed halfway.
+/// wrap into the row below and move what is there. Bracketed paste is on,
+/// so that a paste never arrives as keys: a line feed in it would run the
+/// selected block. The panic hooks restore all four, and end the
+/// synchronized update of a frame that failed halfway.
 fn set_up_terminal() -> std::io::Result<DefaultTerminal> {
     // try_init installs a panic hook that leaves raw mode and the
     // alternate screen. If it fails, it may have turned on raw mode.
     let terminal = ratatui::try_init().inspect_err(|_| restore_terminal())?;
     let ratatui_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(std::io::stdout(), EndSynchronizedUpdate, EnableLineWrap);
+        let _ = execute!(
+            std::io::stdout(),
+            EndSynchronizedUpdate,
+            EnableLineWrap,
+            DisableBracketedPaste
+        );
         ratatui_hook(info);
     }));
-    execute!(std::io::stdout(), DisableLineWrap).inspect_err(|_| restore_terminal())?;
+    execute!(std::io::stdout(), DisableLineWrap, EnableBracketedPaste)
+        .inspect_err(|_| restore_terminal())?;
     Ok(terminal)
 }
 
 fn restore_terminal() {
-    let _ = execute!(std::io::stdout(), EndSynchronizedUpdate, EnableLineWrap);
+    let _ = execute!(
+        std::io::stdout(),
+        EndSynchronizedUpdate,
+        EnableLineWrap,
+        DisableBracketedPaste
+    );
     ratatui::restore();
 }
 
@@ -220,11 +234,9 @@ fn event_loop(terminal: &mut DefaultTerminal, view: &mut view::View) -> std::io:
         terminal.swap_buffers();
         terminal.draw(|frame| view.draw(frame))?;
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
-        let Event::Key(key) = event::read()? else {
-            continue;
-        };
+        let event = event::read()?;
         let size = terminal.size()?;
-        match action(key, size) {
+        match action(&event, size) {
             Some(Action::Quit) => return Ok(()),
             Some(Action::Select(step)) => view.select_by(step, size),
             Some(Action::First) => view.select_first(size),
@@ -247,8 +259,12 @@ enum Action {
     Page(isize),
 }
 
-/// On a screen too small for the view, only the keys that quit work.
-fn action(key: KeyEvent, size: Size) -> Option<Action> {
+/// On a screen too small for the view, only the keys that quit work. A
+/// paste does nothing.
+fn action(event: &Event, size: Size) -> Option<Action> {
+    let Event::Key(key) = event else {
+        return None;
+    };
     if key.kind != KeyEventKind::Press {
         return None;
     }
@@ -270,6 +286,7 @@ fn action(key: KeyEvent, size: Size) -> Option<Action> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::crossterm::event::KeyEvent;
 
     const SIZE: Size = Size::new(80, 24);
 
@@ -376,7 +393,7 @@ mod tests {
             (key(KeyCode::Char('x')), None),
         ];
         for (key, expected) in cases {
-            assert_eq!(action(key, SIZE), expected, "{key:?}");
+            assert_eq!(action(&Event::Key(key), SIZE), expected, "{key:?}");
         }
     }
 
@@ -384,17 +401,22 @@ mod tests {
     fn key_releases_do_nothing() {
         let mut key = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
         key.kind = KeyEventKind::Release;
-        assert_eq!(action(key, SIZE), None);
+        assert_eq!(action(&Event::Key(key), SIZE), None);
+    }
+
+    #[test]
+    fn a_paste_does_nothing_in_the_document_view() {
+        assert_eq!(action(&Event::Paste("\r\n".into()), SIZE), None);
     }
 
     #[test]
     fn a_screen_too_small_for_the_view_takes_only_the_keys_that_quit() {
-        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        let key = |c| Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE));
         for size in [Size::new(39, 8), Size::new(40, 7)] {
-            assert_eq!(action(key('q'), size), Some(Action::Quit));
-            assert_eq!(action(key('j'), size), None);
+            assert_eq!(action(&key('q'), size), Some(Action::Quit));
+            assert_eq!(action(&key('j'), size), None);
         }
-        assert_eq!(action(key('j'), Size::new(40, 8)), Some(Action::Select(1)));
+        assert_eq!(action(&key('j'), Size::new(40, 8)), Some(Action::Select(1)));
     }
 
     #[test]
