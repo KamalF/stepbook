@@ -367,6 +367,29 @@ mod tests {
         assert_eq!(shared.terminal.lock().unwrap().columns, 1);
     }
 
+    /// The length of the window title that vt100 gets.
+    #[derive(Default)]
+    struct TitleLength(usize);
+
+    impl vt100::Callbacks for TitleLength {
+        fn set_window_title(&mut self, _: &mut vt100::Screen, title: &[u8]) {
+            self.0 = title.len();
+        }
+    }
+
+    #[test]
+    fn vt100_keeps_at_most_1_kb_of_an_operating_system_command() {
+        // With its std feature, vte keeps each byte of an OSC that never
+        // ends: a log with a stray ESC ] made the memory grow without end.
+        let mut parser =
+            vt100::Parser::new_with_callbacks(size(24), size(80), 0, TitleLength::default());
+        parser.process(b"\x1b]2;");
+        parser.process(&[b'x'; 100_000]);
+        parser.process(b"\x07after");
+        assert!(parser.callbacks().0 <= 1024, "{}", parser.callbacks().0);
+        assert_eq!(parser.screen().contents(), "after");
+    }
+
     #[test]
     fn a_failure_of_vt100_loses_the_output_and_ends_nothing() {
         // vt100 0.18.1 unwraps a None on these 18 bytes, at any size.

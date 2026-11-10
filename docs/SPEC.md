@@ -388,7 +388,7 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 | `watch.rs` | File watcher. |
 
 - Rust, one crate, no async runtime, no component framework. The target size is 2,000 to 3,000 lines without tests.
-- Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `rustix` (the PTY and the signals to a process group), `vt100`, `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
+- Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `rustix` (the PTY, poll, and the signals to the processes of a run), `vt100` without its `std` feature (with it, vte keeps each byte of an OSC that never ends), `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
 - The main thread owns all state, except the vt100 screen of each run, which the reader of the run feeds: the main thread only tries its lock. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events.
 - Control events (keys, paste, resize, signals, file change) go to their own channel. The loop handles them before pending output, so keys stay responsive while a block prints a lot.
 - After output, the loop reads the events of the next 16 ms before it draws: a program that prints a lot redraws the view at most about 60 times a second, and at least as often, since the frame ends after 16 ms even while output keeps coming.
