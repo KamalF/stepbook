@@ -70,6 +70,7 @@ The test of commit 15 is ignored, because CI has no runbooks: `cargo test --rele
   - Round 14: 2 should-fix, fixed: the gutter is `▐`, not `▌` (Kamal's choice), and the space after the `│` of a quote has no style, so that a terminal that draws glyphs of ambiguous width wide cannot shift code; code escapes `␣` and `⇥`, which passed for the marks. A nit fix: the code of a block always ends with a line feed.
   - Round 15: the security reviewer found nothing. The code reviewer found 1 should-fix: characters of ambiguous width in code text shift code too. Kamal chose to require a terminal that draws them 1 column wide (spec 11), and the space after a quote's `│` gets its style back. A snapshot now shows the escapes of `␣` and `⇥`.
   - Round 16: the security reviewer found nothing. The code reviewer found 1 should-fix, fixed: code escapes U+1D159, which fonts draw as a blank, as it does U+2800.
+  - Round 17: the security reviewer found no defect. The code reviewer found 1 should-fix, fixed: a property test now checks that comments never show dim, which only snapshots checked. Two new snapshots cover the wrap of HTML lines and the escapes of blank glyphs.
 
 ### Kamal's manual checklist
 
@@ -89,5 +90,6 @@ What tmux cannot show, in herdr in Ghostty:
 - Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
 - Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal); each key lays out the page twice, and each frame lays out the whole document: 1 MB of tabs in code takes about 0.9 s per frame. Milestone 2 needs a layout cache per width to redraw output, which removes both. Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
 - Before Enter runs blocks in milestone 2: nothing keeps the selected block in view, at startup or after a resize. Scroll to the selection, or run only a block in view.
+- Before Enter runs blocks in milestone 2: a paste into the document view arrives as key presses, so a pasted line feed would run the selected block. Turn on bracketed paste, and ignore a paste there. Milestone 3 needs bracketed paste anyway (spec 7.2).
 - Before milestone 4 writes the log: the default log of a FILE named `x.log` is the runbook itself. Spec 4 needs a rule.
 - Claude drives stepbook in tmux from the sandbox with one script per check: the script starts tmux, sends the keys and captures the pane. The sandbox stops the tmux server when a command ends. Checked on 2026-11-09.
