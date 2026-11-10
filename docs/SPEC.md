@@ -272,8 +272,10 @@ The session state is a map of exported variables and one working directory.
 
 When the block script ends, the wrapper writes the state file `<workspace>/run-<id>.state`:
 
-- the working directory, then each exported variable as `NAME=value`;
+- the working directory, then each exported variable as `NAME=value`, then an empty entry;
 - each entry ends with a NUL byte, so values can hold newlines, quotes and any other byte.
+
+Without the empty entry, the file is partial, and stepbook ignores it: the wrapper was killed while it wrote it, and the missing variables would count as unset.
 
 stepbook splits the file on NUL bytes. It never parses shell syntax, which removes upmd issues K11 and S3 by design (see 18).
 
@@ -293,8 +295,8 @@ The wrapper saves the state in all these cases:
 When a run ends, stepbook compares the captured state with the state the run started with, and applies only the difference to the session:
 
 - Variables that the block set or changed are updated.
-- Variables that the block unset are removed, so `unset` works (upmd issue K12, see 18).
-- The working directory changes only if the block changed it.
+- Variables that the block unset are removed, so `unset` works (upmd issue K12, see 18). A variable whose name is not a bash identifier, such as `a-b`, is never removed: bash passes it on to its children, but a block cannot change it, and the wrapper does not see it.
+- The working directory changes only if the block changed it, to an absolute path.
 - The state applies whatever the exit code, as in a terminal.
 
 Two blocks that run at the same time do not overwrite each other's unrelated changes. If both change the same variable, the block that ends last wins.
