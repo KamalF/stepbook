@@ -9,6 +9,7 @@ use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
+use std::sync::Arc;
 
 use crossbeam_channel::{Receiver, Sender};
 use rustix::event::{PollFd, PollFlags, Timespec};
@@ -17,7 +18,7 @@ use rustix::process::{Pid, PidfdFlags, Signal};
 use rustix::pty::OpenptFlags;
 use rustix::termios::Winsize;
 
-use crate::io_message;
+use crate::{io_message, term};
 
 /// The first executable file called `name` in the directories of `path`.
 pub fn find_in_path(name: &str, path: &OsStr) -> Option<PathBuf> {
@@ -196,10 +197,13 @@ impl std::fmt::Display for StartError {
     }
 }
 
-/// A run in its own PTY. Its reader thread sends its output, then the exit
-/// status, so that the end of a run never comes before its output.
+/// A run in its own PTY. Its reader thread feeds its terminal, and sends
+/// its output, then the exit status, so that the end of a run never comes
+/// before its output.
 pub struct Run {
     pub events: Receiver<Event>,
+    /// The terminal that the reader thread feeds with the output.
+    pub screen: Arc<term::Shared>,
     /// The process of the wrapper, the leader of the process group.
     pid: Pid,
     master: File,
@@ -210,7 +214,13 @@ pub struct Run {
 }
 
 pub enum Event {
-    Output(Vec<u8>),
+    Output(
+        #[cfg_attr(
+            not(test),
+            expect(dead_code, reason = "the log of milestone 4 writes the output")
+        )]
+        Vec<u8>,
+    ),
     Exit(Status),
 }
 
@@ -296,9 +306,12 @@ impl Session {
         let reader = master.try_clone().map_err(fail)?;
         let (sender, events) = crossbeam_channel::bounded(OUTPUT_MESSAGES);
         let pid = Pid::from_child(&child);
-        std::thread::spawn(move || read_run(reader, child, sender));
+        let screen = Arc::new(term::Shared::new(columns, rows));
+        let feed = screen.clone();
+        std::thread::spawn(move || read_run(reader, child, sender, &feed));
         Ok(Run {
             events,
+            screen,
             pid,
             master,
             start,
@@ -434,7 +447,7 @@ fn open_pty(columns: u16, rows: u16) -> std::io::Result<(File, OwnedFd)> {
 /// its state held back. After the exit, the reader takes only the output
 /// that waits in the PTY. On Linux, a read fails with EIO once every
 /// process has closed the PTY.
-fn read_run(reader: File, mut child: Child, sender: Sender<Event>) {
+fn read_run(reader: File, mut child: Child, sender: Sender<Event>, screen: &term::Shared) {
     let exit = rustix::process::pidfd_open(Pid::from_child(&child), PidfdFlags::empty()).ok();
     let mut buffer = vec![0; READ_SIZE];
     // The reads after the exit: a job that writes without a pause must
@@ -462,6 +475,7 @@ fn read_run(reader: File, mut child: Child, sender: Sender<Event>) {
         match (&reader).read(&mut buffer) {
             Ok(0) => break,
             Ok(n) => {
+                screen.process(&buffer[..n]);
                 if sender.send(Event::Output(buffer[..n].to_vec())).is_err() {
                     return;
                 }

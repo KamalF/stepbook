@@ -9,6 +9,7 @@ use std::io::{IsTerminal, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvError, Select, Sender};
@@ -314,7 +315,7 @@ fn read_terminal(control: Sender<Control>) {
 
 /// A block that has run: its terminal, and its run while it runs.
 struct Ran {
-    terminal: term::Terminal,
+    screen: Arc<term::Shared>,
     run: Option<run::Run>,
     started: Instant,
 }
@@ -573,13 +574,13 @@ impl App {
         let label = self.view.doc.label(i);
         let status = match self.session.start(&block.code, &label, columns, rows) {
             Ok(run) => {
-                let terminal = term::Terminal::new(columns, rows);
+                let screen = run.screen.clone();
                 let started = Instant::now();
                 let run = Some(run);
                 self.ran.insert(
                     i,
                     Ran {
-                        terminal,
+                        screen,
                         run,
                         started,
                     },
@@ -605,7 +606,7 @@ impl App {
     fn read(&mut self, i: usize, event: run::Event) {
         let ran = self.ran.get_mut(&i).expect("a message comes from a run");
         match event {
-            run::Event::Output(bytes) => ran.terminal.process(&bytes),
+            run::Event::Output(_) => {}
             run::Event::Exit(status) => {
                 let run = ran.run.take().expect("a run sends its exit status once");
                 let saved = self.session.finish(&run);
@@ -621,12 +622,17 @@ impl App {
         self.changed.insert(i);
     }
 
-    /// Makes the rows of the output that changed (spec 6.3).
+    /// Makes the rows of the output that changed (spec 6.3). A terminal that
+    /// its reader holds gives its rows at a later frame: the reader sends an
+    /// event after it.
     fn refresh(&mut self, size: Size) {
         for i in std::mem::take(&mut self.changed) {
-            if let Some(ran) = self.ran.get_mut(&i) {
-                let lines = ran.terminal.last_rows(ran.run.is_some());
-                self.view.set_output(i, lines, size);
+            let Some(ran) = self.ran.get(&i) else {
+                continue;
+            };
+            match ran.screen.try_last_rows(ran.run.is_some()) {
+                Some(lines) => self.view.set_output(i, lines, size),
+                None => _ = self.changed.insert(i),
             }
         }
     }
@@ -651,7 +657,7 @@ impl App {
             if let Some(run) = &ran.run {
                 let (columns, rows) = self.view.pty_size(i, size);
                 let _ = run.resize(columns, rows);
-                ran.terminal.resize(columns, rows);
+                ran.screen.resize(columns, rows);
                 self.changed.insert(i);
             }
         }

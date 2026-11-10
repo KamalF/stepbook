@@ -3,6 +3,8 @@
 use std::cell::Cell;
 use std::num::NonZeroU16;
 use std::panic::AssertUnwindSafe;
+use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
@@ -23,8 +25,9 @@ thread_local! {
     static IN_VT100: Cell<bool> = const { Cell::new(false) };
 }
 
-/// Whether a panic comes from vt100, which `Terminal` catches: the panic
-/// hook must then neither print nor end stepbook.
+/// Whether a panic comes from vt100, which `Terminal` catches, on the
+/// reader thread of a run or on the main thread: the panic hook must then
+/// neither print nor end stepbook.
 pub fn in_vt100() -> bool {
     IN_VT100.get()
 }
@@ -35,7 +38,57 @@ pub struct Terminal {
     parser: vt100::Parser,
     columns: u16,
     rows: u16,
-    repeats: RepeatCap,
+}
+
+/// The terminal of a run, between the reader thread of the run, which
+/// feeds it, and the main thread, which shows it. vt100 can take seconds on
+/// crafted output, such as a repeat of a character 65,535 times or a
+/// scroll of the whole screen: only the run that prints it waits, since
+/// the main thread only tries the lock.
+pub struct Shared {
+    terminal: Mutex<Terminal>,
+    /// The size for the terminal, as columns << 16 | rows. The thread that
+    /// next holds the lock gives it to the terminal.
+    size: AtomicU32,
+}
+
+impl Shared {
+    pub fn new(columns: u16, rows: u16) -> Shared {
+        Shared {
+            terminal: Mutex::new(Terminal::new(columns, rows)),
+            size: AtomicU32::new(u32::from(columns) << 16 | u32::from(rows)),
+        }
+    }
+
+    /// Reads the output of the run. It waits for the lock.
+    pub fn process(&self, bytes: &[u8]) {
+        let terminal = self.terminal.lock().unwrap_or_else(PoisonError::into_inner);
+        self.sized(terminal).process(bytes);
+    }
+
+    pub fn resize(&self, columns: u16, rows: u16) {
+        let size = u32::from(columns) << 16 | u32::from(rows);
+        self.size.store(size, Ordering::Relaxed);
+    }
+
+    /// The last rows of the terminal, or nothing while the reader holds it.
+    pub fn try_last_rows(&self, cursor: bool) -> Option<Vec<Line<'static>>> {
+        let terminal = match self.terminal.try_lock() {
+            Ok(terminal) => terminal,
+            Err(TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(TryLockError::WouldBlock) => return None,
+        };
+        Some(self.sized(terminal).last_rows(cursor))
+    }
+
+    fn sized<'a>(&self, mut terminal: MutexGuard<'a, Terminal>) -> MutexGuard<'a, Terminal> {
+        let size = self.size.load(Ordering::Relaxed);
+        let (columns, rows) = ((size >> 16) as u16, size as u16);
+        if (columns, rows) != (terminal.columns, terminal.rows) {
+            terminal.resize(columns, rows);
+        }
+        terminal
+    }
 }
 
 fn size(n: u16) -> NonZeroU16 {
@@ -52,7 +105,6 @@ impl Terminal {
             parser: parser(columns, rows),
             columns,
             rows,
-            repeats: RepeatCap::default(),
         }
     }
 
@@ -74,9 +126,7 @@ impl Terminal {
     /// Reads the output of a run. vt100 keeps the start of a UTF-8
     /// character that ends in the next read (upmd issue K18).
     pub fn process(&mut self, bytes: &[u8]) {
-        let cells = usize::from(self.columns) * usize::from(self.rows);
-        let bytes = self.repeats.filter(bytes, cells.max(1));
-        self.guarded(|parser| parser.process(&bytes));
+        self.guarded(|parser| parser.process(bytes));
     }
 
     pub fn resize(&mut self, columns: u16, rows: u16) {
@@ -93,58 +143,6 @@ impl Terminal {
             None => last_rows(&mut self.parser, cursor),
         }
     }
-}
-
-/// Caps the count of REP (`ESC [ n b`), which repeats the last character n
-/// times: vt100 writes each one, and 8 KB of `ESC [ 65535 b` held the main
-/// thread for 2.25 s. Past the cells of the screen, more repeats show
-/// nothing more. A sequence can end in the next read.
-#[derive(Default)]
-struct RepeatCap {
-    /// After an ESC.
-    escape: bool,
-    /// The bytes after the `ESC [` of a sequence that has not ended.
-    sequence: Option<Vec<u8>>,
-}
-
-impl RepeatCap {
-    fn filter(&mut self, bytes: &[u8], limit: usize) -> Vec<u8> {
-        let mut out = Vec::with_capacity(bytes.len());
-        for &byte in bytes {
-            if let Some(mut sequence) = self.sequence.take() {
-                // Parameter and intermediate bytes, up to a final byte.
-                if (0x20..=0x3f).contains(&byte) && sequence.len() < 64 {
-                    sequence.push(byte);
-                    self.sequence = Some(sequence);
-                    continue;
-                }
-                if byte == b'b' {
-                    sequence = capped(&sequence, limit);
-                }
-                out.extend(sequence);
-            }
-            if std::mem::take(&mut self.escape) && byte == b'[' {
-                self.sequence = Some(Vec::new());
-            }
-            self.escape = byte == 0x1b;
-            out.push(byte);
-        }
-        out
-    }
-}
-
-/// The parameters of a REP, with a count of at most `limit`.
-fn capped(parameters: &[u8], limit: usize) -> Vec<u8> {
-    let count = parameters.split(|&b| b == b';').next().unwrap_or_default();
-    if count.is_empty() || !count.iter().all(u8::is_ascii_digit) {
-        return parameters.to_vec();
-    }
-    // Digits only: a count too large for usize is too large.
-    let count_value = std::str::from_utf8(count).ok().and_then(|n| n.parse().ok());
-    if count_value.is_some_and(|n: usize| n <= limit) {
-        return parameters.to_vec();
-    }
-    [limit.to_string().as_bytes(), &parameters[count.len()..]].concat()
 }
 
 /// The last `OUTPUT_ROWS` rows of the terminal: see `Terminal::last_rows`.
@@ -357,25 +355,16 @@ mod tests {
     }
 
     #[test]
-    fn rep_repeats_at_most_the_cells_of_the_screen() {
-        let mut cap = RepeatCap::default();
-        assert_eq!(cap.filter(b"a\x1b[65535b", 100), b"a\x1b[100b");
-        assert_eq!(cap.filter(b"a\x1b[655", 100), b"a\x1b[");
-        assert_eq!(cap.filter(b"35;2b", 100), b"100;2b");
-        assert_eq!(cap.filter(b"\x1b[99999999999999999999b", 100), b"\x1b[100b");
-        assert_eq!(cap.filter(b"\x1b", 100), b"\x1b");
-        assert_eq!(cap.filter(b"[65535b", 100), b"[100b");
-        // Other sequences, and small counts, stay.
-        let others = [
-            &b"\x1b[100b\x1b[b\x1b[31m\x1b[2Jb"[..],
-            b"[65535b",
-            b"\x1b[?65535b",
-        ];
-        for bytes in others {
-            assert_eq!(RepeatCap::default().filter(bytes, 100), bytes);
-        }
-        let mut terminal = after(b"x\x1b[3b", 80, 24);
-        assert_eq!(rows(&mut terminal, false), "xxxx");
+    fn the_shared_terminal_gives_no_rows_while_the_reader_holds_it() {
+        let shared = Shared::new(80, 24);
+        shared.process(b"a");
+        let held = shared.terminal.lock().unwrap();
+        assert_eq!(shared.try_last_rows(false), None);
+        drop(held);
+        shared.resize(1, 3);
+        let rows = shared.try_last_rows(false).unwrap();
+        assert_eq!(markup(&rows), "a");
+        assert_eq!(shared.terminal.lock().unwrap().columns, 1);
     }
 
     #[test]

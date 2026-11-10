@@ -155,7 +155,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 - Output keeps the colors of the program, 256 colors and RGB included, as in a terminal.
 - Scrollback keeps 5,000 lines per run.
 - If the vt100 screen fails on the output of a run, the output so far is lost, and a row of the output says so. stepbook and the other runs go on.
-- A repeat of the last character (`ESC [ n b`) repeats it at most as many times as the PTY has cells: vt100 writes each repeat, and 9 bytes can ask for 65,535.
+- The reader thread of each run feeds its vt100 screen, and the view takes the rows when the screen is free. vt100 can take seconds on crafted output, such as a repeat of a character 65,535 times or a scroll of the whole screen: only the run that prints it waits, and the view and the keys go on.
 - A UTF-8 character that is split across two reads of the PTY shows whole (upmd issue K18, see 18).
 - When the selected running block switches to the alternate screen (vim, less, top), stepbook opens the full-screen view in input mode. When the program leaves the alternate screen, stepbook returns to the document view. If the block is not selected, its info line shows `full-screen program, press o`.
 - When the selected block's output grows past the bottom of the view, the view scrolls to keep its last row visible.
@@ -387,7 +387,7 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 
 - Rust, one crate, no async runtime, no component framework. The target size is 2,000 to 3,000 lines without tests.
 - Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `rustix` (the PTY and the signals to a process group), `vt100`, `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
-- The main thread owns all state. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events.
+- The main thread owns all state, except the vt100 screen of each run, which the reader of the run feeds: the main thread only tries its lock. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events.
 - Control events (keys, paste, resize, signals, file change) go to their own channel. The loop handles them before pending output, so keys stay responsive while a block prints a lot.
 - After output, the loop reads the events of the next 16 ms before it draws: a program that prints a lot redraws the view at most about 60 times a second, and at least as often, since the frame ends after 16 ms even while output keeps coming.
 - Each run sends its output, then its exit status, through its own bounded channel, so that the end of a run never comes before its output. A slow UI slows the program, and no output is lost.
