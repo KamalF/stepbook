@@ -17,7 +17,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 | # | Milestone | Status |
 |---|---|---|
 | 1 | Document view | Done, merged into `main` on 2026-11-10 |
-| 2 | Running blocks | Next, on `m2-running-blocks` |
+| 2 | Running blocks | In progress, on `m2-running-blocks` |
 | 3 | Input and full-screen view | — |
 | 4 | Log and reload | — |
 | 5 | Migration | — |
@@ -95,10 +95,37 @@ Findings that the review loop of milestone 1 rejected or deferred, so that later
 - Deferred nits, display only: a loose list whose first item has no paragraph gets no blank line after item 1; in prose, a combining mark after a styled span is dropped; in code, a tab after an escaped grapheme, or after a grapheme that syntect splits, stops short of the next multiple of 8; a tab whose padding ends a row of code shows `␣` in its last column.
 - Deferred nits, other: `read_runbook` checks the path, then opens it, so a link swapped to a FIFO in between blocks the open, before raw mode; the palette lives in both `doc.rs` and `view.rs`.
 
+## Milestone 2: running blocks
+
+The plan, one commit per line:
+
+1. `feat`: bracketed paste is on, and a paste does nothing in the document view: a line feed in it would run the selected block (7.1). Milestone 3 sends a paste to the program (7.2).
+2. `feat`: if `j` or `k` would scroll to show the selected block, `Enter` only does that scroll. So `Enter` never runs code that is off the screen, such as after the startup or a resize (7.1).
+3. `refactor`: the event loop reads two channels, and handles control events (keys, paste, resize, the tick, the end of a run) before output. A thread reads the terminal events (13). Adds `crossbeam-channel`.
+4. `refactor`: the view caches the layout of the document per width, and gives the selected block its style when it draws. Output then redraws without a new layout of the whole file.
+5. `feat`: the workspace and its modes. stepbook deletes it on exit, after a panic, and on SIGTERM or SIGHUP (8.3). Adds `signal-hook`.
+6. `feat`: the session state: the start state, the state file split on NUL bytes, the diff and the merge (9).
+7. `feat`: a run in its own PTY: the script file, the wrapper, the environment, the check of the session directory, a reader thread per run, and the exit code (8.2, 9.2). The integration tests of 14.3 come with it, except the log tests. Adds `rustix`.
+8. `feat`: the terminal of a run: a vt100 screen with 5,000 lines of scrollback, and its last 15 rows as lines, with the escapes of 6.5 and the UTF-8 characters split across two reads (6.3, `term.rs`). Adds `vt100`.
+9. `feat`: `Enter` runs the selected block. The output shows under its code, the PTY follows the size of the view, and the view follows the output of the selected block (6.3, 8.1).
+10. `feat`: the block states in the sidebar and on the info line, with the run time (6.2).
+11. `feat`: the re-run dialog, the messages of `Enter`, and the footer notifications (6.1, 7.4, 8.1).
+12. `feat`: quit with active runs: the dialog, SIGHUP, then SIGKILL after 2 seconds (11).
+
+Done when (spec 16): the integration tests of 14.3 pass, except the log tests, and in tmux a block that runs `export` and `cd` changes what the next block sees.
+
+Kamal signed off the plan and these choices on 2026-11-10. The spec records them (19).
+
+- `rustix`, not `portable-pty`, opens the PTY (about 80 lines of our own). portable-pty reports a death by signal only as the text of `strsignal`, such as `Interrupt`, so `rc=130 SIGINT` would parse that text. Its kill reaches only the shell, and spec 11 sends SIGKILL to every process of the run. It also brings about 10 crates. rustix is already in the tree through crossterm.
+- A run that cannot start fails: its block shows `✘` and the reason, and `Enter` can run it again. Spec 6.2 listed "cannot start" under "Cannot run", a state that only a reload ends. "Cannot run" keeps the problems of the file, such as a duplicate name.
+- The re-run and quit questions show in the footer, in place of the keys, so that they hide no part of the document.
+- Program output keeps its colors, 256 colors and RGB included, as in a terminal. The look and feel review can change that.
+- stepbook blinks the `●` of a running block itself, every 0.5 s: terminals differ on the blink attribute.
+
 ## Next
 
-1. Plan milestone 2 in this file, one commit per line, from spec 16 and the sections that it names: 8.3, 8.2, 6.3, 6.2, 8.1, 7.4, 9 and 11. The two open points "before Enter runs blocks" come first. Kamal signs off the plan and each new dependency.
-2. Build it, then `cargo mutants`, the review loop, the check in tmux and Kamal's checklist. Then the merge into `main`.
+1. Build milestone 2, one commit per line of the plan.
+2. `cargo mutants`, the review loop, the check in tmux and Kamal's checklist. Then the merge into `main`.
 3. The look and feel review, before milestone 3.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
@@ -108,8 +135,8 @@ Kamal pushes later: the repository has no remote yet (see the first open point).
 - Before the first push, Kamal creates `KamalF/stepbook` on GitHub and adds the remote. The sandbox cannot write `.git/config`.
 - Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
 - Look and feel review, between milestones 2 and 3, once blocks show their output and state (Kamal, 2026-11-10). From the first screenshot: prose lines of about 200 characters on a wide terminal (a maximum text width of about 100 columns?); the selection in terminal cyan, which Kamal's theme draws green; the contrast between a block that runs and other code.
-- Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal); each key lays out the page twice, and each frame lays out the whole document: 1 MB of tabs in code takes about 0.9 s per frame. Milestone 2 needs a layout cache per width to redraw output, which removes both. Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
-- Before Enter runs blocks in milestone 2: nothing keeps the selected block in view, at startup or after a resize. Scroll to the selection, or run only a block in view.
-- Before Enter runs blocks in milestone 2: a paste into the document view arrives as key presses, so a pasted line feed would run the selected block. Turn on bracketed paste, and ignore a paste there. Milestone 3 needs bracketed paste anyway (spec 7.2).
+- Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal); each key lays out the page twice, and each frame lays out the whole document: 1 MB of tabs in code takes about 0.9 s per frame. The layout cache of milestone 2 (commit 4 of its plan) removes both. Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
+- Before Enter runs blocks in milestone 2: nothing keeps the selected block in view, at startup or after a resize. Commit 2 of the plan.
+- Before Enter runs blocks in milestone 2: a paste into the document view arrives as key presses, so a pasted line feed would run the selected block. Commit 1 of the plan.
 - Before milestone 4 writes the log: the default log of a FILE named `x.log` is the runbook itself. Spec 4 needs a rule.
 - Claude drives stepbook in tmux from the sandbox with `scripts/tui.sh` and one steps file per check: it starts tmux, sends the keys and captures the pane. The sandbox stops the tmux server when a command ends. Checked on 2026-11-09.

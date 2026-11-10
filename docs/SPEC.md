@@ -137,15 +137,19 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 | Not run | ` ` | name |
 | Running | `●` (blinking) | `running m:ss` |
 | Succeeded | `✔` | `rc=0 m:ss` |
-| Failed | `✘` | `rc=N m:ss`; for a signal, `rc=130 SIGINT` |
+| Failed | `✘` | `rc=N m:ss`; for a signal, `rc=130 SIGINT`; for a run that could not start, the reason, such as `cannot start: directory /x no longer exists` |
 | Changed | `~` plus the last result | `changed since run`, then the last result |
-| Cannot run | `!` | the reason: duplicate name, cannot start, and so on |
+| Cannot run | `!` | the problem of the file, such as `duplicate name` |
+
+- stepbook blinks the `●` itself, every 0.5 s: terminals differ on the blink attribute.
+- A run that cannot start fails, so that `Enter` can run the block again. Only a reload ends "Cannot run".
 
 ### 6.3 Output under a block
 
 - Each block that has run shows its output under the code. The output stays until the block runs again. Reloads do not clear it.
 - stepbook shows the last 15 rows of the block's terminal, scrollback included. Trailing empty rows are trimmed, except the cursor row while the block runs.
 - PTY size: the document text width minus the gutter, by the terminal height minus 1. It follows terminal resizes.
+- Output keeps the colors of the program, 256 colors and RGB included, as in a terminal.
 - Scrollback keeps 5,000 lines per run.
 - A UTF-8 character that is split across two reads of the PTY shows whole (upmd issue K18, see 18).
 - When the selected running block switches to the alternate screen (vim, less, top), stepbook opens the full-screen view in input mode. When the program leaves the alternate screen, stepbook returns to the document view. If the block is not selected, its info line shows `full-screen program, press o`.
@@ -189,11 +193,13 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 | `↓`, `j` / `↑`, `k` | Select the next / previous block, and scroll so that the block and the paragraph above it are visible. If they do not fit, the whole block shows, with the end of the paragraph. A block taller than the view shows from its paragraph, or from its info line. |
 | `Home` / `End` | Select the first / last block. Without blocks, scroll to the top / bottom. |
 | `PageDown` / `PageUp` | Scroll one page. The selection moves to the first block whose info line is in view, else to the first block in view. `PageDown` never moves it to an earlier block, and `PageUp` never to a later one. |
-| `Enter` | Run the selected block. See 8.1. |
+| `Enter` | Run the selected block (8.1). If `j` or `k` would scroll to show the block, `Enter` only does that scroll: it never runs code that is off the screen, such as after the startup or a resize. |
 | `i` | Enter input mode, if the selected block is running. |
 | `o` | Open the full-screen view of the selected block, if it has run. |
 | `ctrl-r` | Reload the file now. |
 | `q`, `ctrl-c` | Quit. See 11. |
+
+A paste does nothing in the document view: a line feed in it would run the selected block.
 
 ### 7.2 Input mode
 
@@ -213,7 +219,7 @@ While the view is open, the PTY takes the full terminal size. It gets its docume
 
 ### 7.4 Confirmation dialogs
 
-`y` confirms. `n`, `Esc` and every other key cancel.
+A question shows in the footer, in place of the keys, so that it hides no part of the document. `y` confirms. `n`, `Esc` and every other key cancel.
 
 ## 8. Running blocks
 
@@ -365,7 +371,7 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 | `watch.rs` | File watcher. |
 
 - Rust, one crate, no async runtime, no component framework. The target size is 2,000 to 3,000 lines without tests.
-- Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `portable-pty`, `vt100`, `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
+- Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `rustix` (the PTY and the signals to a process group), `vt100`, `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
 - The main thread owns all state. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events.
 - Control events (keys, paste, resize, process exit, file change) go to their own channel. The loop handles them before pending output, so keys stay responsive while a block prints a lot.
 - Output goes through a bounded channel per run. A slow UI slows the program, and no output is lost.
@@ -508,3 +514,9 @@ This spec is the source of truth. A change of decision updates it in the same co
 | stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide (11), at Kamal's choice: escaping them in code would flag the `→` and `·` of real runbooks. The space after the `│` of a quote has its style again | 2026-11-10 |
 | Code escapes U+1D159, which fonts draw as a blank, as it does U+2800 (6.5): `true<U+1D159>#; curl x | sh` looked like a comment, and ran curl | 2026-11-10 |
 | U+0000 (NUL) in FILE becomes U+FFFD (5.1): bash drops NUL bytes, so `r<U+0000>m` showed as `r^@m` and would run as `rm` | 2026-11-10 |
+| `rustix` replaces `portable-pty` (13), at Kamal's choice: portable-pty reports a death by signal only as the text of `strsignal`, and its kill reaches only the shell. stepbook opens the PTY with its own code | 2026-11-10 |
+| `Enter` on a block that is off the screen only scrolls to it (7.1), at Kamal's choice: after the startup or a resize, `Enter` could run code that the view did not show | 2026-11-10 |
+| A paste does nothing in the document view (7.1): a line feed in it would run the selected block | 2026-11-10 |
+| A run that cannot start fails, and "Cannot run" keeps the problems of the file (6.2): `Enter` could not run the block again before a reload | 2026-11-10 |
+| Questions show in the footer (7.4), at Kamal's choice: they hide no part of the document | 2026-11-10 |
+| Program output keeps its colors (6.3), and stepbook blinks the `●` of a running block itself (6.2) | 2026-11-10 |
