@@ -4,22 +4,24 @@ mod term;
 mod view;
 
 use std::ffi::{OsStr, OsString};
-use std::io::{IsTerminal, Read};
+use std::io::{IsTerminal, Read, Write};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use crossbeam_channel::{Receiver, Sender};
-use ratatui::DefaultTerminal;
+use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
 };
 use ratatui::crossterm::terminal::{
     BeginSynchronizedUpdate, Clear, ClearType, DisableLineWrap, EnableLineWrap,
-    EndSynchronizedUpdate, LeaveAlternateScreen, disable_raw_mode,
+    EndSynchronizedUpdate, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
+    enable_raw_mode,
 };
 use ratatui::crossterm::{execute, queue};
 use ratatui::layout::Size;
+use ratatui::{DefaultTerminal, Terminal};
 use signal_hook::consts::{SIGHUP, SIGTERM};
 
 const USAGE: &str = "Usage: stepbook [--log PATH | --no-log] FILE";
@@ -127,7 +129,9 @@ fn main() -> ExitCode {
         }
         Err(message) => {
             let message = doc::escaped_text(&message);
-            eprintln!("stepbook: {message}\n{USAGE}\nFor more information, run 'stepbook --help'.");
+            print_error(&format!(
+                "stepbook: {message}\n{USAGE}\nFor more information, run 'stepbook --help'."
+            ));
             return ExitCode::from(2);
         }
     };
@@ -139,10 +143,16 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
         Err(message) => {
-            eprintln!("stepbook: {}", doc::escaped_text(&message));
+            print_error(&format!("stepbook: {}", doc::escaped_text(&message)));
             ExitCode::FAILURE
         }
     }
+}
+
+/// Writes an error on stderr. eprintln would panic if stderr fails, as
+/// after a SIGHUP, when the terminal is gone.
+fn print_error(text: &str) {
+    let _ = writeln!(std::io::stderr(), "{text}");
 }
 
 /// How the event loop ends.
@@ -198,34 +208,37 @@ fn open(args: &Args) -> Result<Exit, String> {
 /// character that the terminal draws wider than ratatui counts must not
 /// wrap into the row below and move what is there. Bracketed paste is on,
 /// so that a paste never arrives as keys: a line feed in it would run the
-/// selected block. The panic hooks restore all four, and end the
-/// synchronized update of a frame that failed halfway. They also delete
-/// the workspace, and end stepbook: after a panic in another thread, the
-/// main thread would go on drawing on the restored terminal.
+/// selected block.
+///
+/// The panic hook deletes the workspace, restores the terminal, and ends
+/// stepbook: after a panic in another thread, the main thread would go on
+/// drawing on the restored terminal. stepbook sets up the terminal itself:
+/// the panic hook of ratatui reports a failed restore with eprintln, which
+/// panics again when the terminal is gone, and the process aborts.
 fn set_up_terminal(workspace: &Path) -> std::io::Result<DefaultTerminal> {
-    // try_init installs a panic hook that leaves raw mode and the
-    // alternate screen. If it fails, it may have turned on raw mode.
-    let terminal = ratatui::try_init().inspect_err(|_| restore_terminal())?;
-    let ratatui_hook = std::panic::take_hook();
+    let default_hook = std::panic::take_hook();
     let workspace = workspace.to_owned();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = execute!(
-            std::io::stdout(),
-            EndSynchronizedUpdate,
-            EnableLineWrap,
-            DisableBracketedPaste
-        );
-        ratatui_hook(info);
         let _ = std::fs::remove_dir_all(&workspace);
+        restore_terminal();
+        default_hook(info);
         std::process::exit(101);
     }));
-    execute!(std::io::stdout(), DisableLineWrap, EnableBracketedPaste)
-        .inspect_err(|_| restore_terminal())?;
-    Ok(terminal)
+    let set_up = || {
+        enable_raw_mode()?;
+        let mut stdout = std::io::stdout();
+        execute!(
+            stdout,
+            EnterAlternateScreen,
+            DisableLineWrap,
+            EnableBracketedPaste
+        )?;
+        Terminal::new(CrosstermBackend::new(stdout))
+    };
+    set_up().inspect_err(|_| restore_terminal())
 }
 
-/// Ignores errors: after a SIGHUP, the terminal is gone, and ratatui's
-/// own restore would panic when it reports the error on stderr.
+/// Ignores errors: after a SIGHUP, the terminal is gone.
 fn restore_terminal() {
     let _ = execute!(
         std::io::stdout(),
