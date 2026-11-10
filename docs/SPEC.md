@@ -52,7 +52,7 @@ stepbook [--log PATH | --no-log] FILE
 | `-h`, `--help` / `-V`, `--version` | Prints help or the version. |
 
 - The first run starts in the current directory of the stepbook process.
-- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, not a regular file, larger than 1 MB or nested too deep, `bash` not found, stdout not a terminal). Exit code 2: invalid arguments.
+- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, not a regular file, larger than 1 MB or nested too deep, `bash` not found, stdout not a terminal, terminal setup failed) or terminal error during the session, such as a failed read of the keys. Exit code 2: invalid arguments.
 
 ## 5. Document
 

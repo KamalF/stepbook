@@ -81,8 +81,8 @@ pub fn parse(text: &str) -> Document {
 }
 
 fn parse_with(mut builder: Builder, text: &str) -> Document {
-    // CommonMark replaces U+0000 with U+FFFD, but pulldown-cmark keeps it
-    // in code. bash drops it: "r<U+0000>m" would show "r^@m" and run "rm".
+    // CommonMark replaces U+0000 with U+FFFD, but pulldown-cmark keeps it.
+    // bash drops it: "r<U+0000>m" would show "r^@m" and run "rm".
     let text = &text.replace('\0', "\u{fffd}");
     let (frontmatter, body) = split_frontmatter(text);
     if let Some(frontmatter) = frontmatter {
