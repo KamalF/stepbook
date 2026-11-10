@@ -773,10 +773,27 @@ mod tests {
     }
 
     #[test]
-    fn set_x_never_shows_the_variables_at_the_exit() {
+    fn posix_mode_never_stops_the_runs() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
-        let code = "export SECRET=s3cret\ntrap 'echo bye' EXIT\nset -x\ntrue\n";
+        let (_, _, saved) = run(&mut session, "export POSIXLY_CORRECT=1\n");
+        assert!(saved);
+        let code = "shopt -oq posix && echo posix\nunset POSIXLY_CORRECT\n";
+        assert_eq!(
+            run(&mut session, code),
+            ("posix\n".into(), Status::Code(0), true)
+        );
+        assert_eq!(
+            run(&mut session, "shopt -oq posix || echo bash\n").0,
+            "bash\n"
+        );
+    }
+
+    #[test]
+    fn set_x_never_shows_the_wrapper_or_the_variables() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "export SECRET=s3cret\nset -x\ntrap 'echo bye' EXIT\ntrue\n";
         let (output, _, saved) = run(&mut session, code);
         assert!(saved);
         assert!(

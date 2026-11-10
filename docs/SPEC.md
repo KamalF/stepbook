@@ -292,6 +292,7 @@ The wrapper saves the state in all these cases:
 | Installs its own `EXIT` trap | Yes. The wrapper runs the script's handler, then its own. `trap -p EXIT` shows the script's handler, so that a handler can chain it. |
 | Stops on `ctrl-c` (SIGINT), SIGTERM or SIGHUP | Yes |
 | Killed with SIGKILL, or replaces itself with `exec` | No. The info line shows `state not saved`. |
+| Installs its own `EXIT` trap in POSIX mode (`set -o posix`, `POSIXLY_CORRECT`) | No: bash runs its builtin `trap`, which replaces the wrapper's handler. The block still runs. |
 
 ### 9.3 Applying the state
 

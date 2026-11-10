@@ -10,6 +10,14 @@
 __stepbook_script=$1
 __stepbook_state=$2
 __stepbook_pid=$BASHPID
+# In POSIX mode, after an export of POSIXLY_CORRECT for one, bash refuses a
+# function named trap: the wrapper defines its functions with POSIX mode
+# off, and turns it on again before the script.
+__stepbook_posix=
+if shopt -oq posix; then
+    __stepbook_posix=1
+    set +o posix
+fi
 # The EXIT handler of the wrapper. It keeps the exit status and the flags,
 # then turns set -x and set -a off, with no trace.
 __stepbook_handler='{ __stepbook_code=$? __stepbook_flags=$-; set +ax; } 2>/dev/null
@@ -75,6 +83,9 @@ __stepbook_read_slot() {
 # handler of the script, and a handler that chains them never calls the
 # wrapper's.
 trap() {
+    # Under set -x, the trace would show the wrapper. "local -" gives the
+    # flags back at the return.
+    { local -; set +x; } 2>/dev/null
     local __stepbook_slot __stepbook_rc=0
     __stepbook_read_slot
     # A subshell that set its own EXIT trap.
@@ -102,5 +113,11 @@ trap() {
 }
 
 builtin trap -- "$__stepbook_handler" EXIT
+# In POSIX mode, bash runs its builtin trap before the function: an EXIT
+# trap of the script then replaces the wrapper's, and the state is not
+# saved.
+if [ -n "$__stepbook_posix" ]; then
+    set -o posix
+fi
 set --
 . "$__stepbook_script"
