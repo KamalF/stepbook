@@ -15,6 +15,7 @@ use ratatui::crossterm::terminal::{
     EndSynchronizedUpdate,
 };
 use ratatui::crossterm::{execute, queue};
+use ratatui::layout::Size;
 
 const USAGE: &str = "Usage: stepbook [--log PATH | --no-log] FILE";
 
@@ -223,9 +224,8 @@ fn event_loop(terminal: &mut DefaultTerminal, view: &mut view::View) -> std::io:
             continue;
         };
         let size = terminal.size()?;
-        match action(key) {
+        match action(key, size) {
             Some(Action::Quit) => return Ok(()),
-            _ if view::too_small(size) => {}
             Some(Action::Select(step)) => view.select_by(step, size),
             Some(Action::First) => view.select_first(size),
             Some(Action::Last) => view.select_last(size),
@@ -247,12 +247,13 @@ enum Action {
     Page(isize),
 }
 
-fn action(key: KeyEvent) -> Option<Action> {
+/// On a screen too small for the view, only the keys that quit work.
+fn action(key: KeyEvent, size: Size) -> Option<Action> {
     if key.kind != KeyEventKind::Press {
         return None;
     }
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-    Some(match key.code {
+    let action = match key.code {
         KeyCode::Char('q') => Action::Quit,
         KeyCode::Char('c') if ctrl => Action::Quit,
         KeyCode::Down | KeyCode::Char('j') => Action::Select(1),
@@ -262,12 +263,15 @@ fn action(key: KeyEvent) -> Option<Action> {
         KeyCode::PageDown => Action::Page(1),
         KeyCode::PageUp => Action::Page(-1),
         _ => return None,
-    })
+    };
+    (action == Action::Quit || !view::too_small(size)).then_some(action)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const SIZE: Size = Size::new(80, 24);
 
     fn parse(args: &[&str]) -> Result<Command, String> {
         parse_args(args.iter().map(OsString::from))
@@ -372,7 +376,7 @@ mod tests {
             (key(KeyCode::Char('x')), None),
         ];
         for (key, expected) in cases {
-            assert_eq!(action(key), expected, "{key:?}");
+            assert_eq!(action(key, SIZE), expected, "{key:?}");
         }
     }
 
@@ -380,7 +384,17 @@ mod tests {
     fn key_releases_do_nothing() {
         let mut key = KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE);
         key.kind = KeyEventKind::Release;
-        assert_eq!(action(key), None);
+        assert_eq!(action(key, SIZE), None);
+    }
+
+    #[test]
+    fn a_screen_too_small_for_the_view_takes_only_the_keys_that_quit() {
+        let key = |c| KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE);
+        for size in [Size::new(39, 8), Size::new(40, 7)] {
+            assert_eq!(action(key('q'), size), Some(Action::Quit));
+            assert_eq!(action(key('j'), size), None);
+        }
+        assert_eq!(action(key('j'), Size::new(40, 8)), Some(Action::Select(1)));
     }
 
     #[test]

@@ -5,8 +5,8 @@ gitignore = true
 
 # Mutants that no test should catch. A run then shows only new gaps.
 exclude_re = [
-    # The event loop only applies the action of each key: the check in
-    # tmux covers it, and main::action has its own test.
+    # The event loop draws each frame and applies the action of each key:
+    # the check in tmux covers it, and main::action has its own tests.
     "replace event_loop -> ",
     "in event_loop$",
     # The option flags are distinct bits: ^ gives the same value as |.
