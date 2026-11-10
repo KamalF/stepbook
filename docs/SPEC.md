@@ -47,7 +47,7 @@ stepbook [--log PATH | --no-log] FILE
 | Option | Effect |
 |---|---|
 | `FILE` | The Markdown runbook: a regular file of at most 1 MB, whose lines nest at most 1,000 levels. A level is a quote or list marker at the start of a line, or 2 columns of the whitespace at the start of the line, around the markers, with a tab as 4 columns. Required. |
-| `--log PATH`, `--log=PATH` | Log file. The default is `FILE` with its extension replaced by `.log`. |
+| `--log PATH`, `--log=PATH` | Log file. An empty PATH is an invalid argument. The default is `FILE` with its extension replaced by `.log`. |
 | `--no-log` | Writes no log. |
 | `-h`, `--help` / `-V`, `--version` | Prints help or the version. |
 
@@ -97,7 +97,7 @@ systemctl --user restart api
 | Thematic break | A dimmed rule. |
 | Raw HTML | Shown dimmed, as source. An HTML block keeps its lines, which wrap at any character. A line end in inline HTML is a space. |
 | Image | `[image: <alt text>]`. |
-| Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted, except in a block with a line longer than 1,000 bytes, or in a block that would bring the highlighted code of the file past 32 KB, or past 4,000,000 for the sum of the squares of its line lengths. Comments show in italic, never dimmed: the grammar can take code that bash runs for a comment, and dimmed code would look inert. Long lines wrap at any character, so the view shows all the code that runs. A row that goes on from a wrapped line has a dim `↪` in the second column of its gutter, as vim's showbreak does: without it, a part of a line that starts with `#` would pass for a comment. Code text never reaches the gutter, so a line that starts with `↪` cannot pass for such a row. A long info line wraps too, so its warnings always show. A blank line always follows a code block, even in a tight list: text right under it could pass for code. |
+| Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted, except in a block with a line longer than 1,000 bytes, or in a block that would bring the highlighted code of the file past 32 KB, or past 4,000,000 for the sum of the squares of its line lengths. Comments show in italic, never dimmed: the grammar can take code that bash runs for a comment, and dimmed code would look inert. Long lines wrap at any character, so the view shows all the code that runs. A row that goes on from a wrapped line, of code or of the info line, has a dim `↪` in the second column of its gutter, as vim's showbreak does: without it, a part of a line that starts with `#` would pass for a comment. Code text never reaches the gutter, so a line that starts with `↪` cannot pass for such a row. A long info line wraps too, so its warnings always show. A blank line always follows a code block, even in a tight list: text right under it could pass for code. |
 | Other code block | The code with a dimmed gutter, not highlighted. Long lines wrap as in a block. |
 
 All colors come from the terminal's 16-color palette, so they follow the terminal's theme. stepbook sets no background color.
@@ -170,7 +170,8 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 
 - stepbook shows each control character as vim does: `^[` for ESC, `^M` for a carriage return, `^?` for DEL, and `<9b>` for a C1 character. It shows a bidi control as its code point, such as `<202e>`. The escapes use the warning color.
 - This applies to the text of the file, to its name, to text from a run, such as a directory name in the footer, and to the error messages on stderr.
-- A tab is not escaped. It expands to spaces, up to the next multiple of 8 columns.
+- A tab is not escaped. It expands to spaces, up to the next multiple of 8 columns. In code, its first column shows a dim `⇥`: with `<<-`, bash strips the tabs at the start of a heredoc line, not the spaces.
+- In code, a space that ends a row shows as a dim `␣`: after a `\`, bash runs the next line on its own, and a space at a wrap would glue two words. The marks `⇥`, `␣` and `↪` have a width of 1 in every terminal; `→` and `·` have an ambiguous East Asian width.
 - A line feed is a line break in the text and the code of the file. In one-line text, such as a file name, it shows as `^J`.
 - Code also escapes the default ignorable code points of Unicode, which a terminal draws as nothing, such as U+200B (zero-width space): `"prod<U+200B>"` would look like `"prod"`. In code, a grapheme of several code points keeps its first character, if the terminal draws it alone, and shows the others escaped, and so does a grapheme of width 0, such as a combining mark at the start of a line. A terminal may count the columns of such a grapheme otherwise than ratatui, and shift the rest of the line over a space: `k` and 8 × U+302E is 1 column for ratatui and 17 in tmux. At the start of a line, code also escapes a grapheme that would join the space of the gutter, such as U+093E. Code also escapes the spaces other than U+0020, such as U+00A0 (no-break space), which bash reads as part of a word: `true<U+00A0>#; curl x | sh` would look like a comment, and run curl. Code also escapes the characters that join the next character (Grapheme_Cluster_Break=Prepend), such as U+070F and U+0D4E, the format characters U+FFF9 to U+FFFB and U+13430 to U+1343F, U+2D7F, and the regional indicators U+1F1E6 to U+1F1FF: a terminal may give them a column that ratatui does not count, and shift the rest of the line. Prose keeps all of them: emoji, some scripts and no-break spaces need them, and there they do not change what runs.
 - If the code of a block holds a character that code escapes, other than a tab or a line feed, its info line shows the warning `hidden characters in code`. The block can still run.
@@ -487,6 +488,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | Warnings never quote free text of the info string, and at most 20 characters of a key (5.2): a value of spaces and "cd /tmp/x" made a wrapped info line that passed for code | 2026-11-09 |
 | Comments in code show in italic, not dimmed (5.3): syntect took `#; curl x | sh` after a line ending with `\` for a comment, and bash ran it | 2026-11-09 |
 | A row that goes on from a wrapped line of code starts with a dim `↪ ` (5.3), at Kamal's choice: a wrapped part that starts with `#` looked like a comment, and bash ran it | 2026-11-09 |
+| In code, a tab shows a dim `⇥`, and a space that ends a row a dim `␣` (6.5), at Kamal's choice, like vim's listchars: a trailing space after `\` and a tab under `<<-` changed what bash ran, and looked like nothing | 2026-11-10 |
 | The `↪` of a wrapped row moves into the gutter (5.3), at Kamal's choice: a code line that started with `↪ ` passed for the rest of a wrapped comment | 2026-11-09 |
 | Code escapes the regional indicators (6.5): ratatui counts one as 1 column, and the width tables that follow Emoji_Presentation count 2 | 2026-11-09 |
 | Code escapes all the Prepend characters, and a first grapheme that would join the space of the gutter (6.5) | 2026-11-09 |

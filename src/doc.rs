@@ -376,7 +376,7 @@ impl Builder {
 
     fn push(&mut self, text: &str, style: Style) {
         let style = self.style().patch(style);
-        escape_into(&mut self.text, text, style, &mut self.column, needs_escape);
+        escape_into(&mut self.text, text, style, &mut self.column, Text::Prose);
     }
 
     /// Ends the text before a new element, and adds the blank line that
@@ -671,18 +671,35 @@ pub fn needs_escape_in_code(c: char) -> bool {
         )
 }
 
-/// Appends `text` to `out`, with each character for which `escape` holds
+/// Prose or code: code escapes more characters, and marks its tabs.
+#[derive(Clone, Copy, PartialEq)]
+pub enum Text {
+    Prose,
+    Code,
+}
+
+/// The dim mark of a tab in code: with `<<-`, bash strips the tabs at the
+/// start of a heredoc line, not the spaces. The mark has a width of 1 in
+/// every terminal, unlike "→", whose East Asian width is ambiguous.
+pub const TAB_MARK: &str = "⇥";
+
+/// Appends `text` to `out`, with each character that needs an escape
 /// shown as vim shows it, in the warning color: `^[` for ESC, `^?` for
 /// DEL, `<9b>` for a C1 character and `<202e>` for a bidi control. A tab
-/// expands to spaces up to the next multiple of 8 columns. `column` counts
-/// the columns of the line so far.
+/// expands to spaces up to the next multiple of 8 columns, and in code
+/// starts with `TAB_MARK`. `column` counts the columns of the line so far.
+/// Returns whether it escaped a character.
 pub fn escape_into(
     out: &mut Vec<Span<'static>>,
     text: &str,
     style: Style,
     column: &mut usize,
-    escape: fn(char) -> bool,
+    kind: Text,
 ) -> bool {
+    let escape = match kind {
+        Text::Prose => needs_escape,
+        Text::Code => needs_escape_in_code,
+    };
     // A run of plain text or of escapes, and the bytes of it that `column`
     // counts already.
     let mut run = String::new();
@@ -699,9 +716,16 @@ pub fn escape_into(
         escapes = escape;
         if c == '\t' {
             *column += width(&run[counted..]);
-            let spaces = 8 - *column % 8;
-            run.extend(std::iter::repeat_n(' ', spaces));
+            let mut spaces = 8 - *column % 8;
             *column += spaces;
+            if kind == Text::Code {
+                if !run.is_empty() {
+                    out.push(run_span(std::mem::take(&mut run), style, false));
+                }
+                out.push(Span::styled(TAB_MARK, style.patch(DIM)));
+                spaces -= 1;
+            }
+            run.extend(std::iter::repeat_n(' ', spaces));
             counted = run.len();
         } else if escape {
             push_escape(&mut run, c);
@@ -750,7 +774,7 @@ pub fn escaped_text(text: &str) -> String {
 /// One line of text, with its control characters escaped.
 pub fn escaped(text: &str, style: Style) -> Vec<Span<'static>> {
     let mut out = Vec::new();
-    escape_into(&mut out, text, style, &mut 0, needs_escape);
+    escape_into(&mut out, text, style, &mut 0, Text::Prose);
     out
 }
 
@@ -788,7 +812,7 @@ pub fn code_line(spans: &[Span], hidden: &mut bool) -> Vec<Span<'static>> {
     let mut column = 0;
     for span in spans {
         let (text, style) = (&span.content, span.style);
-        *hidden |= escape_into(&mut escaped, text, style, &mut column, needs_escape_in_code);
+        *hidden |= escape_into(&mut escaped, text, style, &mut column, Text::Code);
     }
     let text: String = escaped.iter().map(|s| s.content.as_ref()).collect();
     let mut starts = Vec::new();
@@ -819,7 +843,9 @@ pub fn code_line(spans: &[Span], hidden: &mut bool) -> Vec<Span<'static>> {
             if let Some(base) = chars.next_if(drawn_alone) {
                 push_styled(&mut out, &base.to_string(), style);
             }
-            style = style.patch(WARNING);
+            // Not the style of the first character: it can be the dim
+            // mark of a tab.
+            style = WARNING;
             let mut shown = String::new();
             chars.for_each(|c| push_escape(&mut shown, c));
             push_styled(&mut out, &shown, style);
@@ -1169,7 +1195,7 @@ mod tests {
         fn escaped_text_has_no_control_character_and_tracks_its_width(text in any::<String>()) {
             let mut column = 0;
             let mut out = Vec::new();
-            escape_into(&mut out, &text, Style::new(), &mut column, needs_escape);
+            escape_into(&mut out, &text, Style::new(), &mut column, Text::Prose);
             prop_assert!(out.iter().all(|s| !s.content.chars().any(needs_escape)));
             prop_assert_eq!(column, out.iter().map(|s| width(&s.content)).sum::<usize>());
         }
@@ -1455,6 +1481,26 @@ mod tests {
     }
 
     #[test]
+    fn a_tab_in_code_starts_with_a_dim_mark() {
+        let spans = code_line(&[Span::raw("a\tb")], &mut false);
+        let shown: String = spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(shown, format!("a{TAB_MARK}      b"));
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.content == TAB_MARK && s.style == DIM)
+        );
+        assert_eq!(shown_in_prose("a\tb"), "a       b");
+    }
+
+    fn shown_in_prose(text: &str) -> String {
+        escaped(text, Style::new())
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect()
+    }
+
+    #[test]
     fn code_escapes_regional_indicators() {
         // ratatui counts one as 1 column; some terminals count 2.
         assert!(needs_escape_in_code('\u{1f1e6}') && needs_escape_in_code('\u{1f1ff}'));
@@ -1548,7 +1594,9 @@ mod tests {
                     code.map(|l| text(&code_line(&[Span::raw(l)], &mut false))).collect();
                 prop_assert_eq!(&shown, &expected);
                 for span in lines.iter().flatten() {
-                    prop_assert!(!span.style.add_modifier.contains(Modifier::DIM), "{:?}", span);
+                    // Only the mark of a tab is dim.
+                    let dim = span.style.add_modifier.contains(Modifier::DIM);
+                    prop_assert!(!dim || span.content.replace(TAB_MARK, "").is_empty(), "{:?}", span);
                     for g in span.styled_graphemes(Style::new()) {
                         prop_assert!(!hides(g.symbol), "{:?} in {:?}", g.symbol, span);
                     }

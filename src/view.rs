@@ -357,6 +357,17 @@ fn code(
         Some(_) => BLOCK_GUTTER,
     };
     let gutter = Span::styled(GUTTER, style);
+    // A row that goes on from a wrapped line has a mark in its gutter:
+    // without it, a part of a line that starts with "#" would pass for a
+    // comment, and a long name for a line of code.
+    let wrapped = [Span::styled("▌", style), Span::styled(WRAP_MARK, DIM)];
+    let gutter_of = |row: usize| {
+        if row == 0 {
+            vec![gutter.clone()]
+        } else {
+            wrapped.to_vec()
+        }
+    };
     let width = width.saturating_sub(GUTTER.chars().count()).max(1);
     let mut out = Vec::new();
     if let Some(i) = block {
@@ -369,23 +380,15 @@ fn code(
             info.push(Span::raw("  "));
             info.extend(escaped(&warnings.join("; "), WARNING));
         }
-        for line in wrap(&info, width) {
-            out.push(Line::from([vec![gutter.clone()], line.spans].concat()));
+        for (row, line) in wrap(&info, width).into_iter().enumerate() {
+            out.push(Line::from([gutter_of(row), line.spans].concat()));
         }
     }
-    // A row that goes on from a wrapped line has a mark in its gutter:
-    // without it, a part of a line that starts with "#" would pass for a
-    // comment.
-    let wrapped = [Span::styled("▌", style), Span::styled(WRAP_MARK, DIM)];
     for line in lines {
-        for (i, part) in hard_wrap(line, width).into_iter().enumerate() {
-            let mut spans = if i == 0 {
-                vec![gutter.clone()]
-            } else {
-                wrapped.to_vec()
-            };
-            spans.extend(part.spans);
-            out.push(Line::from(spans));
+        for (row, part) in hard_wrap(line, width).into_iter().enumerate() {
+            out.push(Line::from(
+                [gutter_of(row), mark_end_space(part.spans)].concat(),
+            ));
         }
     }
     // An empty code block shows as a gutter, so that it, and the list
@@ -394,6 +397,25 @@ fn code(
         out.push(Line::from(gutter));
     }
     out
+}
+
+/// The mark of a space that ends a row of code, which would not show: after
+/// a "\\", bash runs the next line on its own, and a space at a wrap would
+/// glue two words. "␣" has a width of 1 in every terminal, unlike "·".
+const SPACE_MARK: &str = "␣";
+
+fn mark_end_space(mut spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
+    if let Some(last) = spans.last_mut()
+        && last.content.ends_with(' ')
+    {
+        let style = last.style;
+        last.content.to_mut().pop();
+        if last.content.is_empty() {
+            spans.pop();
+        }
+        spans.push(Span::styled(SPACE_MARK, style.patch(DIM)));
+    }
+    spans
 }
 
 /// Draws a table with box-drawing borders. If the table is wider than
@@ -1048,8 +1070,8 @@ mod tests {
         let text = "```bash [name:deploy-the-api-to-production x:1]\n\u{1b}[8m\n```";
         assert_snapshot!(render(text, 30), @"
         ▌ «b:deploy-the-api-to-production»
-        ▌ «yellow:unknown attribute 'x';»
-        ▌ «yellow:hidden characters in code»
+        ▌«d:↪»«yellow:unknown attribute 'x';»
+        ▌«d:↪»«yellow:hidden characters in code»
         ▌ «yellow:^[»«blue:[8m»
         ");
     }
@@ -1196,10 +1218,26 @@ mod tests {
     }
 
     #[test]
+    fn a_space_that_ends_a_row_of_code_shows_a_mark() {
+        // The first row of the rm line takes 38 columns, and ends with the
+        // space before "/".
+        let text = format!(
+            "```bash\necho would remove: \\ \nrm -rf /tmp/{} /\n```",
+            "a".repeat(25)
+        );
+        assert_snapshot!(render(&text, 40), @r"
+        ▌ «b:#1»
+        ▌ «blue:echo» would remove: \«d:␣»
+        ▌ «blue:rm» -rf /tmp/aaaaaaaaaaaaaaaaaaaaaaaaa«d:␣»
+        ▌«d:↪»/
+        ");
+    }
+
+    #[test]
     fn tabs_in_code_expand_to_8_columns() {
         assert_snapshot!(render("```\na\tb\n\tc\n```", 40), @"
-        «d:▌ »a       b
-        «d:▌ »        c
+        «d:▌ »a«d:⇥»      b
+        «d:▌ ⇥»       c
         ");
     }
 
@@ -1250,15 +1288,24 @@ mod tests {
             let doc = parse(&format!("```bash\n{code}\n```\n"));
             let page = layout(&doc, width, None);
             let rows = &page.lines[page.blocks[0].start + 1..page.blocks[0].end];
+            // The text of spans, with the dim mark of a space at a row end
+            // read as the space.
+            let text_of = |spans: &[Span]| -> String {
+                (spans.iter())
+                    .map(|s| match s.content.as_ref() {
+                        SPACE_MARK if s.style.add_modifier.contains(Modifier::DIM) => " ",
+                        text => text,
+                    })
+                    .collect()
+            };
             let mut lines: Vec<String> = Vec::new();
             for row in rows {
-                let text: String = row.spans[1..].iter().map(|s| s.content.as_ref()).collect();
+                let text = text_of(&row.spans[1..]);
                 match row.spans[0].content.as_ref() {
                     "▌ " => lines.push(text),
                     "▌" => {
                         prop_assert_eq!(&row.spans[1], &Span::styled(WRAP_MARK, DIM));
-                        let rest: String = row.spans[2..].iter().map(|s| s.content.as_ref()).collect();
-                        lines.last_mut().unwrap().push_str(&rest);
+                        lines.last_mut().unwrap().push_str(&text_of(&row.spans[2..]));
                     }
                     other => prop_assert!(false, "gutter {:?}", other),
                 }
