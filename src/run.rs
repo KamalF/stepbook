@@ -1040,8 +1040,8 @@ mod tests {
 
     #[test]
     fn exit_without_a_status_in_the_handler_keeps_the_status_of_the_script() {
-        // As in bash: the status from before the trap, but in a subshell
-        // the status of its last command.
+        // As in bash: the status from before the trap, but in a "( )"
+        // subshell the status of its last command.
         let codes = [
             (
                 "set -e\ntrap 'echo cleanup; exit' EXIT\nfalse\n",
@@ -1050,6 +1050,11 @@ mod tests {
             ),
             ("trap 'echo cleanup; exit' EXIT\nexit 3\n", "cleanup\n", 3),
             ("trap '(true; exit) || echo bad' EXIT\nexit 4\n", "", 4),
+            (
+                "trap 'x=$(false; exit); echo \"comsub $?\"' EXIT\nexit 4\n",
+                "comsub 4\n",
+                4,
+            ),
         ];
         for (code, expected, rc) in codes {
             let tmp = tempfile::tempdir().unwrap();
@@ -1066,6 +1071,7 @@ mod tests {
         let codes = [
             "f() { local X=local PATH=/nowhere; local -x ONLY=1; export A=1; exit 1; }\nf\n",
             "f() { local X=local; g; }\ng() { local +x PATH; export A=1; kill -INT $$; }\nf\n",
+            "shopt -s localvar_unset\nf() { local X=local; g; }\ng() { local PATH; export A=1; exit 2; }\nf\n",
         ];
         for code in codes {
             let tmp = tempfile::tempdir().unwrap();
@@ -1498,28 +1504,31 @@ mod tests {
 
     #[test]
     fn a_background_job_outlives_its_run_until_stepbook_ends() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut session = session(tmp.path());
-        // The job is in the process group of the wrapper, which the kernel
-        // hangs up when the wrapper exits. It writes after the run, more
-        // than the buffer of a PTY holds.
-        let code = "(sleep 1.2; seq 1 200000; echo $? > \"$PWD/seq\"; sleep 30) &\necho started\n";
-        let run = session.start(code, "check", 80, 24).unwrap();
-        assert_eq!(wait(&run), ("started\n".into(), Status::Code(0)));
-        let seq = tmp.path().join("seq");
-        let deadline = std::time::Instant::now() + WAIT;
-        while !fs::read_to_string(&seq).is_ok_and(|s| s.ends_with('\n')) {
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert_eq!(fs::read_to_string(&seq).unwrap(), "0\n");
-        assert!(RUNS.lock().unwrap().contains(&run.pid));
-        end_sessions(&[run.pid.as_raw_pid()]);
-        assert_eq!(session_of(&run), []);
-        // The reader reaps the wrapper once its jobs end.
-        while RUNS.lock().unwrap().contains(&run.pid) {
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(std::time::Duration::from_millis(20));
+        // A child of the wrapper, and a job that its parent left. Both are
+        // in the process group of the wrapper, which the kernel hangs up
+        // when the wrapper exits. The job writes after the run, more than
+        // the buffer of a PTY holds.
+        let job = "(sleep 1.2; seq 1 200000; echo $? > \"$PWD/seq\"; sleep 30)";
+        for code in [format!("{job} &\n"), format!("({job} &)\n")] {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut session = session(tmp.path());
+            let run = session.start(&code, "check", 80, 24).unwrap();
+            assert_eq!(wait(&run), (String::new(), Status::Code(0)), "{code}");
+            let seq = tmp.path().join("seq");
+            let deadline = std::time::Instant::now() + WAIT;
+            while !fs::read_to_string(&seq).is_ok_and(|s| s.ends_with('\n')) {
+                assert!(std::time::Instant::now() < deadline, "{code}");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            assert_eq!(fs::read_to_string(&seq).unwrap(), "0\n", "{code}");
+            assert!(RUNS.lock().unwrap().contains(&run.pid), "{code}");
+            end_sessions(&[run.pid.as_raw_pid()]);
+            assert_eq!(session_of(&run), [], "{code}");
+            // The reader reaps the wrapper once its jobs end.
+            while RUNS.lock().unwrap().contains(&run.pid) {
+                assert!(std::time::Instant::now() < deadline, "{code}");
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
         }
     }
 

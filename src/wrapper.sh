@@ -60,6 +60,9 @@ __stepbook_save() {
     (
         builtin trap - ERR
         set +eEu
+        # Under localvar_unset, an unset would leave the local unset, with
+        # the global variable still hidden.
+        shopt -u localvar_unset
         # mapfile splits on line feeds, whatever IFS the script exported.
         mapfile -t __stepbook_names <<<"$(builtin compgen -e)"
         builtin printf '%s\0' "${PWD-}"
@@ -97,7 +100,8 @@ __stepbook_status() {
 # when the wrapper exits. So the wrapper first closes its files, so that
 # they read the end of their input, and waits up to 1 s for its children to
 # end. A background job, which keeps them open, costs that second. Then the
-# children left keep running (spec 8.2).
+# jobs keep running (spec 8.2), the children left and the processes that
+# their parents left, such as the job of "(cmd &)".
 #
 # The shell exits right after, so the drain drops the options and the
 # traps of the script, which would act on its lines: set -f would keep the
@@ -116,17 +120,18 @@ __stepbook_drain() {
             exec {__stepbook_fd}>&- 2>/dev/null
         fi
     done
-    exec {__stepbook_fd}<>"$__stepbook_timer" || return 0
-    while [ "$__stepbook_tries" -gt 0 ]; do
-        __stepbook_children=
-        # The file has no final line feed: read fails, and reads it all.
-        read -r __stepbook_children <"/proc/$BASHPID/task/$BASHPID/children" || :
-        if [ -z "$__stepbook_children" ]; then
-            return 0
-        fi
-        read -r -t 0.05 -u "$__stepbook_fd" || :
-        __stepbook_tries=$((__stepbook_tries - 1))
-    done
+    if exec {__stepbook_fd}<>"$__stepbook_timer"; then
+        while [ "$__stepbook_tries" -gt 0 ]; do
+            __stepbook_children=
+            # The file has no final line feed: read fails, and reads it all.
+            read -r __stepbook_children <"/proc/$BASHPID/task/$BASHPID/children" || :
+            if [ -z "$__stepbook_children" ]; then
+                break
+            fi
+            read -r -t 0.05 -u "$__stepbook_fd" || :
+            __stepbook_tries=$((__stepbook_tries - 1))
+        done
+    fi
     __stepbook_keep_jobs
 }
 
@@ -149,17 +154,19 @@ __stepbook_keep_jobs() {
 
 # While the handler of the script runs: its exit would skip the second
 # save and the drain. In POSIX mode, bash refuses a function named exit,
-# and finds its builtin first anyway. Without N, exit in the handler gives
-# the status from before the trap, but in a subshell that of the last
-# command.
+# and finds its builtin first anyway. Without N, bash gives the status from
+# before the trap, but in a "( )" subshell that of the last command: the
+# function gives $? back before it calls the builtin.
 __stepbook_exit_function='exit() {
     { local __stepbook_status=$?; set +axvT; } 2>/dev/null
-    if [ "$BASHPID" != "$__stepbook_pid" ]; then
-        builtin exit "${1-$__stepbook_status}"
+    if [ "$BASHPID" = "$__stepbook_pid" ]; then
+        __stepbook_save
+        __stepbook_drain
     fi
-    __stepbook_save
-    __stepbook_drain
-    builtin exit "$@"
+    if [ "$__stepbook_status" -eq 0 ]; then
+        builtin exit "$@"
+    fi
+    __stepbook_status "$__stepbook_status" || builtin exit "$@"
 }'
 
 # Saves the state, then runs the handler of the script with the exit
