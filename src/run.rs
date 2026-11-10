@@ -178,10 +178,6 @@ pub struct Run {
     state_file: PathBuf,
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the block states of the next commit")
-)]
 pub enum Event {
     Output(Vec<u8>),
     Exit(Status),
@@ -193,10 +189,6 @@ pub enum Status {
     Signal(i32),
 }
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the block states of the next commit")
-)]
 impl Status {
     /// The exit code, as a shell reports it: 128 + N for signal N.
     pub fn rc(self) -> i32 {

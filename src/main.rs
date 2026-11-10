@@ -208,6 +208,7 @@ fn open(args: &Args) -> Result<Exit, String> {
         session,
         file,
         log,
+        ticks: crossbeam_channel::tick(TICK),
     };
     std::thread::spawn(move || read_terminal(sender));
     let result = event_loop(&mut terminal, &mut app, &control);
@@ -311,6 +312,7 @@ fn read_terminal(control: Sender<Control>) {
 struct Ran {
     terminal: term::Terminal,
     run: Option<run::Run>,
+    started: Instant,
 }
 
 /// The state that the event loop owns.
@@ -322,14 +324,20 @@ struct App {
     /// The absolute paths of the runbook and of the log.
     file: PathBuf,
     log: Option<PathBuf>,
+    /// While blocks run, a tick updates their time and blinks their glyph.
+    ticks: Receiver<Instant>,
 }
 
 /// An event of the loop: a control event, or a message from the run of a
 /// block.
 enum Incoming {
     Control(Control),
+    Tick,
     Run(usize, run::Event),
 }
+
+/// The blink of the glyph of a running block, and the update of its time.
+const TICK: Duration = Duration::from_millis(500);
 
 /// After output, the loop reads the next events for this long before it
 /// draws: a program that prints a lot redraws the view at most this often.
@@ -353,6 +361,11 @@ impl App {
         // another's.
         let mut select = Select::new();
         select.recv(control);
+        // Without runs, the tick would only wake the loop. With runs, it
+        // comes right after the control channel.
+        if !runs.is_empty() {
+            select.recv(&self.ticks);
+        }
         for (_, events) in &runs {
             select.recv(events);
         }
@@ -362,8 +375,12 @@ impl App {
         };
         Some(match operation.index() {
             0 => operation.recv(control).map(Incoming::Control),
+            1 => {
+                let _ = operation.recv(&self.ticks);
+                Ok(Incoming::Tick)
+            }
             n => {
-                let (i, events) = runs[n - 1];
+                let (i, events) = runs[n - 2];
                 let event = operation.recv(events);
                 let event = event.expect("a reader sends the exit status before it stops");
                 Ok(Incoming::Run(i, event))
@@ -407,14 +424,23 @@ impl App {
             log: self.log.as_deref(),
             block: &label,
         };
-        if let Ok(run) = self.session.start(&block.code, &env, columns, rows) {
-            let terminal = term::Terminal::new(columns, rows);
-            self.ran[i] = Some(Ran {
-                terminal,
-                run: Some(run),
-            });
-            self.view.set_output(i, Vec::new(), size);
-        }
+        let started = self.session.start(&block.code, &env, columns, rows);
+        let status = match started {
+            Ok(run) => {
+                self.ran[i] = Some(Ran {
+                    terminal: term::Terminal::new(columns, rows),
+                    run: Some(run),
+                    started: Instant::now(),
+                });
+                view::Status::Running(Duration::ZERO)
+            }
+            Err(reason) => {
+                self.ran[i] = None;
+                view::Status::NotStarted(reason)
+            }
+        };
+        self.view.set_status(i, Some(status));
+        self.view.set_output(i, Vec::new(), size);
     }
 
     /// Reads a message from the run of block `i`.
@@ -424,14 +450,35 @@ impl App {
         };
         match event {
             run::Event::Output(bytes) => ran.terminal.process(&bytes),
-            run::Event::Exit(_) => {
+            run::Event::Exit(status) => {
                 if let Some(run) = ran.run.take() {
-                    self.session.finish(&run);
+                    let saved = self.session.finish(&run);
+                    let ended = view::Status::Ended {
+                        rc: status.rc(),
+                        signal: match status {
+                            run::Status::Signal(signal) => Some(signal),
+                            run::Status::Code(_) => None,
+                        },
+                        took: ran.started.elapsed(),
+                        saved,
+                    };
+                    self.view.set_status(i, Some(ended));
                 }
             }
         }
         let lines = ran.terminal.last_rows(term::OUTPUT_ROWS, ran.run.is_some());
         self.view.set_output(i, lines, size);
+    }
+
+    /// Updates the time of each running block, and blinks its glyph.
+    fn tick(&mut self) {
+        self.view.blink = !self.view.blink;
+        for (i, ran) in self.ran.iter().enumerate() {
+            if let Some(ran) = ran.as_ref().filter(|ran| ran.run.is_some()) {
+                let status = view::Status::Running(ran.started.elapsed());
+                self.view.set_status(i, Some(status));
+            }
+        }
     }
 
     /// Gives each running block a PTY of its new size (spec 6.3).
@@ -443,6 +490,7 @@ impl App {
             let Some(Ran {
                 terminal,
                 run: Some(run),
+                ..
             }) = &mut self.ran[i]
             else {
                 continue;
@@ -492,6 +540,10 @@ fn event_loop(
                     Duration::ZERO
                 }
                 Incoming::Control(Control::Signal(signal)) => return Ok(Exit::Signal(signal)),
+                Incoming::Tick => {
+                    app.tick();
+                    Duration::ZERO
+                }
                 Incoming::Run(i, event) => {
                     app.read(i, event, size);
                     FRAME
@@ -697,6 +749,7 @@ mod tests {
             session,
             file: tmp.join("run.md"),
             log: None,
+            ticks: crossbeam_channel::never(),
         }
     }
 
@@ -733,6 +786,84 @@ mod tests {
         assert_eq!(output(&app, 0), "hi");
         let a = app.session.state.vars.get(OsStr::new("A"));
         assert_eq!(a.map(|a| a.to_str().unwrap()), Some("1"));
+        let Some(view::Status::Ended {
+            rc, signal, saved, ..
+        }) = app.view.status(0)
+        else {
+            panic!("not ended: {:?}", app.view.status(0));
+        };
+        assert_eq!((*rc, *signal, *saved), (0, None, true));
+    }
+
+    #[test]
+    fn a_run_shows_its_exit_code_and_whether_it_saved_the_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app(
+            "```bash
+exec bash -c 'kill -INT $$'
+```
+",
+            tmp.path(),
+        );
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        let Some(view::Status::Ended {
+            rc, signal, saved, ..
+        }) = app.view.status(0)
+        else {
+            panic!("not ended: {:?}", app.view.status(0));
+        };
+        assert_eq!((*rc, *signal, *saved), (130, Some(2), false));
+    }
+
+    #[test]
+    fn a_run_that_cannot_start_shows_why_and_can_run_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app(
+            "```bash
+true
+```
+",
+            tmp.path(),
+        );
+        app.session.state.dir = tmp.path().join("gone");
+        enter(&mut app, SIZE);
+        let reason = format!(
+            "cannot start: directory {} no longer exists",
+            tmp.path().join("gone").display()
+        );
+        assert_eq!(app.view.status(0), Some(&view::Status::NotStarted(reason)));
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        assert!(matches!(
+            app.view.status(0),
+            Some(view::Status::Ended { rc: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn a_tick_updates_the_running_blocks_and_blinks_their_glyph() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app(
+            "```bash
+echo ready
+read
+```
+",
+            tmp.path(),
+        );
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        app.ran[0].as_mut().unwrap().started -= Duration::from_secs(5);
+        app.tick();
+        assert!(!app.view.blink);
+        let Some(view::Status::Running(took)) = app.view.status(0) else {
+            panic!("not running: {:?}", app.view.status(0));
+        };
+        assert!(*took >= Duration::from_secs(5));
+        let ran = app.ran[0].as_ref().unwrap();
+        ran.run.as_ref().unwrap().write(b"\n").unwrap();
+        read_until(&mut app, SIZE, |app| !running(app));
     }
 
     #[test]

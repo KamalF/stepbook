@@ -138,11 +138,12 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 | Not run | ` ` | name |
 | Running | `●` (blinking) | `running m:ss` |
 | Succeeded | `✔` | `rc=0 m:ss` |
-| Failed | `✘` | `rc=N m:ss`; for a signal, `rc=130 SIGINT`; for a run that could not start, the reason, such as `cannot start: directory /x no longer exists` |
+| Failed | `✘` | `rc=N m:ss`; for a signal, `rc=130 SIGINT m:ss`; for a run that could not start, the reason, such as `cannot start: directory /x no longer exists` |
 | Changed | `~` plus the last result | `changed since run`, then the last result |
 | Cannot run | `!` | the problem of the file, such as `duplicate name` |
 
-- stepbook blinks the `●` itself, every 0.5 s: terminals differ on the blink attribute.
+- The info line shows the glyph and the state after the name, such as `restart  ✔ rc=0 0:02`, then the problem and the warnings. A run that saved no state adds `state not saved` (9.2).
+- stepbook blinks the `●` of the sidebar itself, every 0.5 s: terminals differ on the blink attribute. The time of a running block shows to the second.
 - A run that cannot start fails, so that `Enter` can run the block again. Only a reload ends "Cannot run".
 
 ### 6.3 Output under a block

@@ -3,6 +3,7 @@ use ratatui::Frame;
 use std::cell::RefCell;
 use std::ops::Range;
 use std::rc::Rc;
+use std::time::Duration;
 
 use ratatui::buffer::CellWidth;
 use ratatui::layout::{Constraint, Layout, Position, Rect, Size};
@@ -15,6 +16,7 @@ use crate::doc::{Cell, DIM, Document, Item, Kind, WARNING, escaped};
 
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const ERROR: Style = Style::new().fg(Color::Red);
+const SUCCESS: Style = Style::new().fg(Color::Green);
 const BLOCK_GUTTER: Style = Style::new();
 const SELECTED: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
 /// "▐" has an East Asian width of N, so every terminal draws it 1 column
@@ -28,30 +30,58 @@ const WRAP_MARK: &str = "↪";
 /// The sidebar shows on terminals at least this wide.
 const SIDEBAR_SCREEN_WIDTH: u16 = 80;
 
+/// The state of a block that has run, or tried to (spec 6.2).
+#[derive(Clone, Debug, PartialEq)]
+pub enum Status {
+    /// Running for this long.
+    Running(Duration),
+    /// Ended with exit code `rc`, killed by `signal` if any, after `took`.
+    /// `saved` is false if the run saved no session state (spec 9.2).
+    Ended {
+        rc: i32,
+        signal: Option<i32>,
+        took: Duration,
+        saved: bool,
+    },
+    /// Could not start, for this reason.
+    NotStarted(String),
+}
+
 /// The state of the screen: the document, its file name, the selection,
-/// and the output of the blocks.
+/// and the state and output of the blocks.
 pub struct View {
     pub doc: Document,
     pub title: String,
     pub selected: Option<usize>,
     pub scroll: usize,
+    /// Whether the glyph of a running block shows: it blinks.
+    pub blink: bool,
+    statuses: Vec<Option<Status>>,
     /// The output under each block: the last rows of its terminal.
     outputs: Vec<Vec<Line<'static>>>,
     /// The layout of the document at the last width: each key and each
     /// frame needs it, and 1 MB of tabs in code takes 0.9 s to lay out.
     page: RefCell<Option<Rc<Page>>>,
+    /// The info rows of each block at the width of the page. They change
+    /// with the state of the block, every second while it runs, so they
+    /// stay out of the page.
+    infos: RefCell<Vec<Option<Vec<Line<'static>>>>>,
 }
 
 impl View {
     pub fn new(doc: Document, title: String) -> Self {
         let selected = (!doc.blocks.is_empty()).then_some(0);
+        let blocks = doc.blocks.len();
         View {
-            outputs: vec![Vec::new(); doc.blocks.len()],
             doc,
             title,
             selected,
             scroll: 0,
+            blink: true,
+            statuses: vec![None; blocks],
+            outputs: vec![Vec::new(); blocks],
             page: RefCell::default(),
+            infos: RefCell::new(vec![None; blocks]),
         }
     }
 
@@ -68,26 +98,8 @@ impl View {
         }
         frame.render_widget(self.document_block(), document);
         let (shown, text, scroll) = self.shown(frame.area());
-        let page = &shown.page;
         for (y, row) in (text.y..text.bottom()).zip(scroll..shown.len()) {
-            let line = match shown.row(row) {
-                Row::Page(i) => match self.selected {
-                    Some(block) if page.blocks[block].contains(&i) => {
-                        let mut line = page.lines[i].clone();
-                        line.spans[page.prefixes[block].len()].style = SELECTED;
-                        line
-                    }
-                    _ => page.lines[i].clone(),
-                },
-                // Output takes the column of the code, and no gutter: code
-                // rows always have one.
-                Row::Output(block, i) => {
-                    let mut spans = page.prefixes[block].clone();
-                    spans.push(Span::raw(" ".repeat(GUTTER.chars().count())));
-                    spans.extend(self.outputs[block][i].spans.iter().cloned());
-                    Line::from(spans)
-                }
-            };
+            let line = self.line(&shown, row, self.selected);
             frame.buffer_mut().set_line(text.x, y, &line, text.width);
         }
         let line = Line::from(vec![
@@ -125,30 +137,104 @@ impl View {
     fn shown(&self, screen: Rect) -> (Shown, Rect, usize) {
         let (_, document, _) = self.areas(screen);
         let text = self.document_block().inner(document);
-        let width = usize::from(text.width);
+        let shown = self.shown_at(usize::from(text.width));
+        let scroll = self.scroll.min(shown.max_scroll(usize::from(text.height)));
+        (shown, text, scroll)
+    }
+
+    /// The rows of the document view at a width of text.
+    fn shown_at(&self, width: usize) -> Shown {
         let mut cache = self.page.borrow_mut();
         let page = match &*cache {
             Some(page) if page.width == width => page.clone(),
-            _ => cache.insert(Rc::new(layout(&self.doc, width))).clone(),
+            _ => {
+                self.infos.borrow_mut().fill(None);
+                cache.insert(Rc::new(layout(&self.doc, width))).clone()
+            }
         };
-        let shown = Shown::new(page, &self.outputs);
-        let scroll = self.scroll.min(shown.max_scroll(usize::from(text.height)));
-        (shown, text, scroll)
+        let mut infos = self.infos.borrow_mut();
+        for (i, info) in infos.iter_mut().enumerate() {
+            info.get_or_insert_with(|| {
+                info_rows(&self.doc, i, self.statuses[i].as_ref(), page.widths[i])
+            });
+        }
+        let infos = infos.iter().map(|info| info.as_ref().map_or(0, Vec::len));
+        let outputs = self.outputs.iter().map(Vec::len);
+        Shown::new(page, infos.collect(), outputs.collect())
+    }
+
+    /// Row `row` of the document view. The gutter of the `selected` block
+    /// takes the style of the selection.
+    fn line(&self, shown: &Shown, row: usize, selected: Option<usize>) -> Line<'static> {
+        let page = &shown.page;
+        let gutter = |mut line: Line<'static>, block: usize| {
+            if selected == Some(block) {
+                line.spans[page.prefixes[block].len()].style = SELECTED;
+            }
+            line
+        };
+        match shown.row(row) {
+            Row::Page(i) => match page.blocks.iter().position(|b| b.contains(&i)) {
+                Some(block) => gutter(page.lines[i].clone(), block),
+                None => page.lines[i].clone(),
+            },
+            // The first info row takes the list marker of the item.
+            Row::Info(block, i) => {
+                let prefix = match i {
+                    0 => &page.firsts[block],
+                    _ => &page.prefixes[block],
+                };
+                let info = &self.infos.borrow()[block];
+                let rows = info.as_ref().expect("shown_at makes the info rows");
+                let line = Line::from([prefix.clone(), rows[i].spans.clone()].concat());
+                gutter(line, block)
+            }
+            // Output takes the column of the code, and no gutter: code rows
+            // always have one.
+            Row::Output(block, i) => {
+                let mut spans = page.prefixes[block].clone();
+                spans.push(Span::raw(" ".repeat(GUTTER.chars().count())));
+                spans.extend(self.outputs[block][i].spans.iter().cloned());
+                Line::from(spans)
+            }
+        }
+    }
+
+    /// All the rows of the document view at a width of text, without a
+    /// selection, and the rows of each block: its info line, then its code.
+    #[cfg(test)]
+    pub fn rows(&self, width: usize) -> (Vec<Line<'static>>, Vec<Range<usize>>) {
+        let shown = self.shown_at(width);
+        let lines = (0..shown.len()).map(|row| self.line(&shown, row, None));
+        let blocks = (0..self.doc.blocks.len()).map(|i| shown.block(i));
+        (lines.collect(), blocks.collect())
+    }
+
+    /// Sets the state of block `i`.
+    pub fn set_status(&mut self, i: usize, status: Option<Status>) {
+        if self.statuses[i] != status {
+            self.statuses[i] = status;
+            self.infos.get_mut()[i] = None;
+        }
     }
 
     /// The size of the PTY of block `i` on a screen of `size`: the columns
     /// of its code, by the height of the screen without the footer (spec
     /// 6.3).
     pub fn pty_size(&self, i: usize, size: Size) -> (u16, u16) {
-        let (shown, text, _) = self.shown(screen(size));
-        let prefix = text_width(&shown.page.prefixes[i]) + GUTTER.chars().count();
-        let columns = usize::from(text.width).saturating_sub(prefix).max(1);
+        let (shown, _, _) = self.shown(screen(size));
+        let columns = shown.page.widths[i].max(1);
         (columns as u16, size.height.saturating_sub(1).max(1))
     }
 
     #[cfg(test)]
     pub fn output(&self, i: usize) -> &[Line<'static>] {
         &self.outputs[i]
+    }
+
+    #[cfg(test)]
+    pub fn status(&self, i: usize) -> Option<&Status> {
+        self.statuses[i].as_ref()
     }
 
     /// Sets the output under block `i`. If the block is selected, and its
@@ -161,7 +247,7 @@ impl View {
             return;
         }
         let (shown, text, scroll) = self.shown(screen(size));
-        let end = shown.block(i).end + self.outputs[i].len();
+        let end = shown.block(i).end + shown.outputs[i];
         self.scroll = scroll.max(end.saturating_sub(usize::from(text.height)));
     }
 
@@ -202,9 +288,11 @@ impl View {
             } else {
                 (Span::raw(" "), Style::new())
             };
-            let glyph = match self.doc.blocks[i].problem {
-                Some(_) => Span::styled("!", ERROR),
-                None => Span::raw(" "),
+            let glyph = match (self.doc.blocks[i].problem, &self.statuses[i]) {
+                (Some(_), _) => Span::styled("!", ERROR),
+                (None, Some(Status::Running(_))) if self.blink => Span::styled("●", WARNING),
+                (None, Some(status)) => status_glyph(status),
+                (None, None) => Span::raw(" "),
             };
             let mut spans = vec![marker, glyph, Span::raw(" ")];
             spans.extend(truncate(
@@ -306,29 +394,40 @@ fn screen(size: Size) -> Rect {
     Rect::from((Position::ORIGIN, size))
 }
 
-/// The rows of the document view: the lines of the page, with the output
-/// of each block under its code.
+/// The rows of the document view: the lines of the page, with the info
+/// rows of each block above its code, and its output under it.
 struct Shown {
     page: Rc<Page>,
-    /// The rows of output above each block, then the rows of all output.
+    /// The info rows and the output rows of each block.
+    infos: Vec<usize>,
+    outputs: Vec<usize>,
+    /// The rows of info and output above each block, then in all.
     above: Vec<usize>,
 }
 
 /// A row of the document view.
+#[derive(Debug, PartialEq)]
 enum Row {
     /// A line of the page.
     Page(usize),
+    /// An info row of a block.
+    Info(usize, usize),
     /// A row of the output of a block.
     Output(usize, usize),
 }
 
 impl Shown {
-    fn new(page: Rc<Page>, outputs: &[Vec<Line<'static>>]) -> Shown {
+    fn new(page: Rc<Page>, infos: Vec<usize>, outputs: Vec<usize>) -> Shown {
         let mut above = vec![0];
-        for output in outputs {
-            above.push(above[above.len() - 1] + output.len());
+        for (info, output) in infos.iter().zip(&outputs) {
+            above.push(above[above.len() - 1] + info + output);
         }
-        Shown { page, above }
+        Shown {
+            page,
+            infos,
+            outputs,
+            above,
+        }
     }
 
     fn len(&self) -> usize {
@@ -342,26 +441,37 @@ impl Shown {
 
     /// The rows of the info line and the code of block `i`.
     fn block(&self, i: usize) -> Range<usize> {
-        let block = &self.page.blocks[i];
-        block.start + self.above[i]..block.end + self.above[i]
+        let code = &self.page.blocks[i];
+        code.start + self.above[i]..code.end + self.above[i] + self.infos[i]
     }
 
-    /// The row of the paragraph above block `i`.
+    /// The row of the paragraph above block `i`, else its first row.
     fn top(&self, i: usize) -> usize {
-        self.page.tops[i] + self.above[i]
+        match self.page.tops[i] {
+            top if top == self.page.blocks[i].start => self.block(i).start,
+            top => top + self.above[i],
+        }
     }
 
     fn row(&self, row: usize) -> Row {
-        // The blocks whose output starts at or above `row`.
-        let blocks = &self.page.blocks;
-        let n = (0..blocks.len())
-            .take_while(|&i| blocks[i].end + self.above[i] <= row)
+        // The blocks that start at or above `row`.
+        let started = (0..self.page.blocks.len())
+            .take_while(|&i| self.block(i).start <= row)
             .count();
-        match n.checked_sub(1) {
-            Some(i) if row < blocks[i].end + self.above[i + 1] => {
-                Row::Output(i, row - blocks[i].end - self.above[i])
-            }
-            _ => Row::Page(row - self.above[n]),
+        let Some(i) = started.checked_sub(1) else {
+            return Row::Page(row);
+        };
+        let start = self.block(i).start;
+        let code = start + self.infos[i];
+        let output = self.block(i).end;
+        if row < code {
+            Row::Info(i, row - start)
+        } else if row < output {
+            Row::Page(self.page.blocks[i].start + row - code)
+        } else if row < output + self.outputs[i] {
+            Row::Output(i, row - output)
+        } else {
+            Row::Page(row - self.above[i + 1])
         }
     }
 }
@@ -392,7 +502,8 @@ fn scroll_to(scroll: usize, top: usize, block: &Range<usize>, height: usize) -> 
 pub struct Page {
     pub width: usize,
     pub lines: Vec<Line<'static>>,
-    /// The lines of each block: its info line, then its code.
+    /// The lines of the code of each block. Its info rows come above them,
+    /// and change with its state: the page leaves them out.
     pub blocks: Vec<Range<usize>>,
     /// The first line of the paragraph above each block, or the first line
     /// of the block if no paragraph is right above it.
@@ -402,6 +513,12 @@ pub struct Page {
     /// draws the gutter of the selected block in the style of the
     /// selection.
     pub prefixes: Vec<Vec<Span<'static>>>,
+    /// The prefix of the first row of each block, its first info row, with
+    /// the marker of its list item.
+    pub firsts: Vec<Vec<Span<'static>>>,
+    /// The columns of the code of each block, after its prefixes and
+    /// gutter.
+    pub widths: Vec<usize>,
 }
 
 /// The lines of the document view at `width` columns.
@@ -410,6 +527,8 @@ pub fn layout(doc: &Document, width: usize) -> Page {
     let mut blocks = vec![0..0; doc.blocks.len()];
     let mut tops = vec![0; doc.blocks.len()];
     let mut prefixes = vec![Vec::new(); doc.blocks.len()];
+    let mut firsts = vec![Vec::new(); doc.blocks.len()];
+    let mut widths = vec![0; doc.blocks.len()];
     // The first line of the last item that is not blank, if it is text.
     let mut paragraph = None;
     for item in &doc.items {
@@ -431,18 +550,25 @@ pub fn layout(doc: &Document, width: usize) -> Page {
                 body
             }
             Kind::Table(aligns, rows) => table(aligns, rows, width),
-            Kind::Code { lines, block } => code(doc, lines, *block, width),
+            Kind::Code { lines, block } => code(lines, *block, width),
             Kind::Source(lines) => lines.iter().flat_map(|l| hard_wrap(l, width)).collect(),
             Kind::Rule => vec![Line::from(Span::styled("─".repeat(width), DIM))],
             Kind::Blank => vec![Line::default()],
         };
-        lines.extend(prefixed(first, rest, body));
         match item.kind {
+            // The first row of a block is its first info row.
             Kind::Code { block: Some(i), .. } => {
+                lines.extend(prefixed(rest, rest, body));
                 blocks[i] = start..lines.len();
                 tops[i] = paragraph.unwrap_or(start);
                 prefixes[i] = rest.to_vec();
+                firsts[i] = first.to_vec();
+                widths[i] = width.saturating_sub(GUTTER.chars().count()).max(1);
             }
+            _ => lines.extend(prefixed(first, rest, body)),
+        }
+        match item.kind {
+            Kind::Code { block: Some(_), .. } => {}
             Kind::Blank => continue,
             _ => {}
         }
@@ -454,6 +580,8 @@ pub fn layout(doc: &Document, width: usize) -> Page {
         blocks,
         tops,
         prefixes,
+        firsts,
+        widths,
     }
 }
 
@@ -482,61 +610,125 @@ fn prefixed<'a>(
     })
 }
 
-/// Draws a code block with a gutter. A block also gets an info line: its
-/// label, its problem and its warnings. The info line and the code wrap
-/// at the width, so that the view shows every warning and all the code
-/// that runs.
-fn code(
-    doc: &Document,
-    lines: &[Vec<Span<'static>>],
-    block: Option<usize>,
-    width: usize,
-) -> Vec<Line<'static>> {
+/// Draws a code block with a gutter. The code wraps at the width, so that
+/// the view shows all the code that runs. The info line of a block is not
+/// part of it: see `info_rows`.
+fn code(lines: &[Vec<Span<'static>>], block: Option<usize>, width: usize) -> Vec<Line<'static>> {
     let style = match block {
         None => DIM,
         Some(_) => BLOCK_GUTTER,
     };
-    let gutter = Span::styled(GUTTER, style);
-    // A row that goes on from a wrapped line has a mark in its gutter:
-    // without it, a part of a line that starts with "#" would pass for a
-    // comment, and a long name for a line of code.
-    let wrapped = [Span::styled("▐", style), Span::styled(WRAP_MARK, DIM)];
-    let gutter_of = |row: usize| {
-        if row == 0 {
-            vec![gutter.clone()]
-        } else {
-            wrapped.to_vec()
-        }
-    };
     let width = width.saturating_sub(GUTTER.chars().count()).max(1);
     let mut out = Vec::new();
-    if let Some(i) = block {
-        let mut info = vec![Span::styled(doc.label(i), BOLD)];
-        if let Some(problem) = doc.blocks[i].problem {
-            info.extend([Span::raw("  "), Span::styled(problem, ERROR)]);
-        }
-        let warnings = &doc.blocks[i].warnings;
-        if !warnings.is_empty() {
-            info.push(Span::raw("  "));
-            info.extend(escaped(&warnings.join("; "), WARNING));
-        }
-        for (row, line) in wrap(&info, width).into_iter().enumerate() {
-            out.push(Line::from([gutter_of(row), line.spans].concat()));
-        }
-    }
     for line in lines {
         for (row, part) in hard_wrap(line, width).into_iter().enumerate() {
             out.push(Line::from(
-                [gutter_of(row), mark_end_space(part.spans)].concat(),
+                [gutter(row, style), mark_end_space(part.spans)].concat(),
             ));
         }
     }
     // An empty code block shows as a gutter, so that it, and the list
-    // marker before it, stay in view.
-    if out.is_empty() {
-        out.push(Line::from(gutter));
+    // marker before it, stay in view. A block has its info line.
+    if out.is_empty() && block.is_none() {
+        out.push(Line::from(gutter(0, style)));
     }
     out
+}
+
+/// The gutter of row `row` of a line. A row that goes on from a wrapped
+/// line has a mark in its gutter: without it, a part of a line that starts
+/// with "#" would pass for a comment, and a long name for a line of code.
+fn gutter(row: usize, style: Style) -> Vec<Span<'static>> {
+    match row {
+        0 => vec![Span::styled(GUTTER, style)],
+        _ => vec![Span::styled("▐", style), Span::styled(WRAP_MARK, DIM)],
+    }
+}
+
+/// The info line of block `i`, with its gutter, wrapped at `width`, the
+/// columns of the code: its label, its state, its problem and its
+/// warnings. The info line wraps, so that the view shows every warning.
+fn info_rows(
+    doc: &Document,
+    i: usize,
+    status: Option<&Status>,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let mut info = vec![Span::styled(doc.label(i), BOLD)];
+    if let Some(status) = status {
+        info.push(Span::raw("  "));
+        info.extend(status_spans(status));
+    }
+    if let Some(problem) = doc.blocks[i].problem {
+        info.extend([Span::raw("  "), Span::styled(problem, ERROR)]);
+    }
+    let warnings = &doc.blocks[i].warnings;
+    if !warnings.is_empty() {
+        info.push(Span::raw("  "));
+        info.extend(escaped(&warnings.join("; "), WARNING));
+    }
+    let rows = wrap(&info, width).into_iter().enumerate();
+    let rows = rows.map(|(row, line)| Line::from([gutter(row, BLOCK_GUTTER), line.spans].concat()));
+    rows.collect()
+}
+
+/// The glyph of a block that has run, in the sidebar (spec 6.2).
+fn status_glyph(status: &Status) -> Span<'static> {
+    match status {
+        Status::Running(_) => Span::raw(" "),
+        Status::Ended { rc: 0, .. } => Span::styled("✔", SUCCESS),
+        Status::Ended { .. } | Status::NotStarted(_) => Span::styled("✘", ERROR),
+    }
+}
+
+/// The state of a block on its info line (spec 6.2): `● running 0:04`,
+/// `✔ rc=0 0:02`, `✘ rc=130 SIGINT 0:03`, or why it did not start.
+fn status_spans(status: &Status) -> Vec<Span<'static>> {
+    let time = |took: &Duration| {
+        let seconds = took.as_secs();
+        format!("{}:{:02}", seconds / 60, seconds % 60)
+    };
+    match status {
+        Status::Running(took) => vec![
+            Span::styled("● ", WARNING),
+            Span::raw(format!("running {}", time(took))),
+        ],
+        Status::Ended {
+            rc,
+            signal,
+            took,
+            saved,
+        } => {
+            let mut text = format!("rc={rc}");
+            if let Some(signal) = signal {
+                text += &format!(" {}", signal_name(*signal));
+            }
+            text += &format!(" {}", time(took));
+            let mut spans = vec![status_glyph(status), Span::raw(" "), Span::raw(text)];
+            if !saved {
+                spans.extend([Span::raw("  "), Span::styled("state not saved", WARNING)]);
+            }
+            spans
+        }
+        // The reason can quote a directory name, from a run (spec 6.5).
+        Status::NotStarted(reason) => {
+            let mut spans = vec![status_glyph(status), Span::raw(" ")];
+            spans.extend(escaped(reason, ERROR));
+            spans
+        }
+    }
+}
+
+/// The name of a signal on Linux, such as `SIGINT` for 2.
+fn signal_name(signal: i32) -> String {
+    const NAMES: [&str; 15] = [
+        "SIGHUP", "SIGINT", "SIGQUIT", "SIGILL", "SIGTRAP", "SIGABRT", "SIGBUS", "SIGFPE",
+        "SIGKILL", "SIGUSR1", "SIGSEGV", "SIGUSR2", "SIGPIPE", "SIGALRM", "SIGTERM",
+    ];
+    match usize::try_from(signal - 1).ok().and_then(|i| NAMES.get(i)) {
+        Some(name) => name.to_string(),
+        None => format!("signal {signal}"),
+    }
 }
 
 /// The mark of a space that ends a row of code, which would not show: after
@@ -866,7 +1058,13 @@ pub(crate) mod tests {
     }
 
     fn render(markdown: &str, width: usize) -> String {
-        markup(&layout(&parse(markdown), width).lines)
+        markup(&rows(markdown, width).0)
+    }
+
+    /// The rows of the document view of `markdown` at a width of text, and
+    /// the rows of each block.
+    fn rows(markdown: &str, width: usize) -> (Vec<Line<'static>>, Vec<Range<usize>>) {
+        View::new(parse(markdown), String::new()).rows(width)
     }
 
     #[test]
@@ -1086,8 +1284,8 @@ pub(crate) mod tests {
         }
         let indent = " ".repeat(110);
         text += &format!("{indent}```bash [name:check]\n{indent}curl x | sh\n{indent}```\n");
-        let page = layout(&parse(&text), 60);
-        let code = markup(&page.lines[page.blocks[0].clone()]);
+        let (lines, blocks) = rows(&text, 60);
+        let code = markup(&lines[blocks[0].clone()]);
         // Two levels of 11 columns stay: at most 30 columns, half of 60.
         let expected = "▐ «b:check»\n▐ «blue:curl» x «magenta:|» «blue:sh»";
         assert_eq!(code, expected.replace("▐", &format!("{}▐", " ".repeat(22))));
@@ -1182,7 +1380,7 @@ pub(crate) mod tests {
     #[test]
     fn a_block_with_a_long_line_is_not_highlighted() {
         let text = format!("```bash\nls\necho {}\n```", "a".repeat(1_000));
-        let lines = markup(&layout(&parse(&text), 2_000).lines);
+        let lines = render(&text, 2_000);
         assert_eq!(
             lines,
             format!("▐ «b:#1»\n▐ ls\n▐ echo {}", "a".repeat(1_000))
@@ -1455,9 +1653,9 @@ pub(crate) mod tests {
             code in code_text(),
             width in 40..100usize,
         ) {
-            let doc = parse(&format!("```bash\n{code}\n```\n"));
-            let page = layout(&doc, width);
-            let rows = &page.lines[page.blocks[0].start + 1..page.blocks[0].end];
+            let view = View::new(parse(&format!("```bash\n{code}\n```\n")), String::new());
+            let (lines, blocks) = view.rows(width);
+            let rows = &lines[blocks[0].start + 1..blocks[0].end];
             // The text of spans, with the dim mark of a space at a row end
             // read as the space.
             let text_of = |spans: &[Span]| -> String {
@@ -1483,7 +1681,7 @@ pub(crate) mod tests {
                     other => prop_assert!(false, "gutter {:?}", other),
                 }
             }
-            let code = &doc.blocks[0].code;
+            let code = &view.doc.blocks[0].code;
             prop_assert_eq!(lines.join("\n"), code.strip_suffix('\n').unwrap_or(code));
         }
 
@@ -1494,12 +1692,11 @@ pub(crate) mod tests {
             name in prop::collection::vec("[a-z]{1,30}", 1..8).prop_map(|w| w.join("-")),
             width in 40..100usize,
         ) {
-            let doc = parse(&format!("```bash [name:{name}]\nls\n```\n"));
-            let page = layout(&doc, width);
-            let (start, end) = (page.blocks[0].start, page.blocks[0].end);
+            let (lines, blocks) = rows(&format!("```bash [name:{name}]\nls\n```\n"), width);
+            let (start, end) = (blocks[0].start, blocks[0].end);
             let text_of = |spans: &[Span]| -> String { spans.iter().map(|s| s.content.as_ref()).collect() };
-            prop_assert_eq!(text_of(&page.lines[end - 1].spans), "▐ ls");
-            let rows = &page.lines[start..end - 1];
+            prop_assert_eq!(text_of(&lines[end - 1].spans), "▐ ls");
+            let rows = &lines[start..end - 1];
             prop_assert_eq!(rows[0].spans[0].content.as_ref(), GUTTER);
             let mut text = text_of(&rows[0].spans[1..]);
             for row in &rows[1..] {
@@ -1545,7 +1742,7 @@ pub(crate) mod tests {
     proptest! {
         #[test]
         fn no_control_character_reaches_the_view(text in markdown(), width in 1..60usize) {
-            for line in layout(&parse(&text), width).lines {
+            for line in rows(&text, width).0 {
                 for span in &line.spans {
                     prop_assert!(!span.content.chars().any(needs_escape), "{:?}", span);
                 }
@@ -1842,6 +2039,70 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_info_line_and_the_sidebar_show_the_state_of_each_block() {
+        let block = |name: &str| format!("```bash [name:{name}]\nls\n```\n\n");
+        let names = ["run", "ok", "fail", "int", "nope", "new"];
+        let mut view = view(&names.map(block).concat());
+        let ended = |rc, signal, seconds, saved| Status::Ended {
+            rc,
+            signal,
+            took: Duration::from_secs(seconds),
+            saved,
+        };
+        let not_started = "cannot start: directory /x\u{1b} no longer exists".to_string();
+        let statuses = [
+            Status::Running(Duration::from_secs(4)),
+            ended(0, None, 2, true),
+            ended(1, None, 62, true),
+            ended(130, Some(2), 3, false),
+            Status::NotStarted(not_started),
+        ];
+        for (i, status) in statuses.into_iter().enumerate() {
+            view.set_status(i, Some(status));
+        }
+        view.selected = None;
+        assert_snapshot!(screen(&view, 80, 20), @"
+        ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
+        │ «yellow:●» run     │ ▐ «b:run»  «yellow:● »running 0:04                                            │
+        │ «green:✔» ok      │ ▐ «blue:ls»                                                             │
+        │ «red:✘» fail    │                                                                  │
+        │ «red:✘» int     │ ▐ «b:ok»  «green:✔» rc=0 0:02                                                │
+        │ «red:✘» nope    │ ▐ «blue:ls»                                                             │
+        │   new     │                                                                  │
+        │           │ ▐ «b:fail»  «red:✘» rc=1 1:02                                              │
+        │           │ ▐ «blue:ls»                                                             │
+        │           │                                                                  │
+        │           │ ▐ «b:int»  «red:✘» rc=130 SIGINT 0:03  «yellow:state not saved»                     │
+        │           │ ▐ «blue:ls»                                                             │
+        │           │                                                                  │
+        │           │ ▐ «b:nope»  «red:✘» «red:cannot start: directory /x»«yellow:^[»«red: no longer exists»          │
+        │           │ ▐ «blue:ls»                                                             │
+        │           │                                                                  │
+        │           │ ▐ «b:new»                                                            │
+        │           │ ▐ «blue:ls»                                                             │
+        └───────────┴──────────────────────────────────────────────────────────────────┘
+        ");
+        view.blink = false;
+        let sidebar = screen(&view, 80, 20).lines().nth(1).unwrap().to_string();
+        assert_snapshot!(sidebar, @"│   run     │ ▐ «b:run»  «yellow:● »running 0:04                                            │");
+    }
+
+    #[test]
+    fn signals_show_by_name() {
+        let names = [
+            (1, "SIGHUP"),
+            (2, "SIGINT"),
+            (9, "SIGKILL"),
+            (15, "SIGTERM"),
+        ];
+        for (signal, name) in names {
+            assert_eq!(signal_name(signal), name);
+        }
+        assert_eq!(signal_name(0), "signal 0");
+        assert_eq!(signal_name(16), "signal 16");
+    }
+
+    #[test]
     fn the_keys_count_the_rows_of_output() {
         let mut view = steps();
         view.set_output(0, output(&["o"; 4]), SMALL);
@@ -1966,8 +2227,8 @@ pub(crate) mod tests {
     /// The widths of the lines of `markdown` at `width`, as the ratatui
     /// buffer measures them.
     fn line_widths(markdown: &str, width: usize) -> Vec<usize> {
-        let page = layout(&parse(markdown), width);
-        page.lines.iter().map(|l| text_width(&l.spans)).collect()
+        let lines = rows(markdown, width).0;
+        lines.iter().map(|l| text_width(&l.spans)).collect()
     }
 
     #[test]
