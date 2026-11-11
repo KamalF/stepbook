@@ -144,10 +144,22 @@ Kamal signed off the plan and these choices on 2026-11-10. The spec records them
   - Round 12: the drain's timer could send the state into a workspace that another user made again; stepbook read the state file by its path, where a FIFO blocked it; a workspace left by SIGKILL failed each later start with the same pid. Kamal chose the counter suffix `stepbook-<pid>-<n>`.
   - Round 13: the check skipped the directories above the workspace; in a user namespace, it refused `/tmp`, owned there by the overflow uid; an `XDG_RUNTIME_DIR` that named a file. Kamal kept the counter names, though another user can squat them (denial of service only).
   - Round 14: the `GPG_TTY` of a run named the terminal of stepbook, where pinentry drew over the view and took its keys.
+- `cargo mutants` after the loop, on the lines changed since ed90e54: 228 mutants, 0 missed in the end. Two mutants widened the processes that stepbook signals to each process of the user: they killed the run twice, inside the sandbox, and outside it they would end the desktop session. `.cargo/mutants.toml` excludes them. Of the 14 misses, 10 got tests (the 0.2 s between SIGHUP and SIGKILL, a job that writes without a pause, the size of a new terminal, `in_vt100`) and 3 are equivalent, excluded with their reason; `wait_for_jobs` lost a dead EINTR branch. 3 mutants time out: each makes the code hang, so the tests catch it. Two baseline tests failed under cargo mutants only, fixed: a `read_dir` order, and the fds that the test process inherits. Other sessions held most of the memory, with 4 GB free, so the run used `-j 2 --jobserver-tasks 4`: 13 minutes.
+- The check in tmux on 2026-11-11: a block that runs `export` and `cd` changes what the next block sees; a failed block shows `✘ rc=3` and asks before a re-run; a running block shows `●` and its output as it comes; `q` with a running block asks, and `y` ends stepbook with exit code 0 and no workspace left.
+
+### Kamal's manual checklist of milestone 2
+
+What tmux cannot show, in herdr in Ghostty: open `~/dev/claude/runbooks/2026-11-11-stepbook-running-blocks.md` with `stepbook --no-log`, and follow its five sections:
+
+1. Session state: `carry-over` prints what `setup` set.
+2. Colors and states: the colors of `ls --color` read well in your theme, with `✔ rc=0` and `✘ rc=3` on the info lines.
+3. A running block: the `●` blinks, the output grows, and Enter on it asks to re-run it.
+4. Paste: a paste of `j` and `q` with a line feed moves nothing and quits nothing.
+5. Quit with a running block: `q`, then `y`, gives a clean shell prompt.
 
 ## Next
 
-1. `cargo mutants` again, since the code changed after the first run, then the check in tmux and Kamal's checklist. Then the merge into `main`. The log of the review loop, with its Decisions, Follow-ups and Nits deferred, is `~/.cache/stepbook-review/m2-review-loop-log.md`.
+1. Kamal's manual checklist of milestone 2, then the merge into `main`. The log of the review loop, with its Decisions, Follow-ups and Nits deferred, is `~/.cache/stepbook-review/m2-review-loop-log.md`.
 2. The look and feel review, before milestone 3.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
