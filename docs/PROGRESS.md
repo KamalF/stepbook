@@ -18,7 +18,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 |---|---|---|
 | 1 | Document view | Done, merged into `main` on 2026-11-10 |
 | 2 | Running blocks | Done, merged into `main` on 2026-11-11 |
-| 3 | Input and full-screen view | In progress, on `m3-input-full-screen` |
+| 3 | Input and full-screen view | Done, merged into `main` on 2026-11-11. Kamal's manual checklist is open |
 | 4 | Log and reload | — |
 | 5 | Migration | — |
 
@@ -180,11 +180,41 @@ Kamal's choices on 2026-11-11:
 - The terminal of a run answers DSR 5 and 6 and DA1. The answers hold only numbers, never text from the program. The color queries (OSC 10 and 11) stay unanswered: most libraries send DA1 after them, and stop waiting at its answer.
 - The look and feel review comes after milestone 3, so that it covers input mode and the full-screen view too.
 
+The 7 commits are in, with a fix that ends the writer thread of a run with the run.
+
+### After the 7 commits
+
+- `cargo mutants` on the diff of the 7 commits: 244 mutants, 226 caught, 3 missed, 3 timeouts and 12 unviable, in 17 minutes. The misses got tests: the cursor under row 15, and a switch of another block in input mode. The third showed a redundant guard in `switch`.
+- `/simplify`, with 4 cleanup agents: 1 commit. The view alone keeps whether a program is on the alternate screen, `View::pty_size` covers the full-screen view, the keys after the run go through `action()`, and the loop over the scrollback moves the offset by a screen: 5,000 changes of the offset took 50 ms when `o` opened the view.
+- A tests commit: the four checks of a session after SIGKILL wait up to 10 s, as another test does since 3434962. One failed under the load of cargo mutants.
+- Review loop, with a code reviewer and a security reviewer each round. Accepted findings per round: 4, 2, 2, 2, 1, 3, 0, 0. Round 7 found no blocker and no should-fix: the loop converged on 2026-11-11. Round 8 checked the changes made after it (the paste with a control character, the tests of the last mutants run), and found only a nit in the spec, fixed. Among the findings, with Kamal's choices:
+  - Round 1: a program that left the alternate screen on a screen of 3 rows ended stepbook with a panic, and a crafted file took 10 s to lay out at 16 columns when the view closed; `ctrl-o` in the document view opened the full-screen view; a key that waited for its frame reached a program that went full-screen.
+  - Round 2: after `ctrl-c` in input mode ended a block, a second `ctrl-c` quit stepbook and ended the session. Kamal chose a 1 s pause of the keys when stepbook stops sending them to a program on its own.
+  - Round 3: a program that toggled the alternate screen kept the pause on forever; no test proved that a write never blocks. Kamal kept the resize of the PTY when the view closes, though vim then redraws over the output of `:!ls`.
+  - Round 4: stepbook keeps bracketed paste on, so Ghostty took each paste for safe, and a paste of lines ran in a shell without bracketed paste. Kamal chose a question in the footer before such a paste. Also: SIGHUP ended stepbook with 101, not by the signal, since milestone 1.
+  - Round 5: a run that ended on the alternate screen hid its main screen for good. Kamal chose to keep both: stepbook leaves that screen at the end of the run, and the view after the run shows the main screen, a dim mark, then the last screen.
+  - Round 6: the automatic open of the full-screen view sent keys typed ahead for the document to the program, and a program that entered the alternate screen each second kept the keys off. Kamal chose to drop the automatic open: the view opens with `o` or `i`, or from input mode. The done-when of spec 16 changed with it.
+  - Round 7: no defect. Out of scope, but fixed: a paste with ctrl-o, which readline takes for Enter, now asks too.
+  - The log of the loop, with its Decisions, Follow-ups and Nits deferred, is `~/.cache/stepbook-review/m3-review-loop-log.md`.
+- `cargo mutants` after the loop, on the diff of the milestone: 292 mutants, 268 caught, 2 missed, 7 timeouts and 15 unviable, in 17 minutes. The 2 misses got tests (a plain `o` in input mode, the PTY size of another block while the view is open). Each timeout makes a test hang, so the tests catch it.
+- The check in tmux on 2026-11-11: a `read -s` prompt takes a password in input mode, with the cursor after `Password: `; `o` shows `less`, and `q` closes the view, then the keys pause for 1 s; a paste reaches the program; a paste of two lines asks first; the view after the run scrolls from the end; a run that ends on the alternate screen shows both screens; SIGHUP gives 129, and `q` gives 0 with the cursor shown.
+
+### Kamal's manual checklist of milestone 3
+
+What tmux cannot show, in herdr in Ghostty: open `~/dev/claude/runbooks/2026-11-11-stepbook-input-full-screen.md` with `stepbook --no-log`, and follow its six sections:
+
+1. A paste with your terminal's paste key reaches the program in input mode.
+2. A paste of two lines asks first: `n` cancels it, `y` sends it.
+3. A password in input mode: the cursor stands after `Password: `.
+4. `o` shows `less`; a mouse selection copies only its text; `q` closes the view.
+5. After the run, `o` shows the output from its end, and `k` scrolls back.
+6. The look of the footer modes, the cursor, and the dim mark after a run that ended full-screen.
+
 ## Next
 
-1. Kamal pushes `main`.
-2. Milestone 3, input and full-screen view (in progress).
-3. The look and feel review (see the open points).
+1. Kamal runs the manual checklist of milestone 3, and pushes `main`.
+2. The look and feel review (see the open points).
+3. Milestone 4, log and reload.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
 
@@ -193,6 +223,7 @@ Kamal pushes later: the repository has no remote yet (see the first open point).
 - Before the first push, Kamal creates `KamalF/stepbook` on GitHub and adds the remote. The sandbox cannot write `.git/config`.
 - Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
 - Look and feel review, after milestone 3 (Kamal first asked for it between milestones 2 and 3, on 2026-11-10). From the first screenshot: prose lines of about 200 characters on a wide terminal (a maximum text width of about 100 columns?); the selection in terminal cyan, which Kamal's theme draws green; the contrast between a block that runs and other code. From the review of milestone 2: output rows have no mark of their own, so output can draw a fake info line and gutter in the column of a nested block. A question or a notice is cut at the right edge of the footer: at 45 columns, "1 block running. Stop it and quit?" loses its "(y/N)".
+- Follow-ups of the review loop of milestone 3: the input channel of a run holds up to 256 writes, pastes included, while a program reads no input; the full-screen view of an ended block makes the spans of its whole scrollback when it opens, 380 ms with crafted output that changes color on each cell at 180 columns; the answer to DSR 6 ignores origin mode, which vt100 does not expose.
 - Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal). Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
 - Before milestone 4 writes the log: the default log of a FILE named `x.log` is the runbook itself. Spec 4 needs a rule.
 - `the_output_of_a_process_substitution_ends_before_the_run` fails its 900 ms bound under heavy load, such as two test suites at once: the reader of the run parses 20,000 lines of output in a debug build, and tee waits on the PTY. It did so before the last changes of milestone 2 too (checked on c7e5ca9, 2026-11-11). A single suite passes.
