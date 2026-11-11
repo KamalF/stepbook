@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use crossbeam_channel::{Receiver, RecvError, Select, Sender};
 use ratatui::backend::CrosstermBackend;
+use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{
     self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
     KeyModifiers,
@@ -223,6 +224,11 @@ fn open(args: &Args) -> Result<Exit, String> {
     let result = event_loop(&mut terminal, &mut app, &control);
     run::end_runs();
     restore_terminal();
+    // The drop of a ratatui terminal shows the cursor, and reports a
+    // failure with eprintln, which panics when the terminal is gone, as
+    // after a SIGHUP: stepbook would end with 101, not die of the signal.
+    // restore_terminal shows the cursor.
+    std::mem::forget(terminal);
     result.map_err(|e| format!("terminal error: {}", io_message(&e)))
 }
 
@@ -272,7 +278,8 @@ fn restore_terminal() {
         std::io::stdout(),
         EndSynchronizedUpdate,
         EnableLineWrap,
-        DisableBracketedPaste
+        DisableBracketedPaste,
+        Show
     );
     let _ = disable_raw_mode();
     let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
