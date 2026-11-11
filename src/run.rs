@@ -1975,6 +1975,40 @@ mod tests {
     }
 
     #[test]
+    fn a_write_to_a_program_that_reads_no_input_never_blocks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "stty raw -echo\necho ready\nsleep 30\n";
+        let run = Arc::new(session.start(code, "check", 80, 24).unwrap());
+        wait_for(&run, "ready");
+        let (sent, done) = crossbeam_channel::bounded(1);
+        let writer = run.clone();
+        // A megabyte fills the PTY of a program that reads nothing.
+        std::thread::spawn(move || {
+            writer.write(&vec![b'x'; 1 << 20]);
+            let _ = sent.send(());
+        });
+        assert!(done.recv_timeout(std::time::Duration::from_secs(2)).is_ok());
+        run.signal(Signal::KILL);
+        wait(&run);
+    }
+
+    #[test]
+    fn a_program_that_asks_without_reading_the_answers_never_blocks_its_reader() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        // 30,000 answers fill the PTY of a program that reads nothing.
+        let code = "stty raw -echo\nfor i in $(seq 30000); do printf '\\e[6n'; done\necho done\n";
+        let (output, status, _) = run(&mut session, code);
+        assert_eq!(status, Status::Code(0));
+        assert!(
+            output.ends_with("done\n"),
+            "{:?}",
+            &output[output.len() - 20..]
+        );
+    }
+
+    #[test]
     fn a_run_ends_after_all_its_output() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());

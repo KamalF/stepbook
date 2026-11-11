@@ -161,6 +161,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 - When the selected running block switches to the alternate screen (vim, less, top), stepbook opens the full-screen view in input mode. When the program leaves the alternate screen, stepbook returns to the document view, in input mode if it was in input mode before. While a question shows in the footer, the switch opens nothing.
 - While a running program is on the alternate screen, the info line of its block shows `full-screen program, press o`. Then `o` or `i` opens the full-screen view, which closes when the program leaves the alternate screen. A view opened while the program was on the main screen stays open.
 - Under the block, the rows from before the switch stay: the alternate screen shows only in the full-screen view.
+- When the view closes because the program left the alternate screen, the PTY gets its document size back. A program that leaves the alternate screen for a moment, such as vim for `:!ls`, gets SIGWINCH, and can redraw over what it printed there.
 - When the selected block's output grows past the bottom of the view, the view scrolls to keep its last row visible.
 
 ### 6.4 Copy and paste
@@ -214,7 +215,7 @@ A paste does nothing in the document view: a line feed in it would run the selec
 
 - All keys go to the program, except `ctrl-o`, which leaves input mode.
 - stepbook leaves input mode when the run ends.
-- When stepbook stops sending the keys to a program on its own, keys do nothing for 1 s, and the footer says so. That is when the run ends in input mode or in its full-screen view, and when the full-screen view closes because the program left the alternate screen (6.3). Keys typed for the program would act on the document: a second `ctrl-c` would quit stepbook and end the session, and `↓` then `Enter` would run another block.
+- When stepbook stops sending the keys to a program on its own, keys do nothing for 1 s, and the footer says so. That is when the run ends in input mode or in its full-screen view, and when the full-screen view closes because the program left the alternate screen (6.3). Keys typed for the program would act on the document: a second `ctrl-c` would quit stepbook and end the session, and `↓` then `Enter` would run another block. A view that opens again during the pause takes the keys: a program that enters and leaves the alternate screen in a loop would keep the pause on.
 - The footer shows `INPUT` and the name of the block. The cursor shows where the program shows it, in the output under the block, if the view shows that row.
 - On a screen too small for the view (6.1), a key or a paste leaves input mode, and does not reach the program: the screen does not show what it would do.
 - A writer thread per run writes the keys to its PTY. A program that reads no input fills the PTY, and a write then waits until it reads. After 256 writes that wait, stepbook drops the next keys.
@@ -580,3 +581,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | A program on the alternate screen shows only in the full-screen view (6.3): under the block, the rows from before the switch stay. When it leaves, the view goes back to the mode before it, and `i` on such a block opens the view | 2026-11-11 |
 | On a screen too small for the view, the PTY of a block keeps its size (6.1); `ctrl-o` never opens the full-screen view, and a key that waited for the frame does nothing if that view opened meanwhile (7.1): a program that left the alternate screen on a 3-row screen ended stepbook, a crafted file took 10 s to lay out at 16 columns, and a key meant for the document view reached the program | 2026-11-11 |
 | When stepbook stops sending the keys to a program on its own, keys do nothing for 1 s (7.2), at Kamal's choice: a second `ctrl-c` after the end of a run quit stepbook, and keys typed for a full-screen program ran the next block | 2026-11-11 |
+| A view that opens again during the pause of the keys takes them (7.2): a program that toggled the alternate screen kept every key off. When the view closes on its own, the PTY gets its document size back (6.3), at Kamal's choice, though vim then redraws over the output of `:!ls` | 2026-11-11 |

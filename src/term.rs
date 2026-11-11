@@ -206,7 +206,10 @@ impl vt100::Callbacks for Answers {
         match (c, params) {
             ('n', [[5]]) => self.0.extend(b"\x1b[0n"),
             ('n', [[6]]) => {
+                // After a character in the last column, vt100 keeps the
+                // cursor past it, until the next character wraps.
                 let (row, column) = screen.cursor_position();
+                let column = column.min(screen.size().1.get() - 1);
                 let answer = format!("\x1b[{};{}R", row + 1, column + 1);
                 self.0.extend(answer.as_bytes());
             }
@@ -703,6 +706,9 @@ mod tests {
         assert_eq!(answers, b"\x1b[0n\x1b[2;3R\x1b[?1;2c\x1b[?1;2c");
         // Each read gives its own answers.
         assert_eq!(terminal.process(b"\x1b[6n"), b"\x1b[2;3R");
+        // After the last column, the cursor stays in it.
+        let mut narrow = Terminal::new(10, 3);
+        assert_eq!(narrow.process(b"0123456789\x1b[6n"), b"\x1b[1;10R");
         // Other queries get no answer: DA2, DECXCPR, the colors, the
         // window title.
         let other = terminal.process(b"\x1b[>c\x1b[?6n\x1b[1c\x1b[7n\x1b]11;?\x07\x1b[21t");

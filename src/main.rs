@@ -490,9 +490,13 @@ impl App {
         if let Event::Resize(..) = event {
             self.resize(size);
         }
+        // A program that takes the keys again, in a view that opened
+        // again, gets them: a program that enters and leaves the alternate
+        // screen in a loop would keep the pause on.
         let paused = self
             .paused_until
-            .is_some_and(|until| Instant::now() < until);
+            .is_some_and(|until| Instant::now() < until)
+            && self.view.input_block().is_none();
         if self.stopping.is_some() || paused && matches!(event, Event::Key(_)) {
             return None;
         }
@@ -1697,6 +1701,33 @@ echo \"got $x\"
         app.paused_until = None;
         key(&mut app, KeyCode::Char('q'));
         assert_eq!(app.view.mode, view::Mode::Normal);
+    }
+
+    #[test]
+    fn a_view_that_opens_again_takes_the_keys_during_the_pause() {
+        let tmp = tempfile::tempdir().unwrap();
+        let block = "```bash
+printf '\\e[?1049h'
+read
+printf '\\e[?1049l'
+sleep 0.1
+printf '\\e[?1049h'
+read x
+printf '\\e[?1049l'
+echo \"got $x\"
+```
+";
+        let mut app = app(block, tmp.path());
+        enter(&mut app, SIZE);
+        until_mode(&mut app, None);
+        app.ran[&0].run.as_ref().unwrap().write(b"\n");
+        until_mode(&mut app, Some(view::Mode::Normal));
+        until_mode(&mut app, None);
+        app.paused_until = Some(Instant::now() + Duration::from_secs(60));
+        key(&mut app, KeyCode::Char('y'));
+        key(&mut app, KeyCode::Enter);
+        read_until(&mut app, SIZE, |app| !running(app));
+        assert!(output(&app, 0).ends_with("got y"), "{}", output(&app, 0));
     }
 
     #[test]
