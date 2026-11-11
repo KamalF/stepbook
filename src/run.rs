@@ -37,15 +37,42 @@ pub fn find_in_path(name: &str, path: &OsStr) -> Option<PathBuf> {
 /// 8.3): the scripts can hold secrets. Dropping it deletes it.
 pub struct Workspace {
     dir: PathBuf,
+    /// The directory, open and locked. systemd-tmpfiles never deletes a
+    /// locked directory as old (tmpfiles.d(5)). While it is open, no other
+    /// directory can get its inode.
+    lock: File,
 }
 
 impl Workspace {
     /// Creates `stepbook-<pid>` in `parent`. It fails if the directory
-    /// exists: in a shared temp dir, another user could have made it.
+    /// exists: in a shared temp dir, another user could have made it. It
+    /// also fails if another user could replace it in `parent`.
     pub fn create(parent: &Path) -> std::io::Result<Workspace> {
+        check_parent(parent)?;
         let dir = Workspace::dir_in(parent);
         DirBuilder::new().mode(0o700).create(&dir)?;
-        Ok(Workspace { dir })
+        let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let lock = rustix::fs::open(&dir, flags, Mode::empty())
+            .inspect_err(|_| _ = std::fs::remove_dir(&dir))?;
+        let lock = File::from(lock);
+        // Without the lock, the check before each run still holds.
+        let _ = lock.lock_shared();
+        Ok(Workspace { dir, lock })
+    }
+
+    /// Fails if the workspace is no longer the directory that stepbook
+    /// made. After a program deletes it, another user can make it again,
+    /// with a wrapper of their own.
+    fn check(&self) -> std::io::Result<()> {
+        let ours = self.lock.metadata()?;
+        let now = std::fs::symlink_metadata(&self.dir).ok();
+        if now.is_some_and(|now| (now.dev(), now.ino()) == (ours.dev(), ours.ino())) {
+            return Ok(());
+        }
+        let dir = self.dir.display();
+        Err(std::io::Error::other(format!(
+            "the workspace {dir} was deleted or replaced"
+        )))
     }
 
     /// The path of the workspace in `parent`.
@@ -87,12 +114,33 @@ pub fn start_dir(current: PathBuf, pwd: Option<OsString>) -> PathBuf {
     pwd.map(PathBuf::from).filter(same).unwrap_or(current)
 }
 
-/// `$XDG_RUNTIME_DIR` if it is an absolute path, else the temp dir, made
-/// absolute.
+/// Fails if another user could replace the workspace in `parent`. Only
+/// the owner of a directory and root can rename what it holds, and, if
+/// the directory lacks the sticky bit, each user who can write to it.
+fn check_parent(parent: &Path) -> std::io::Result<()> {
+    let meta = std::fs::metadata(parent)?;
+    let parent = parent.display();
+    if meta.uid() != 0 && meta.uid() != rustix::process::geteuid().as_raw() {
+        return Err(std::io::Error::other(format!(
+            "{parent} belongs to another user"
+        )));
+    }
+    if meta.mode() & 0o022 != 0 && meta.mode() & 0o1000 == 0 {
+        return Err(std::io::Error::other(format!(
+            "other users can write to {parent}, which has no sticky bit"
+        )));
+    }
+    Ok(())
+}
+
+/// `$XDG_RUNTIME_DIR` if it is an absolute path to a directory of the
+/// user, else the temp dir, made absolute. After su, `$XDG_RUNTIME_DIR`
+/// can still name the directory of the first user.
 pub fn workspace_parent(runtime_dir: Option<OsString>, temp_dir: PathBuf) -> PathBuf {
-    let dir = runtime_dir
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_absolute());
+    let euid = rustix::process::geteuid().as_raw();
+    let dir = runtime_dir.map(PathBuf::from).filter(|dir| {
+        dir.is_absolute() && std::fs::metadata(dir).is_ok_and(|meta| meta.uid() == euid)
+    });
     let dir = dir.unwrap_or(temp_dir);
     // The runs open their files from the session directory.
     std::path::absolute(&dir).unwrap_or(dir)
@@ -321,6 +369,7 @@ impl Session {
             return Err(StartError::Gone(dir));
         }
         let fail = |e: std::io::Error| StartError::Failed(io_message(&e));
+        self.workspace.check().map_err(fail)?;
         let id = self.next_id;
         self.next_id += 1;
         let script = (self.workspace)
@@ -717,6 +766,34 @@ mod tests {
     }
 
     #[test]
+    fn a_parent_that_others_can_write_to_needs_the_sticky_bit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let set_mode = |mode| fs::set_permissions(tmp.path(), fs::Permissions::from_mode(mode));
+        set_mode(0o777).unwrap();
+        let error = Workspace::create(tmp.path()).err().unwrap();
+        let expected = format!(
+            "other users can write to {}, which has no sticky bit",
+            tmp.path().display()
+        );
+        assert_eq!(error.to_string(), expected);
+        assert!(!Workspace::dir_in(tmp.path()).exists());
+        set_mode(0o1777).unwrap();
+        assert!(Workspace::create(tmp.path()).is_ok());
+    }
+
+    #[test]
+    fn the_workspace_stays_locked_against_systemd_tmpfiles() {
+        let tmp = tempfile::tempdir().unwrap();
+        let workspace = Workspace::create(tmp.path()).unwrap();
+        // systemd-tmpfiles takes an exclusive lock before it deletes.
+        let other = File::open(workspace.dir()).unwrap();
+        assert!(matches!(
+            other.try_lock(),
+            Err(std::fs::TryLockError::WouldBlock)
+        ));
+    }
+
+    #[test]
     fn a_run_keeps_the_path_of_a_cd_through_a_link() {
         let tmp = tempfile::tempdir().unwrap();
         fs::create_dir_all(tmp.path().join("real/proj")).unwrap();
@@ -751,14 +828,16 @@ mod tests {
     }
 
     #[test]
-    fn the_workspace_goes_in_the_runtime_dir_if_it_is_absolute() {
+    fn the_workspace_goes_in_the_runtime_dir_if_it_is_absolute_and_of_the_user() {
         let parent = |runtime: Option<&str>, temp: &str| {
             workspace_parent(runtime.map(OsString::from), temp.into())
         };
-        assert_eq!(
-            parent(Some("/run/user/1"), "/tmp"),
-            Path::new("/run/user/1")
-        );
+        let tmp = tempfile::tempdir().unwrap();
+        let runtime = tmp.path().to_str().unwrap();
+        assert_eq!(parent(Some(runtime), "/tmp"), tmp.path());
+        // After su, the directory of another user.
+        assert_eq!(parent(Some("/"), "/tmp"), Path::new("/tmp"));
+        assert_eq!(parent(Some("/nowhere"), "/tmp"), Path::new("/tmp"));
         assert_eq!(parent(Some("run"), "/tmp"), Path::new("/tmp"));
         assert_eq!(parent(Some(""), "/tmp"), Path::new("/tmp"));
         assert_eq!(parent(None, "/tmp"), Path::new("/tmp"));
@@ -1396,6 +1475,28 @@ mod tests {
         assert_eq!(session.state.dir, tmp.path().join("d\nE=1"));
         let code = "[ \"$A\" = $'a\\nb' ] && [ \"$C\" = $'\\e[31m\\\\' ] && echo same\n";
         assert_eq!(run(&mut session, code).0, "same\n");
+    }
+
+    #[test]
+    fn a_replaced_workspace_fails_the_run() {
+        // As when a program deleted it, and another user made it again,
+        // with a wrapper of their own.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let workspace = session.workspace().to_owned();
+        fs::remove_dir_all(&workspace).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        fs::set_permissions(&workspace, fs::Permissions::from_mode(0o777)).unwrap();
+        fs::write(workspace.join("wrapper.sh"), "touch replaced\n").unwrap();
+        let error = session.start("true\n", "check", 80, 24).err();
+        let reason = format!(
+            "the workspace {} was deleted or replaced",
+            workspace.display()
+        );
+        assert_eq!(error, Some(StartError::Failed(reason)));
+        assert!(!tmp.path().join("replaced").exists());
+        // No run file went into the other directory.
+        assert_eq!(fs::read_dir(&workspace).unwrap().count(), 1);
     }
 
     #[test]

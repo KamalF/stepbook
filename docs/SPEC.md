@@ -264,9 +264,11 @@ A background job, such as `kubectl port-forward … &`, outlives its block, as i
 
 ### 8.3 Workspace
 
-- The workspace is `$XDG_RUNTIME_DIR/stepbook-<pid>/`, or `<temp dir>/stepbook-<pid>/` if `XDG_RUNTIME_DIR` is not set or not absolute. A relative temp dir becomes absolute: a run opens its files after its `cd`.
+- The workspace is `$XDG_RUNTIME_DIR/stepbook-<pid>/`, or `<temp dir>/stepbook-<pid>/` if `XDG_RUNTIME_DIR` is not set, not absolute, or not a directory of the user. After `su`, it can still name the directory of the first user. A relative temp dir becomes absolute: a run opens its files after its `cd`.
 - The directory has mode 0700 and its files have mode 0600 (upmd issue S4, see 18).
 - If the directory exists, stepbook fails at startup: in a shared temp dir, another user could have made it.
+- If another user could replace the workspace, stepbook fails at startup. That is the case if the parent directory belongs to a user other than the user and root. It is also the case if other users can write to the parent and it has no sticky bit.
+- While stepbook runs, it keeps a lock (`flock`) on the workspace: systemd-tmpfiles never deletes a locked directory as old. Before each run, stepbook checks that the workspace is still the directory that it made. If it is not, the run fails: another user could have made it again, with a wrapper of their own.
 - stepbook deletes the workspace when it exits, including after a panic or one of the signals of 4. It deletes the files of a run when the run ends.
 
 ## 9. Session state
