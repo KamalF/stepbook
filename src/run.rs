@@ -1296,6 +1296,16 @@ mod tests {
 
     #[test]
     fn a_run_gets_no_file_descriptor_of_stepbook() {
+        // A run gets the fds that the test process inherited without
+        // close-on-exec, as any child does, such as the jobserver of
+        // cargo-mutants. They are listed before the runs open anything.
+        let child = Command::new("bash")
+            .args(["-c", "ls /proc/$$/fd; :"])
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8(child.stdout).unwrap();
+        let mut inherited: Vec<_> = stdout.split_whitespace().chain(["255"]).collect();
+        inherited.sort();
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
         let runs: Vec<_> = (0..2)
@@ -1312,7 +1322,7 @@ mod tests {
         let fds = fs::read_dir(format!("/proc/{}/fd", runs[1].pid.as_raw_pid())).unwrap();
         let mut fds: Vec<_> = fds.map(|fd| fd.unwrap().file_name()).collect();
         fds.sort();
-        assert_eq!(fds, ["0", "1", "2", "255"]);
+        assert_eq!(fds, inherited);
         for run in &runs {
             run.write(b"\n").unwrap();
             wait(run);
@@ -1892,10 +1902,11 @@ mod tests {
         let error = session.start("ls\n", "check", 80, 24).err();
         let failed = StartError::Failed("No such file or directory".into());
         assert_eq!(error, Some(failed));
-        let files: Vec<_> = fs::read_dir(session.workspace())
+        let mut files: Vec<_> = fs::read_dir(session.workspace())
             .unwrap()
             .map(|e| e.unwrap().file_name())
             .collect();
+        files.sort();
         assert_eq!(files, ["timer", "wrapper.sh"]);
     }
 }
