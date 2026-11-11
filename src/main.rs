@@ -15,7 +15,8 @@ use std::time::{Duration, Instant};
 use crossbeam_channel::{Receiver, RecvError, Select, Sender};
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::event::{
-    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEventKind, KeyModifiers,
+    self, DisableBracketedPaste, EnableBracketedPaste, Event, KeyCode, KeyEvent, KeyEventKind,
+    KeyModifiers,
 };
 use ratatui::crossterm::terminal::{
     BeginSynchronizedUpdate, Clear, ClearType, DisableLineWrap, EnableLineWrap,
@@ -550,7 +551,7 @@ impl App {
         };
         let bytes = match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
-                if key.code == KeyCode::Char('o') && key.modifiers == KeyModifiers::CONTROL {
+                if is_ctrl_o(key) {
                     return false;
                 }
                 term::key_bytes(key, run.screen.application_cursor())
@@ -572,15 +573,15 @@ impl App {
             return;
         };
         let page = self.view.pty_size(full.block, size).1 as isize;
-        let esc = matches!(event, Event::Key(key)
-            if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press);
+        let back = matches!(event, Event::Key(key) if key.kind == KeyEventKind::Press
+            && (key.code == KeyCode::Esc || is_ctrl_o(key)));
         let lines = match action(event, size) {
             Some(Action::Select(step)) => -step,
             Some(Action::Page(pages)) => -pages * page,
             Some(Action::First) => isize::MAX,
             Some(Action::Last) => isize::MIN,
             Some(Action::Quit | Action::Output) => return self.leave(size),
-            _ if esc => return self.leave(size),
+            _ if back => return self.leave(size),
             _ => return,
         };
         self.view.scroll_full(lines, size);
@@ -625,15 +626,30 @@ impl App {
     }
 
     /// Gives block `i` a PTY of its size, if it runs. The kernel sends
-    /// SIGWINCH to the program.
+    /// SIGWINCH to the program. On a screen too small for the view, the PTY
+    /// keeps its size until a resize: the layout of a crafted file at a
+    /// tiny width costs too much (spec 6.1).
     fn resize_pty(&self, i: usize, size: Size) {
         let Some(ran) = self.ran.get(&i) else {
             return;
         };
+        if view::too_small(size) {
+            return;
+        }
         if let Some(run) = &ran.run {
             let (columns, rows) = self.view.pty_size(i, size);
             let _ = run.resize(columns, rows);
             ran.screen.resize(columns, rows);
+        }
+    }
+
+    /// Applies a key that waited for the frame (see `acts`). It acts only in
+    /// the document view: if a program went full-screen meanwhile, its view
+    /// opened in input mode, and the key would reach the program.
+    fn handle_waiting(&mut self, event: &Event, size: Size) -> Option<Exit> {
+        match self.view.mode {
+            view::Mode::Normal => self.handle(event, size),
+            _ => None,
         }
     }
 
@@ -775,7 +791,11 @@ impl App {
     /// its reader holds gives its rows at a later frame: the reader sends an
     /// event after it.
     fn refresh(&mut self, size: Size) {
-        for i in std::mem::take(&mut self.changed) {
+        // The blocks whose rows wait for a later frame.
+        let mut later = BTreeSet::new();
+        // A switch of the view adds its block again: its frame then shows
+        // the rows of the new view.
+        while let Some(i) = self.changed.pop_first() {
             let Some(ran) = self.ran.get(&i) else {
                 continue;
             };
@@ -783,7 +803,7 @@ impl App {
                 view::Mode::Full(full) if full.block == i => true,
                 // The full-screen view of another block hides these rows.
                 view::Mode::Full(_) => {
-                    self.changed.insert(i);
+                    later.insert(i);
                     continue;
                 }
                 _ => false,
@@ -794,7 +814,7 @@ impl App {
                 (false, cursor) => term::Want::Last { cursor },
             };
             let Some(rows) = ran.screen.try_rows(want) else {
-                self.changed.insert(i);
+                later.insert(i);
                 continue;
             };
             let switched = self.view.set_alternate(i, rows.alternate);
@@ -809,6 +829,7 @@ impl App {
                 self.switch(i, size);
             }
         }
+        self.changed = later;
     }
 
     /// Opens the full-screen view when the program of the selected block
@@ -817,7 +838,11 @@ impl App {
     fn switch(&mut self, i: usize, size: Size) {
         let (alternate, running) = (self.view.alternate(i), self.view.running(i));
         match &self.view.mode {
-            view::Mode::Full(full) if full.block == i && !alternate => {
+            // A view that opened on the alternate screen closes when the
+            // program leaves it. refresh holds back the rows of the blocks
+            // that the view does not show.
+            view::Mode::Full(full) => {
+                debug_assert_eq!(full.block, i);
                 let Some(back) = full.back else {
                     return;
                 };
@@ -853,9 +878,6 @@ impl App {
 
     /// Gives each running block a PTY of its new size (spec 6.3).
     fn resize(&mut self, size: Size) {
-        if view::too_small(size) {
-            return;
-        }
         let running: Vec<_> = self.runs().map(|(i, _)| i).collect();
         for i in running {
             self.resize_pty(i, size);
@@ -894,7 +916,7 @@ fn event_loop(
         // block that prints without a pause would let no frame end.
         let mut frame = None;
         if let Some(event) = waiting.take() {
-            if let Some(exit) = app.handle(&event, size) {
+            if let Some(exit) = app.handle_waiting(&event, size) {
                 return Ok(exit);
             }
             frame = Some(Instant::now());
@@ -949,6 +971,12 @@ fn event_loop(
     }
 }
 
+/// Whether a key is ctrl-o, which leaves input mode and the full-screen
+/// view (spec 7.2, 7.3).
+fn is_ctrl_o(key: &KeyEvent) -> bool {
+    key.code == KeyCode::Char('o') && key.modifiers == KeyModifiers::CONTROL
+}
+
 /// What a key does in the document view (spec 7.1).
 #[derive(Debug, PartialEq)]
 enum Action {
@@ -989,7 +1017,9 @@ fn action(event: &Event, size: Size) -> Option<Action> {
         KeyCode::PageUp => Action::Page(-1),
         KeyCode::Enter => Action::Run,
         KeyCode::Char('i') => Action::Input,
-        KeyCode::Char('o') => Action::Output,
+        // ctrl-o leaves input mode and the full-screen view: twice, it
+        // would go back to them, and send the next keys to the program.
+        KeyCode::Char('o') if !ctrl => Action::Output,
         _ => return None,
     };
     (action == Action::Quit || !view::too_small(size)).then_some(action)
@@ -998,7 +1028,6 @@ fn action(event: &Event, size: Size) -> Option<Action> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ratatui::crossterm::event::KeyEvent;
 
     const SIZE: Size = Size::new(80, 24);
 
@@ -1105,6 +1134,7 @@ mod tests {
             (key(KeyCode::Enter), Some(Action::Run)),
             (key(KeyCode::Char('i')), Some(Action::Input)),
             (key(KeyCode::Char('o')), Some(Action::Output)),
+            (ctrl('o'), None),
             (key(KeyCode::Char('x')), None),
         ];
         for (key, expected) in cases {
@@ -1555,28 +1585,79 @@ echo \"got $x\"
     }
 
     #[test]
-    fn a_question_or_another_selection_keeps_the_document_view() {
+    fn a_switch_of_a_block_without_the_keys_or_under_a_question_opens_nothing() {
         let tmp = tempfile::tempdir().unwrap();
         let mut app = app(&format!("{FULL_SCREEN}\n{FULL_SCREEN}"), tmp.path());
         enter(&mut app, SIZE);
         key(&mut app, KeyCode::Down);
         enter(&mut app, SIZE);
         read_until(&mut app, SIZE, |app| output(app, 1).contains("before"));
+        let write = |app: &App, i, bytes: &[u8]| app.ran[&i].run.as_ref().unwrap().write(bytes);
         // Block 0 is not selected.
-        app.ran[&0].run.as_ref().unwrap().write(b"\n");
+        write(&app, 0, b"\n");
         read_until(&mut app, SIZE, |app| app.view.alternate(0));
+        assert_eq!(app.view.mode, view::Mode::Normal);
+        // The keys go to block 1.
+        key(&mut app, KeyCode::Char('i'));
+        write(&app, 0, b"\n");
+        read_until(&mut app, SIZE, |app| !app.view.alternate(0));
+        assert_eq!(app.view.mode, view::Mode::Input(1));
         // A question is open.
+        assert_eq!(app.handle(&ctrl('o'), SIZE), None);
         key(&mut app, KeyCode::Char('q'));
-        app.ran[&1].run.as_ref().unwrap().write(b"\n");
+        write(&app, 1, b"\n");
         read_until(&mut app, SIZE, |app| app.view.alternate(1));
         assert_eq!(app.view.mode, view::Mode::Normal);
         assert!(app.question.is_some());
         key(&mut app, KeyCode::Char('n'));
-        for i in 0..2 {
-            app.ran[&i].run.as_ref().unwrap().write(b"\ny\n");
-        }
+        write(&app, 0, b"y\n");
+        write(&app, 1, b"\ny\n");
         read_until(&mut app, SIZE, |app| !running(app));
         assert_eq!(app.view.mode, view::Mode::Normal);
+    }
+
+    #[test]
+    fn a_program_that_leaves_the_alternate_screen_on_a_tiny_screen_keeps_its_pty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let block = "```bash\necho before\nread\nprintf '\\e[?1049h'\nread\nprintf '\\e[?1049l'\nstty size\nread\n```\n";
+        let mut app = app(block, tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("before"));
+        key(&mut app, KeyCode::Char('i'));
+        key(&mut app, KeyCode::Enter);
+        until_mode(&mut app, None);
+        let tiny = Size::new(80, 3);
+        assert_eq!(app.handle(&Event::Resize(80, 3), tiny), None);
+        // The program leaves by itself. On a screen too small for the view,
+        // nothing lays the document out: the PTY keeps the size of the
+        // full-screen view.
+        app.ran[&0].run.as_ref().unwrap().write(b"\n");
+        read_until(&mut app, tiny, |app| output(app, 0).contains("23 80"));
+        assert_eq!(app.view.mode, view::Mode::Input(0));
+        app.ran[&0].run.as_ref().unwrap().write(b"\n");
+        read_until(&mut app, tiny, |app| !running(app));
+    }
+
+    #[test]
+    fn a_key_that_waited_for_the_frame_never_reaches_a_program_that_went_full_screen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app(FULL_SCREEN, tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("before"));
+        let enter_key = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        // In the document view, the key acts.
+        assert_eq!(app.handle_waiting(&enter_key, SIZE), None);
+        let notice = "already running: i to type, o to view";
+        assert_eq!(app.view.notice.as_deref(), Some(notice));
+        app.ran[&0].run.as_ref().unwrap().write(b"\n");
+        until_mode(&mut app, None);
+        assert_eq!(app.handle_waiting(&enter_key, SIZE), None);
+        // The program got no line feed: it is still on the alternate screen.
+        std::thread::sleep(Duration::from_millis(200));
+        app.refresh(SIZE);
+        assert!(matches!(app.view.mode, view::Mode::Full(_)));
+        app.ran[&0].run.as_ref().unwrap().write(b"\ny\n");
+        read_until(&mut app, SIZE, |app| !running(app));
     }
 
     #[test]

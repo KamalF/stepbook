@@ -407,6 +407,9 @@ impl View {
     /// Scrolls as little as possible to show the last row of the output of
     /// block `i`, where a running program shows its cursor.
     pub fn show_output_end(&mut self, i: usize, size: Size) {
+        if too_small(size) {
+            return;
+        }
         let (shown, text, scroll) = self.shown(screen(size));
         let end = shown.output_end(i);
         let height = usize::from(text.height);

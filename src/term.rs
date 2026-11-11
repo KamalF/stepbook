@@ -592,6 +592,12 @@ mod tests {
             terminal.rows(Want::Last { cursor: true }).cursor,
             Some((14, 2))
         );
+        // Under the first 15 rows of the screen.
+        let mut terminal = after(format!("{}ab", seq(20)).as_bytes(), 80, 24);
+        assert_eq!(
+            terminal.rows(Want::Last { cursor: true }).cursor,
+            Some((14, 2))
+        );
         // A program can hide the cursor, or move it above the last rows.
         terminal.process(b"\x1b[?25l");
         assert_eq!(terminal.rows(Want::Last { cursor: true }).cursor, None);

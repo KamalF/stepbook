@@ -129,7 +129,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 - **Sidebar:** one row per block, with a status glyph and the name. An unnamed block shows `#<n>`, where n is its position among all the blocks of the file, from 1. Its width, with its left border, is the longest name plus 4, between 12 and 30 columns. A longer name ends with `…`. The sidebar scrolls to keep the selected row visible, and it is hidden on terminals under 80 columns.
 - **Document view:** the rendered runbook. The selected block has a highlighted gutter and sidebar row.
 - **Footer:** the mode, then the keys that apply now: `i input` while the selected block runs, and `o output` once it has run. A notification or a question (7.4) shows in place of the keys. A notification lasts 3 seconds.
-- **Minimum size:** on a terminal smaller than 40 columns or 8 rows, stepbook shows only `Enlarge the terminal to at least 40 columns and 8 rows.`, and only the keys that quit work. A question (7.4) waits for a screen large enough to show it. Below that size, code under a list marker has no room, and the layout of a crafted file costs too much.
+- **Minimum size:** on a terminal smaller than 40 columns or 8 rows, stepbook shows only `Enlarge the terminal to at least 40 columns and 8 rows.`, and only the keys that quit work. A question (7.4) waits for a screen large enough to show it. The PTY of a block keeps its size until the screen is large enough again. Below that size, code under a list marker has no room, and the layout of a crafted file costs too much.
 
 ### 6.2 Block states
 
@@ -202,9 +202,9 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 | `↓`, `j` / `↑`, `k` | Select the next / previous block, and scroll so that the block and the paragraph above it are visible. If they do not fit, the whole block shows, with the end of the paragraph. A block taller than the view shows from its paragraph, or from its info line. |
 | `Home` / `End` | Select the first / last block. Without blocks, scroll to the top / bottom. |
 | `PageDown` / `PageUp` | Scroll one page. The selection moves to the first block whose info line is in view, else to the first block in view. `PageDown` never moves it to an earlier block, and `PageUp` never to a later one. |
-| `Enter` | Run the selected block (8.1). If `j` or `k` would scroll to show the block, `Enter` only does that scroll: it never runs code that is off the screen, such as after the startup or a resize. `Enter`, `i`, `o` and the answer to a question act on the screen as drawn: after other events, such as keys typed ahead, they wait for the next frame. |
+| `Enter` | Run the selected block (8.1). If `j` or `k` would scroll to show the block, `Enter` only does that scroll: it never runs code that is off the screen, such as after the startup or a resize. `Enter`, `i`, `o` and the answer to a question act on the screen as drawn: after other events, such as keys typed ahead, they wait for the next frame. If the full-screen view opened meanwhile (6.3), such a key does nothing: it would reach the program. |
 | `i` | Enter input mode, if the selected block is running. The view scrolls as little as possible to show the last row of its output. |
-| `o` | Open the full-screen view of the selected block, if it has run. |
+| `o` | Open the full-screen view of the selected block, if it has run. `ctrl-o` does not: it leaves that view, and a second `ctrl-o` would send the next keys to the program. |
 | `ctrl-r` | Reload the file now. |
 | `q`, `ctrl-c` | Quit. See 11. |
 
@@ -577,3 +577,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The terminal of a run answers DSR 5 and 6 and DA1 (6.3), at Kamal's choice: a program that asked waited for its timeout | 2026-11-11 |
 | The full-screen view keeps the footer, and the scrollback stays at 5,000 lines (7.3, 6.3), at Kamal's choice. After the run, `j`, `k`, `Home` and `End` scroll too, and `ctrl-c` goes back as `q` does | 2026-11-11 |
 | A program on the alternate screen shows only in the full-screen view (6.3): under the block, the rows from before the switch stay. When it leaves, the view goes back to the mode before it, and `i` on such a block opens the view | 2026-11-11 |
+| On a screen too small for the view, the PTY of a block keeps its size (6.1); `ctrl-o` never opens the full-screen view, and a key that waited for the frame does nothing if that view opened meanwhile (7.1): a program that left the alternate screen on a 3-row screen ended stepbook, a crafted file took 10 s to lay out at 16 columns, and a key meant for the document view reached the program | 2026-11-11 |
