@@ -288,7 +288,9 @@ When the block script ends, the wrapper writes the state file `<workspace>/run-<
 - the working directory, then each exported variable as `NAME=value`, then an empty entry. An exported array is not saved: bash puts no array in the environment;
 - each entry ends with a NUL byte, so values can hold newlines, quotes and any other byte.
 
-The wrapper writes the state only into the file that stepbook made for it: after stepbook ends, its workspace is gone, and a directory of the same name can be another user's. It needs `compgen`, which a bash built without programmable completion lacks: such a bash saves no state, since a state with no variable would remove them all from the session.
+The wrapper writes the state only into the file that stepbook made for it: after stepbook ends, its workspace is gone, and a directory of the same name can be another user's. A block can also delete the workspace, and another user can then make it again. So, when it exits, the wrapper opens a file of the workspace only if the workspace is still a directory of the user and not a link. stepbook reads the state file through the workspace that it keeps open, never through its path. It does not follow a link there, and a FIFO there gives no state instead of blocking stepbook.
+
+The wrapper needs `compgen`, which a bash built without programmable completion lacks: such a bash saves no state, since a state with no variable would remove them all from the session.
 
 Without the empty entry, the file is partial, and stepbook ignores it: the wrapper was killed while it wrote it, and the missing variables would count as unset.
 

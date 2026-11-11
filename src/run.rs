@@ -60,6 +60,18 @@ impl Workspace {
         Ok(Workspace { dir, lock })
     }
 
+    /// Reads the file `name` of the workspace, through the open directory:
+    /// if the path names another directory now, the file still comes from
+    /// the workspace. A link fails, and a FIFO, which a block can make in
+    /// place of the file, gives no data instead of blocking the open.
+    fn read(&self, name: &OsStr) -> std::io::Result<Vec<u8>> {
+        let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+        let file = rustix::fs::openat(&self.lock, name, flags, Mode::empty())?;
+        let mut bytes = Vec::new();
+        File::from(file).read_to_end(&mut bytes)?;
+        Ok(bytes)
+    }
+
     /// Fails if the workspace is no longer the directory that stepbook
     /// made. After a program deletes it, another user can make it again,
     /// with a wrapper of their own.
@@ -475,7 +487,8 @@ impl Session {
     /// Returns whether the run saved its state: it does not after SIGKILL,
     /// or after exec (spec 9.2).
     pub fn finish(&mut self, run: &Run) -> bool {
-        let end = std::fs::read(&run.state_file).ok();
+        let name = run.state_file.file_name().unwrap_or_default();
+        let end = self.workspace.read(name).ok();
         for file in [&run.script, &run.state_file, &run.env_file] {
             let _ = std::fs::remove_file(file);
         }
@@ -1331,6 +1344,35 @@ mod tests {
             "kept"
         );
         assert!(!session.finish(&run));
+        // Or a link in place of the workspace, to a directory with a file of
+        // that name. The drain makes no timer there either.
+        let code = "ws=${__stepbook_state%/*}; mv \"$ws\" moved; mkdir dir\n\
+            : >\"dir/${__stepbook_state##*/}\"; ln -s \"$PWD/dir\" \"$ws\"\nexport A=1\n";
+        let run = session.start(code, "check", 80, 24).unwrap();
+        wait(&run);
+        let dir = tmp.path().join("dir");
+        assert_eq!(fs::read_to_string(dir.join("run-3.state")).unwrap(), "");
+        assert!(!dir.join("timer").exists());
+        assert!(!session.finish(&run));
+    }
+
+    #[test]
+    fn stepbook_reads_the_state_only_from_its_workspace() {
+        let codes = [
+            // As when another user made the workspace again during the run.
+            "ws=${__stepbook_state%/*}; mv \"$ws\" moved; mkdir \"$ws\"\n\
+            : >\"$__stepbook_state\"\nexport A=1\n",
+            // A FIFO in place of the state file would block the read.
+            "rm \"$__stepbook_state\"; mkfifo \"$__stepbook_state\"\nexport A=1\n",
+        ];
+        for code in codes {
+            let tmp = tempfile::tempdir().unwrap();
+            let mut session = session(tmp.path());
+            let run = session.start(code, "check", 80, 24).unwrap();
+            wait(&run);
+            assert!(!session.finish(&run), "{code}");
+            assert_eq!(var(&session, "A"), None, "{code}");
+        }
     }
 
     #[test]

@@ -12,6 +12,7 @@
 # exit status. The names of the wrapper start with __stepbook_.
 __stepbook_script=$1
 __stepbook_state=$2
+__stepbook_workspace=${2%/*}
 __stepbook_timer=$4
 __stepbook_pid=$BASHPID
 # In POSIX mode, after an export of POSIXLY_CORRECT for one, bash refuses a
@@ -41,6 +42,14 @@ __stepbook_handler='{ __stepbook_code=$? __stepbook_flags=$-; set +axvT; } 2>/de
 # The EXIT handler of the script, which the wrapper runs from its own.
 __stepbook_trap=
 
+# Whether the workspace is still a directory of the user, and not a link.
+# If a block deleted it, another user can make it again. In their
+# directory, they could rename a file of the wrapper, such as a timer that
+# the drain created, to the state file.
+__stepbook_in_workspace() {
+    [ -d "$__stepbook_workspace" ] && [ -O "$__stepbook_workspace" ] && [ ! -L "$__stepbook_workspace" ]
+}
+
 # Writes the directory, each exported variable as NAME=value, then an
 # empty entry, each ended by a NUL byte. ">|" writes even under noclobber.
 # Under set -x, bash would print each value, secrets included: the callers
@@ -49,7 +58,7 @@ __stepbook_save() {
     # Only into the file that stepbook made: after stepbook ends, its
     # workspace is gone, and a directory of the same name can be another
     # user's.
-    if [ ! -f "$__stepbook_state" ] || [ ! -O "$__stepbook_state" ] || [ -L "$__stepbook_state" ]; then
+    if ! __stepbook_in_workspace || [ ! -f "$__stepbook_state" ] || [ ! -O "$__stepbook_state" ] || [ -L "$__stepbook_state" ]; then
         return 0
     fi
     # A bash without programmable completion has no compgen. A state with
@@ -120,7 +129,8 @@ __stepbook_drain() {
             exec {__stepbook_fd}>&- 2>/dev/null
         fi
     done
-    if exec {__stepbook_fd}<>"$__stepbook_timer"; then
+    # "<>" would create a missing timer.
+    if __stepbook_in_workspace && [ -p "$__stepbook_timer" ] && exec {__stepbook_fd}<>"$__stepbook_timer"; then
         while [ "$__stepbook_tries" -gt 0 ]; do
             __stepbook_children=
             # The file has no final line feed: read fails, and reads it all.
