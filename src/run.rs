@@ -4,7 +4,7 @@ use std::ffi::{OsStr, OsString};
 use std::fs::{DirBuilder, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{BorrowedFd, OwnedFd};
-use std::os::unix::ffi::OsStrExt;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -421,6 +421,7 @@ impl Session {
         }
         let fail = |e: std::io::Error| StartError::Failed(io_message(&e));
         self.workspace.check().map_err(fail)?;
+        let (master, slave, tty) = open_pty(columns, rows).map_err(fail)?;
         let id = self.next_id;
         self.next_id += 1;
         let script = (self.workspace)
@@ -433,6 +434,12 @@ impl Session {
             .map_err(fail)?;
         let mut start = self.state.clone();
         start.vars.insert("TERM".into(), "xterm-256color".into());
+        // GPG_TTY of the session names the terminal of stepbook: there,
+        // gpg-agent would draw its pinentry over the view, and read the keys
+        // of stepbook.
+        if let Some(gpg_tty) = start.vars.get_mut(OsStr::new("GPG_TTY")) {
+            *gpg_tty = tty;
+        }
         let (large, small): (Vec<_>, Vec<_>) = (start.vars.iter())
             .partition(|(name, value)| name.len() + value.len() >= LARGE && is_identifier(name));
         let mut large_vars = Vec::new();
@@ -448,7 +455,7 @@ impl Session {
             })
             .map_err(fail)?;
         let run_files = [&script, &state_file, &env_file];
-        let (master, child) = (self.spawn(&run_files, small, block, columns, rows))
+        let child = (self.spawn(&run_files, small, block, slave))
             .inspect_err(|_| run_files.iter().for_each(|f| _ = std::fs::remove_file(f)))
             .map_err(fail)?;
         let reader = master.try_clone().map_err(fail)?;
@@ -472,16 +479,15 @@ impl Session {
         })
     }
 
-    /// Spawns the wrapper with the files of a run, in a new PTY.
+    /// Spawns the wrapper with the files of a run, on the run's side of its
+    /// PTY.
     fn spawn(
         &self,
         run_files: &[&PathBuf; 3],
         vars: Vec<(&OsString, &OsString)>,
         block: &str,
-        columns: u16,
-        rows: u16,
-    ) -> std::io::Result<(File, Child)> {
-        let (master, slave) = open_pty(columns, rows)?;
+        slave: OwnedFd,
+    ) -> std::io::Result<Child> {
         let mut command = Command::new(&self.bash);
         command
             .arg("--noprofile")
@@ -519,7 +525,7 @@ impl Session {
         // Drops the parent's copies of the PTY's other side: while they are
         // open, the reader never sees the end of the output.
         drop(command);
-        Ok((master, child))
+        Ok(child)
     }
 
     /// Applies the state that a run saved, and deletes the files of the run.
@@ -658,9 +664,9 @@ fn end_sessions(runs: &[i32]) {
     signal(members(), Signal::KILL);
 }
 
-/// Opens a PTY of `columns` by `rows`: its side for stepbook, and its
-/// side for the run.
-fn open_pty(columns: u16, rows: u16) -> std::io::Result<(File, OwnedFd)> {
+/// Opens a PTY of `columns` by `rows`: its side for stepbook, its side for
+/// the run, and the path of that side.
+fn open_pty(columns: u16, rows: u16) -> std::io::Result<(File, OwnedFd, OsString)> {
     let flags = OpenptFlags::RDWR | OpenptFlags::NOCTTY | OpenptFlags::CLOEXEC;
     let master = rustix::pty::openpt(flags)?;
     rustix::pty::grantpt(&master)?;
@@ -669,7 +675,8 @@ fn open_pty(columns: u16, rows: u16) -> std::io::Result<(File, OwnedFd)> {
     let flags = OFlags::RDWR | OFlags::NOCTTY | OFlags::CLOEXEC;
     let slave = rustix::fs::open(name.as_c_str(), flags, Mode::empty())?;
     rustix::termios::tcsetwinsize(&master, winsize(columns, rows))?;
-    Ok((File::from(master), slave))
+    let name = OsString::from_vec(name.into_bytes());
+    Ok((File::from(master), slave, name))
 }
 
 /// Sends the output of a run, then its exit status. The run ends when the
@@ -1173,6 +1180,21 @@ mod tests {
         assert_eq!(output, expected);
         // TERM is not a change of the run.
         assert_eq!(var(&session, "TERM"), None);
+    }
+
+    #[test]
+    fn gpg_tty_names_the_terminal_of_the_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let vars = &mut session.state.vars;
+        vars.insert("GPG_TTY".into(), "/dev/pts/stepbook".into());
+        let code = "[ \"$GPG_TTY\" = \"$(tty)\" ] && echo same\n";
+        assert_eq!(run(&mut session, code).0, "same\n");
+        // It is not a change of the run.
+        assert_eq!(
+            var(&session, "GPG_TTY").as_deref(),
+            Some("/dev/pts/stepbook")
+        );
     }
 
     #[test]

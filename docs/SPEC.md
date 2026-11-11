@@ -249,6 +249,7 @@ Several blocks can run at the same time. Each one runs in its own PTY.
 3. It spawns `bash --noprofile --norc <workspace>/wrapper.sh <run files>` in a new PTY, in the session directory. `bash` is the absolute path found on the `PATH` at startup: a relative one would name another file in each directory. A session variable whose `NAME=value` takes 4 KiB or more goes to the wrapper in a file, which it exports: in the environment of `exec`, one value over 128 KiB would fail the start of every run, and no block could unset it.
 4. The child gets exactly the session variables, plus:
    - `TERM=xterm-256color`
+   - `GPG_TTY`, if the session has it: the path of the run's PTY. In the session, it names the terminal of stepbook, where gpg-agent would draw its pinentry over the view and read the keys of stepbook.
    - `PWD`: the session directory, so that bash keeps the path that the last `cd` gave through a link, as a terminal does
    - `STEPBOOK_FILE`: the absolute path of the runbook
    - `STEPBOOK_LOG`: the absolute path of the log, or empty
