@@ -258,68 +258,71 @@ impl Terminal {
     pub fn rows(&mut self, want: Want) -> Rows {
         let read = |parser: &mut Parser| {
             let alternate = parser.screen().alternate_screen();
-            let rows = match want {
-                Want::Last { cursor } => last_rows(parser, cursor),
+            let (lines, cursor) = match want {
+                Want::Last { cursor } => last_rows(parser.screen_mut(), cursor),
                 Want::Screen => screen_rows(parser.screen()),
-                Want::All => all_rows(parser),
+                Want::All => (all_rows(parser.screen_mut()), None),
             };
-            Rows { alternate, ..rows }
+            Rows {
+                lines,
+                cursor,
+                alternate,
+            }
         };
         match self.guarded(read) {
             Some(rows) => rows,
             None => read(&mut self.parser),
         }
     }
-
-    /// The last `OUTPUT_ROWS` rows of the terminal, scrollback included,
-    /// without the blank rows at the end. If `cursor`, the rows go down to
-    /// the row of the cursor at least, where a running program writes next,
-    /// and they give the cursor.
-    #[cfg(test)]
-    pub fn last_rows(&mut self, cursor: bool) -> Rows {
-        self.rows(Want::Last { cursor })
-    }
 }
 
+/// Lines, and the line and the column of the cursor if it shows.
+type Lines = (Vec<Line<'static>>, Option<(usize, u16)>);
+
 /// Each row of the screen, and the cursor if the program shows it.
-fn screen_rows(screen: &vt100::Screen) -> Rows {
+fn screen_rows(screen: &vt100::Screen) -> Lines {
     let (rows, columns) = screen.size();
     let lines = (0..rows.get()).map(|row| line(screen, row, columns.get()));
     let (row, column) = screen.cursor_position();
-    Rows {
-        lines: lines.collect(),
-        cursor: (!screen.hide_cursor()).then_some((usize::from(row), column)),
-        alternate: false,
-    }
+    let cursor = (!screen.hide_cursor()).then_some((usize::from(row), column));
+    (lines.collect(), cursor)
 }
 
 /// The lines of the scrollback, then the rows of the screen, without the
 /// blank rows at the end.
-fn all_rows(parser: &mut Parser) -> Rows {
-    let screen = parser.screen_mut();
-    let columns = screen.size().1.get();
-    let mut lines = Vec::new();
-    // With an offset of n, the first row of the screen shows the n-th line
-    // above it.
-    for offset in (1..=screen.scrollback_len()).rev() {
-        screen.set_scrollback(offset);
-        lines.push(line(screen, 0, columns));
-    }
-    screen.set_scrollback(0);
-    lines.extend(screen_rows(screen).lines);
+fn all_rows(screen: &mut vt100::Screen) -> Vec<Line<'static>> {
+    let mut lines = scrollback(screen, screen.scrollback_len());
+    lines.extend(screen_rows(screen).0);
     while lines.last().is_some_and(|line| line.spans.is_empty()) {
         lines.pop();
     }
-    Rows {
-        lines,
-        cursor: None,
-        alternate: false,
-    }
+    lines
 }
 
-/// The last `OUTPUT_ROWS` rows of the terminal: see `Terminal::last_rows`.
-fn last_rows(parser: &mut Parser, cursor: bool) -> Rows {
-    let screen = parser.screen();
+/// The last `count` lines of the scrollback, at most its length. With an
+/// offset of n, row r of the screen shows the n-th line above the screen,
+/// plus r. Each change of the offset walks the scrollback, so the offset
+/// moves by a screen at a time: 5,000 changes took 50 ms.
+fn scrollback(screen: &mut vt100::Screen, count: usize) -> Vec<Line<'static>> {
+    let (rows, columns) = screen.size();
+    let (rows, columns) = (usize::from(rows.get()), columns.get());
+    let mut lines = Vec::with_capacity(count);
+    let mut offset = count;
+    while offset > 0 {
+        screen.set_scrollback(offset);
+        let shown = rows.min(offset);
+        lines.extend((0..shown).map(|row| line(screen, row as u16, columns)));
+        offset -= shown;
+    }
+    screen.set_scrollback(0);
+    lines
+}
+
+/// The last `OUTPUT_ROWS` rows of the terminal, scrollback included,
+/// without the blank rows at the end. If `cursor`, the rows go down to the
+/// row of the cursor at least, where a running program writes next, and
+/// they give the cursor.
+fn last_rows(screen: &mut vt100::Screen, cursor: bool) -> Lines {
     let (rows, columns) = screen.size();
     let (rows, columns) = (rows.get(), columns.get());
     let mut end = (0..rows)
@@ -336,27 +339,16 @@ fn last_rows(parser: &mut Parser, cursor: bool) -> Rows {
     let mut cursor = shown.then(|| (usize::from(cursor_row - start), cursor_column));
     let mut lines: Vec<_> = (start..end).map(|row| line(screen, row, columns)).collect();
     if lines.len() < OUTPUT_ROWS {
-        // The scrollback shows above the screen. With an offset of n,
-        // the first row of the screen shows the n-th line above it.
-        let screen = parser.screen_mut();
+        // The scrollback shows above the screen.
         let above = (OUTPUT_ROWS - lines.len()).min(screen.scrollback_len());
-        let mut all = Vec::with_capacity(OUTPUT_ROWS);
-        for offset in (1..=above).rev() {
-            screen.set_scrollback(offset);
-            all.push(line(screen, 0, columns));
-        }
-        screen.set_scrollback(0);
+        let mut all = scrollback(screen, above);
         if let Some((row, _)) = &mut cursor {
             *row += all.len();
         }
         all.append(&mut lines);
         lines = all;
     }
-    Rows {
-        lines,
-        cursor,
-        alternate: false,
-    }
+    (lines, cursor)
 }
 
 /// Whether a cell shows: text other than a space, or a style, such as a
@@ -549,7 +541,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn rows(terminal: &mut Terminal, cursor: bool) -> String {
-        markup(&terminal.last_rows(cursor).lines)
+        markup(&terminal.rows(Want::Last { cursor }).lines)
     }
 
     fn after(bytes: &[u8], columns: u16, rows: u16) -> Terminal {
@@ -583,22 +575,28 @@ mod tests {
         assert_eq!(rows(&mut terminal, false), "a\n\nb");
         // A row of spaces is blank too.
         let mut terminal = after(b"a\r\n\r     \r\n\r\n", 80, 24);
-        assert_eq!(terminal.last_rows(false).lines.len(), 1);
+        assert_eq!(terminal.rows(LAST).lines.len(), 1);
     }
 
     #[test]
     fn the_last_rows_of_a_running_block_give_the_cursor_that_the_program_shows() {
         let mut terminal = after(b"a\r\nPassword: ", 80, 24);
-        assert_eq!(terminal.last_rows(true).cursor, Some((1, 10)));
-        assert_eq!(terminal.last_rows(false).cursor, None);
+        assert_eq!(
+            terminal.rows(Want::Last { cursor: true }).cursor,
+            Some((1, 10))
+        );
+        assert_eq!(terminal.rows(LAST).cursor, None);
         // Above the screen, the scrollback lines count.
         let mut terminal = after(format!("{}ab", seq(30)).as_bytes(), 80, 5);
-        assert_eq!(terminal.last_rows(true).cursor, Some((14, 2)));
+        assert_eq!(
+            terminal.rows(Want::Last { cursor: true }).cursor,
+            Some((14, 2))
+        );
         // A program can hide the cursor, or move it above the last rows.
         terminal.process(b"\x1b[?25l");
-        assert_eq!(terminal.last_rows(true).cursor, None);
+        assert_eq!(terminal.rows(Want::Last { cursor: true }).cursor, None);
         let mut terminal = after(format!("{}\x1b[H", seq(20)).as_bytes(), 80, 24);
-        assert_eq!(terminal.last_rows(true).cursor, None);
+        assert_eq!(terminal.rows(Want::Last { cursor: true }).cursor, None);
     }
 
     #[test]
@@ -762,6 +760,10 @@ mod tests {
         let expected = format!("{}\n\n«bg=red: »", numbers.join("\n"));
         assert_eq!((markup(&rows.lines), rows.cursor), (expected, None));
         assert_eq!(terminal.parser.screen().scrollback(), 0);
+        // A scrollback that is not a whole number of screens.
+        let mut terminal = after(seq(10).as_bytes(), 80, 4);
+        let numbers: Vec<_> = (1..=10).map(|i| i.to_string()).collect();
+        assert_eq!(markup(&terminal.rows(Want::All).lines), numbers.join("\n"));
         // The scrollback keeps 5,000 lines.
         let mut terminal = after(seq(5_010).as_bytes(), 80, 5);
         let rows = terminal.rows(Want::All);
@@ -789,7 +791,7 @@ mod tests {
     #[test]
     fn a_row_ends_at_its_last_text_or_background() {
         let mut terminal = after(b"a\r\nb\x1b[41m  \x1b[0m", 80, 24);
-        let rows = terminal.last_rows(false).lines;
+        let rows = terminal.rows(LAST).lines;
         let widths: Vec<_> = rows.iter().map(Line::width).collect();
         assert_eq!(widths, [1, 3]);
     }
@@ -945,7 +947,7 @@ mod tests {
                     Step::Read(bytes) => _ = terminal.process(&bytes),
                     Step::Resize(columns, rows) => terminal.resize(columns, rows),
                 }
-                terminal.last_rows(true);
+                terminal.rows(Want::Last { cursor: true });
             }
         }
 
@@ -959,7 +961,7 @@ mod tests {
                 terminal.process(read);
             }
             terminal.process(text.as_bytes());
-            for line in terminal.last_rows(true).lines {
+            for line in terminal.rows(Want::Last { cursor: true }).lines {
                 for span in &line.spans {
                     prop_assert!(!span.content.chars().any(needs_escape), "{:?}", span);
                 }

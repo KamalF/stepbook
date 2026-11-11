@@ -328,8 +328,6 @@ struct Ran {
     screen: Arc<term::Shared>,
     run: Option<run::Run>,
     started: Instant,
-    /// Whether its program was on the alternate screen at the last rows.
-    alternate: bool,
 }
 
 /// The state that the event loop owns.
@@ -469,24 +467,15 @@ impl App {
         if self.stopping.is_some() {
             return None;
         }
-        match &self.view.mode {
-            view::Mode::Input(i) => {
-                if !self.send(*i, event, size) {
-                    self.view.mode = view::Mode::Normal;
-                }
-                return None;
+        if let Some(i) = self.view.input_block() {
+            if !self.send(i, event, size) {
+                self.leave(size);
             }
-            view::Mode::Full(full) if self.view.running(full.block) => {
-                if !self.send(full.block, event, size) {
-                    self.close_full(size);
-                }
-                return None;
-            }
-            view::Mode::Full(_) => {
-                self.browse(event, size);
-                return None;
-            }
-            view::Mode::Normal => {}
+            return None;
+        }
+        if let view::Mode::Full(_) = self.view.mode {
+            self.browse(event, size);
+            return None;
         }
         if let Some(question) = self.question.take() {
             match event {
@@ -535,17 +524,9 @@ impl App {
             }
             Action::Input => {
                 let i = self.view.selected?;
-                match self.ran.get(&i) {
-                    // The program of the block shows only in the
-                    // full-screen view.
-                    Some(ran) if ran.run.is_some() && ran.alternate => {
-                        self.open_full(i, size, view::Back::Input);
-                    }
-                    Some(ran) if ran.run.is_some() => {
-                        self.view.mode = view::Mode::Input(i);
-                        self.view.show_output_end(i, size);
-                    }
-                    _ => self.notify("not running: ↵ runs it".into()),
+                match self.view.running(i) {
+                    true => self.enter_input(i, size),
+                    false => self.notify("not running: ↵ runs it".into()),
                 }
             }
             Action::Output => {
@@ -585,37 +566,37 @@ impl App {
     }
 
     /// The keys of the full-screen view after the run: they scroll the
-    /// scrollback, or go back to the document view (spec 7.3).
+    /// scrollback as they scroll the document view, or go back (spec 7.3).
     fn browse(&mut self, event: &Event, size: Size) {
-        let Event::Key(key) = event else {
+        let view::Mode::Full(full) = &self.view.mode else {
             return;
         };
-        let view::Mode::Full(full) = &mut self.view.mode else {
-            return;
-        };
-        if key.kind == KeyEventKind::Release {
-            return;
-        }
-        let page = usize::from(size.height.saturating_sub(1));
-        let last = full.rows.lines.len().saturating_sub(page);
-        let scroll = full.scroll;
-        full.scroll = match key.code {
-            KeyCode::Up | KeyCode::Char('k') => scroll + 1,
-            KeyCode::Down | KeyCode::Char('j') => scroll.saturating_sub(1),
-            KeyCode::PageUp => scroll + page,
-            KeyCode::PageDown => scroll.saturating_sub(page),
-            KeyCode::Home => last,
-            KeyCode::End => 0,
-            KeyCode::Char('o' | 'q' | 'c') | KeyCode::Esc => {
-                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-                if key.code != KeyCode::Char('c') || ctrl {
-                    self.close_full(size);
-                }
-                return;
-            }
+        let page = self.view.pty_size(full.block, size).1 as isize;
+        let esc = matches!(event, Event::Key(key)
+            if key.code == KeyCode::Esc && key.kind == KeyEventKind::Press);
+        let lines = match action(event, size) {
+            Some(Action::Select(step)) => -step,
+            Some(Action::Page(pages)) => -pages * page,
+            Some(Action::First) => isize::MAX,
+            Some(Action::Last) => isize::MIN,
+            Some(Action::Quit | Action::Output) => return self.leave(size),
+            _ if esc => return self.leave(size),
             _ => return,
+        };
+        self.view.scroll_full(lines, size);
+    }
+
+    /// Sends the keys to the program of block `i`: in input mode, or in its
+    /// full-screen view while the program is on the alternate screen, which
+    /// only that view shows (spec 6.3, 7.2).
+    fn enter_input(&mut self, i: usize, size: Size) {
+        match self.view.alternate(i) {
+            true => self.open_full(i, size, view::Back::Input),
+            false => {
+                self.view.mode = view::Mode::Input(i);
+                self.view.show_output_end(i, size);
+            }
         }
-        .min(last);
     }
 
     /// Opens the full-screen view of block `i`. While the block runs, its
@@ -623,12 +604,11 @@ impl App {
     /// is on the alternate screen, the view goes `back` when it leaves it
     /// (spec 6.3).
     fn open_full(&mut self, i: usize, size: Size, back: view::Back) {
-        let alternate = self.ran.get(&i).is_some_and(|ran| ran.alternate);
         self.view.mode = view::Mode::Full(view::Full {
             block: i,
             rows: term::Rows::default(),
             scroll: 0,
-            back: alternate.then_some(back),
+            back: self.view.alternate(i).then_some(back),
         });
         self.resize_pty(i, size);
         self.changed.insert(i);
@@ -636,23 +616,11 @@ impl App {
 
     /// Goes back to the document view. A running block gets its PTY of
     /// the document view back.
-    fn close_full(&mut self, size: Size) {
-        let view::Mode::Full(full) = std::mem::replace(&mut self.view.mode, view::Mode::Normal)
-        else {
-            return;
-        };
-        self.resize_pty(full.block, size);
-        self.changed.insert(full.block);
-    }
-
-    /// The size of the PTY of block `i`: the screen without the footer in
-    /// its full-screen view, else the columns of its code (spec 6.3, 7.3).
-    fn pty_size(&self, i: usize, size: Size) -> (u16, u16) {
-        match &self.view.mode {
-            view::Mode::Full(full) if full.block == i => {
-                (size.width, size.height.saturating_sub(1).max(1))
-            }
-            _ => self.view.pty_size(i, size),
+    fn leave(&mut self, size: Size) {
+        let mode = std::mem::replace(&mut self.view.mode, view::Mode::Normal);
+        if let view::Mode::Full(full) = mode {
+            self.resize_pty(full.block, size);
+            self.changed.insert(full.block);
         }
     }
 
@@ -663,7 +631,7 @@ impl App {
             return;
         };
         if let Some(run) = &ran.run {
-            let (columns, rows) = self.pty_size(i, size);
+            let (columns, rows) = self.view.pty_size(i, size);
             let _ = run.resize(columns, rows);
             ran.screen.resize(columns, rows);
         }
@@ -747,7 +715,7 @@ impl App {
     fn start(&mut self, i: usize, size: Size) {
         debug_assert!(!self.ran.get(&i).is_some_and(|ran| ran.run.is_some()));
         let block = &self.view.doc.blocks[i];
-        let (columns, rows) = self.pty_size(i, size);
+        let (columns, rows) = self.view.pty_size(i, size);
         let label = self.view.doc.label(i);
         let status = match self.session.start(&block.code, &label, columns, rows) {
             Ok(run) => {
@@ -760,7 +728,6 @@ impl App {
                         screen,
                         run,
                         started,
-                        alternate: false,
                     },
                 );
                 view::Status::Running(Duration::ZERO)
@@ -776,7 +743,7 @@ impl App {
             }
         };
         self.view.set_status(i, status);
-        self.view.set_alternate(i, false);
+        let _ = self.view.set_alternate(i, false);
         self.view.set_output(i, term::Rows::default(), size);
     }
 
@@ -809,30 +776,34 @@ impl App {
     /// event after it.
     fn refresh(&mut self, size: Size) {
         for i in std::mem::take(&mut self.changed) {
-            let Some(ran) = self.ran.get_mut(&i) else {
+            let Some(ran) = self.ran.get(&i) else {
                 continue;
             };
-            let running = ran.run.is_some();
-            let full = match &mut self.view.mode {
-                view::Mode::Full(full) if full.block == i => Some(full),
-                _ => None,
+            let full = match &self.view.mode {
+                view::Mode::Full(full) if full.block == i => true,
+                // The full-screen view of another block hides these rows.
+                view::Mode::Full(_) => {
+                    self.changed.insert(i);
+                    continue;
+                }
+                _ => false,
             };
-            let want = match (&full, running) {
-                (Some(_), true) => term::Want::Screen,
-                (Some(_), false) => term::Want::All,
-                (None, cursor) => term::Want::Last { cursor },
+            let want = match (full, ran.run.is_some()) {
+                (true, true) => term::Want::Screen,
+                (true, false) => term::Want::All,
+                (false, cursor) => term::Want::Last { cursor },
             };
             let Some(rows) = ran.screen.try_rows(want) else {
                 self.changed.insert(i);
                 continue;
             };
-            let switched = std::mem::replace(&mut ran.alternate, rows.alternate) != rows.alternate;
-            match full {
-                Some(full) => full.rows = rows,
+            let switched = self.view.set_alternate(i, rows.alternate);
+            match &mut self.view.mode {
+                view::Mode::Full(full) => full.rows = rows,
                 // Under the block, the rows from before the switch stay:
                 // a full-screen program shows in the full-screen view.
-                None if rows.alternate => {}
-                None => self.view.set_output(i, rows, size),
+                _ if rows.alternate => {}
+                _ => self.view.set_output(i, rows, size),
             }
             if switched {
                 self.switch(i, size);
@@ -844,23 +815,18 @@ impl App {
     /// enters the alternate screen, and closes it when the program leaves
     /// it (spec 6.3). A question in the footer keeps the document view.
     fn switch(&mut self, i: usize, size: Size) {
-        let ran = &self.ran[&i];
-        let (alternate, running) = (ran.alternate, ran.run.is_some());
-        self.view.set_alternate(i, alternate);
+        let (alternate, running) = (self.view.alternate(i), self.view.running(i));
         match &self.view.mode {
             view::Mode::Full(full) if full.block == i && !alternate => {
                 let Some(back) = full.back else {
                     return;
                 };
-                self.close_full(size);
+                self.leave(size);
                 if back == view::Back::Input && running {
-                    self.view.mode = view::Mode::Input(i);
-                    self.view.show_output_end(i, size);
+                    self.enter_input(i, size);
                 }
             }
-            view::Mode::Input(j) if *j == i && alternate => {
-                self.open_full(i, size, view::Back::Input);
-            }
+            view::Mode::Input(j) if *j == i && alternate => self.enter_input(i, size),
             view::Mode::Normal
                 if alternate
                     && running
@@ -1598,11 +1564,11 @@ echo \"got $x\"
         read_until(&mut app, SIZE, |app| output(app, 1).contains("before"));
         // Block 0 is not selected.
         app.ran[&0].run.as_ref().unwrap().write(b"\n");
-        read_until(&mut app, SIZE, |app| app.ran[&0].alternate);
+        read_until(&mut app, SIZE, |app| app.view.alternate(0));
         // A question is open.
         key(&mut app, KeyCode::Char('q'));
         app.ran[&1].run.as_ref().unwrap().write(b"\n");
-        read_until(&mut app, SIZE, |app| app.ran[&1].alternate);
+        read_until(&mut app, SIZE, |app| app.view.alternate(1));
         assert_eq!(app.view.mode, view::Mode::Normal);
         assert!(app.question.is_some());
         key(&mut app, KeyCode::Char('n'));

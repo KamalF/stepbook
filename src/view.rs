@@ -175,8 +175,7 @@ impl View {
     /// The full-screen view: only the terminal of the block, so that a
     /// selection copies its text alone (spec 6.4), then the footer.
     fn draw_full(&self, frame: &mut Frame, full: &Full) {
-        let [area, footer] =
-            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+        let (area, footer) = split(frame.area());
         let lines = &full.rows.lines;
         // After the run, the view ends `scroll` lines above the last line.
         let height = usize::from(area.height);
@@ -201,24 +200,42 @@ impl View {
         matches!(self.statuses[i], Some(Status::Running(_)))
     }
 
+    /// The block whose program the keys go to: in input mode, or in the
+    /// full-screen view of a running block (spec 7.2, 7.3).
+    pub fn input_block(&self) -> Option<usize> {
+        match &self.mode {
+            Mode::Input(i) => Some(*i),
+            Mode::Full(full) if self.running(full.block) => Some(full.block),
+            Mode::Full(_) | Mode::Normal => None,
+        }
+    }
+
+    /// Scrolls the full-screen view after the run by `lines` toward the
+    /// start of the output, between its start and its end.
+    pub fn scroll_full(&mut self, lines: isize, size: Size) {
+        let height = usize::from(split(screen(size)).0.height);
+        if let Mode::Full(full) = &mut self.mode {
+            let last = full.rows.lines.len().saturating_sub(height);
+            full.scroll = full.scroll.saturating_add_signed(lines).min(last);
+        }
+    }
+
     /// The mode, then the question, the notification or the keys that
     /// apply now (spec 6.1). Both can quote a directory name (spec 6.5).
     fn footer(&self) -> Line<'static> {
         let reversed = Style::new().add_modifier(Modifier::REVERSED);
-        let input = |i: usize| {
-            let keys = format!("keys go to {}  ^o leave", self.doc.label(i));
-            (" INPUT ", vec![Span::raw(keys)])
-        };
-        let (mode, text) = match (&self.question, &self.mode, &self.notice) {
-            (Some(question), _, _) => (" CONFIRM ", escaped(question, Style::new())),
-            (None, Mode::Input(i), _) => input(*i),
-            (None, Mode::Full(full), _) if self.running(full.block) => input(full.block),
-            (None, Mode::Full(full), _) => {
+        let (mode, text) = match (&self.question, self.input_block(), &self.mode, &self.notice) {
+            (Some(question), ..) => (" CONFIRM ", escaped(question, Style::new())),
+            (None, Some(i), ..) => {
+                let keys = format!("keys go to {}  ^o leave", self.doc.label(i));
+                (" INPUT ", vec![Span::raw(keys)])
+            }
+            (None, None, Mode::Full(full), _) => {
                 let keys = format!("{}  ↑↓ scroll  o back", self.doc.label(full.block));
                 (" OUTPUT ", vec![Span::raw(keys)])
             }
-            (None, Mode::Normal, Some(notice)) => (" NORMAL ", escaped(notice, WARNING)),
-            (None, Mode::Normal, None) => {
+            (None, None, _, Some(notice)) => (" NORMAL ", escaped(notice, WARNING)),
+            (None, None, _, None) => {
                 let status = self.selected.and_then(|i| self.statuses[i].as_ref());
                 let input = match status {
                     Some(Status::Running(_)) => "  i input  o output",
@@ -237,8 +254,7 @@ impl View {
     /// view and of the footer. The sidebar and the document view share the
     /// border between them.
     fn areas(&self, screen: Rect) -> (Option<Rect>, Rect, Rect) {
-        let [main, footer] =
-            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(screen);
+        let (main, footer) = split(screen);
         if main.width < SIDEBAR_SCREEN_WIDTH {
             return (None, main, footer);
         }
@@ -329,13 +345,20 @@ impl View {
         (lines.collect(), blocks.collect())
     }
 
-    /// Sets whether the program of block `i` is on the alternate screen.
-    /// While it runs there, its info line says so (spec 6.3).
-    pub fn set_alternate(&mut self, i: usize, alternate: bool) {
-        if self.alternates[i] != alternate {
+    /// Sets whether the program of block `i` is on the alternate screen,
+    /// and returns whether it switched. While it runs there, its info line
+    /// says so (spec 6.3).
+    pub fn set_alternate(&mut self, i: usize, alternate: bool) -> bool {
+        let switched = self.alternates[i] != alternate;
+        if switched {
             self.alternates[i] = alternate;
             self.infos.get_mut()[i] = None;
         }
+        switched
+    }
+
+    pub fn alternate(&self, i: usize) -> bool {
+        self.alternates[i]
     }
 
     /// Sets the state of block `i`.
@@ -346,13 +369,16 @@ impl View {
         }
     }
 
-    /// The size of the PTY of block `i` on a screen of `size`: the columns
-    /// of its code, by the height of the screen without the footer (spec
-    /// 6.3).
+    /// The size of the PTY of block `i` on a screen of `size`: the screen
+    /// without the footer in its full-screen view, else the columns of its
+    /// code by that height (spec 6.3, 7.3).
     pub fn pty_size(&self, i: usize, size: Size) -> (u16, u16) {
-        let (shown, _, _) = self.shown(screen(size));
-        let columns = shown.page.widths[i];
-        (columns as u16, size.height.saturating_sub(1).max(1))
+        let area = split(screen(size)).0;
+        let columns = match &self.mode {
+            Mode::Full(full) if full.block == i => area.width,
+            _ => self.shown(screen(size)).0.page.widths[i] as u16,
+        };
+        (columns, area.height.max(1))
     }
 
     #[cfg(test)]
@@ -374,7 +400,7 @@ impl View {
             return;
         }
         let (shown, text, scroll) = self.shown(screen(size));
-        let end = shown.block(i).end + shown.outputs[i];
+        let end = shown.output_end(i);
         self.scroll = scroll.max(end.saturating_sub(usize::from(text.height)));
     }
 
@@ -382,7 +408,7 @@ impl View {
     /// block `i`, where a running program shows its cursor.
     pub fn show_output_end(&mut self, i: usize, size: Size) {
         let (shown, text, scroll) = self.shown(screen(size));
-        let end = shown.block(i).end + shown.outputs[i];
+        let end = shown.output_end(i);
         let height = usize::from(text.height);
         self.scroll = scroll.clamp(end.saturating_sub(height), end - 1);
     }
@@ -529,6 +555,13 @@ fn screen(size: Size) -> Rect {
     Rect::from((Position::ORIGIN, size))
 }
 
+/// The area above the footer, and the footer.
+fn split(screen: Rect) -> (Rect, Rect) {
+    let [main, footer] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(screen);
+    (main, footer)
+}
+
 /// The rows of the document view: the lines of the page, with the info
 /// rows of each block above its code, and its output under it.
 struct Shown {
@@ -580,6 +613,11 @@ impl Shown {
     /// The largest scroll: the last row at the bottom of the view.
     fn max_scroll(&self, height: usize) -> usize {
         self.len().saturating_sub(height)
+    }
+
+    /// The row after the output of block `i`.
+    fn output_end(&self, i: usize) -> usize {
+        self.block(i).end + self.outputs[i]
     }
 
     /// The rows of the info line and the code of block `i`.
