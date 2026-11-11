@@ -747,6 +747,9 @@ fn read_run(
             Err(_) => break,
         }
     }
+    // So that the writer thread ends with the run: a background job can
+    // keep the reader for the rest of the session.
+    drop(answers);
     // The PTY can end first: a script that moves its stdio off the PTY goes
     // on with no terminal. The run ends when the wrapper exits. NOWAIT
     // leaves the wrapper a zombie, for wait_for_jobs.
