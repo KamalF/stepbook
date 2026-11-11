@@ -39,6 +39,11 @@ exclude_re = [
     # covers it.
     "replace end_runs with \\(\\)",
     "in end_runs$",
+    # These two widen the processes to signal to each process of the user:
+    # SIGKILL would end cargo-mutants, and outside a sandbox the desktop
+    # session too. On 2026-11-11, in the sandbox, they killed two runs.
+    "run.rs:\\d+:68: replace && with \\|\\| in end_sessions",
+    "replace == with != in session_processes",
     # The thread that reads the keys: the check in tmux covers it.
     "replace read_terminal with \\(\\)",
     "in read_terminal$",
