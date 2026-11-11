@@ -347,6 +347,9 @@ struct App {
     question: Option<Question>,
     /// When the notification in the footer ends.
     notice_until: Option<Instant>,
+    /// Until when keys do nothing, after stepbook stopped sending them to
+    /// a program on its own (spec 7.2).
+    paused_until: Option<Instant>,
     /// While stepbook stops the runs to quit: when it kills those left.
     stopping: Option<Instant>,
 }
@@ -366,6 +369,10 @@ const STOP_WAIT: Duration = Duration::from_secs(2);
 
 /// How long a notification shows (spec 6.1).
 const NOTICE: Duration = Duration::from_secs(3);
+
+/// How long keys do nothing after stepbook stopped sending them to a
+/// program on its own (spec 7.2).
+const PAUSE: Duration = Duration::from_secs(1);
 
 /// An event of the loop: a control event, or a message from the run of a
 /// block.
@@ -392,6 +399,7 @@ impl App {
             ticks,
             question: None,
             notice_until: None,
+            paused_until: None,
             stopping: None,
         }
     }
@@ -446,18 +454,35 @@ impl App {
     /// When the loop must wake up with no event: at the end of the
     /// notification, and when the runs that stop get SIGKILL.
     fn deadline(&self) -> Option<Instant> {
-        self.notice_until.into_iter().chain(self.stopping).min()
+        [self.notice_until, self.paused_until, self.stopping]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
-    /// Ends the notification after its time.
+    /// Ends the notification and the pause of the keys after their time.
     fn expire(&mut self) {
-        if self
-            .notice_until
-            .is_some_and(|until| Instant::now() >= until)
-        {
+        let now = Instant::now();
+        if self.notice_until.is_some_and(|until| now >= until) {
             self.notice_until = None;
             self.view.notice = None;
         }
+        if self.paused_until.is_some_and(|until| now >= until) {
+            self.paused_until = None;
+        }
+    }
+
+    /// Makes the keys do nothing for a moment, after stepbook stopped
+    /// sending them to the program of block `i` on its own: the run ended,
+    /// or the program left the alternate screen. Keys typed for the
+    /// program would act on the document: a second ctrl-c would quit
+    /// stepbook, and Down then Enter would run another block (spec 7.2).
+    fn pause(&mut self, i: usize) {
+        let until = Instant::now() + PAUSE;
+        self.paused_until = Some(until);
+        let label = self.view.doc.label(i);
+        self.view.notice = Some(format!("keys off for 1 s: {label} no longer takes them"));
+        self.notice_until = Some(until);
     }
 
     /// Applies a terminal event, and returns how the loop ends, if it does.
@@ -465,7 +490,10 @@ impl App {
         if let Event::Resize(..) = event {
             self.resize(size);
         }
-        if self.stopping.is_some() {
+        let paused = self
+            .paused_until
+            .is_some_and(|until| Instant::now() < until);
+        if self.stopping.is_some() || paused && matches!(event, Event::Key(_)) {
             return None;
         }
         if let Some(i) = self.view.input_block() {
@@ -772,9 +800,7 @@ impl App {
             run::Event::Exit(status) => {
                 let run = ran.run.take().expect("a run sends its exit status once");
                 let saved = self.session.finish(&run);
-                if self.view.mode == view::Mode::Input(i) {
-                    self.view.mode = view::Mode::Normal;
-                }
+                let input = self.view.input_block() == Some(i);
                 let took = ran.started.elapsed();
                 let ended = view::Status::Ended {
                     status,
@@ -782,6 +808,14 @@ impl App {
                     saved,
                 };
                 self.view.set_status(i, ended);
+                // The keys no longer go to the program. In the full-screen
+                // view, they now scroll the output.
+                if input {
+                    if self.view.mode == view::Mode::Input(i) {
+                        self.view.mode = view::Mode::Normal;
+                    }
+                    self.pause(i);
+                }
             }
         }
         self.changed.insert(i);
@@ -791,8 +825,10 @@ impl App {
     /// its reader holds gives its rows at a later frame: the reader sends an
     /// event after it.
     fn refresh(&mut self, size: Size) {
-        // The blocks whose rows wait for a later frame.
+        // The blocks whose terminal the reader held: their rows wait for a
+        // later frame, as do those that the full-screen view hides.
         let mut later = BTreeSet::new();
+        let mut hidden = BTreeSet::new();
         // A switch of the view adds its block again: its frame then shows
         // the rows of the new view.
         while let Some(i) = self.changed.pop_first() {
@@ -803,7 +839,7 @@ impl App {
                 view::Mode::Full(full) if full.block == i => true,
                 // The full-screen view of another block hides these rows.
                 view::Mode::Full(_) => {
-                    later.insert(i);
+                    hidden.insert(i);
                     continue;
                 }
                 _ => false,
@@ -827,8 +863,12 @@ impl App {
             }
             if switched {
                 self.switch(i, size);
+                if !matches!(self.view.mode, view::Mode::Full(_)) {
+                    self.changed.append(&mut hidden);
+                }
             }
         }
+        later.append(&mut hidden);
         self.changed = later;
     }
 
@@ -847,8 +887,9 @@ impl App {
                     return;
                 };
                 self.leave(size);
-                if back == view::Back::Input && running {
-                    self.enter_input(i, size);
+                match back == view::Back::Input && running {
+                    true => self.enter_input(i, size),
+                    false => self.pause(i),
                 }
             }
             view::Mode::Input(j) if *j == i && alternate => self.enter_input(i, size),
@@ -1575,6 +1616,9 @@ echo \"got $x\"
         assert_eq!(full(&app).back, Some(view::Back::Normal));
         key(&mut app, KeyCode::Enter);
         until_mode(&mut app, Some(view::Mode::Normal));
+        // Keys do nothing for a moment, until the pause ends.
+        assert!(app.paused_until.is_some());
+        app.paused_until = None;
         // Opened on the main screen, the view stays when the program
         // enters and leaves the alternate screen.
         key(&mut app, KeyCode::Char('o'));
@@ -1614,6 +1658,67 @@ echo \"got $x\"
         write(&app, 1, b"\ny\n");
         read_until(&mut app, SIZE, |app| !running(app));
         assert_eq!(app.view.mode, view::Mode::Normal);
+    }
+
+    #[test]
+    fn after_a_run_ends_in_input_mode_keys_do_nothing_for_a_moment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\necho ready\nread\n```\n", tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        key(&mut app, KeyCode::Char('i'));
+        key(&mut app, KeyCode::Enter);
+        read_until(&mut app, SIZE, |app| !running(app));
+        assert_eq!(app.view.mode, view::Mode::Normal);
+        let notice = "keys off for 1 s: #1 no longer takes them";
+        assert_eq!(app.view.notice.as_deref(), Some(notice));
+        let until = app.paused_until.unwrap();
+        assert!(until > Instant::now() + Duration::from_millis(900));
+        assert_eq!(app.deadline(), Some(until));
+        // A second ctrl-c, typed for the program, does not quit.
+        assert_eq!(app.handle(&ctrl('c'), SIZE), None);
+        app.paused_until = Some(Instant::now());
+        app.expire();
+        assert_eq!(app.paused_until, None);
+        assert_eq!(app.handle(&ctrl('c'), SIZE), Some(Exit::Quit));
+    }
+
+    #[test]
+    fn after_a_run_ends_in_its_full_screen_view_keys_do_nothing_for_a_moment() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\necho ready\nread\n```\n", tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        key(&mut app, KeyCode::Char('o'));
+        key(&mut app, KeyCode::Enter);
+        read_until(&mut app, SIZE, |app| !running(app));
+        key(&mut app, KeyCode::Char('q'));
+        assert!(matches!(app.view.mode, view::Mode::Full(_)));
+        app.paused_until = None;
+        key(&mut app, KeyCode::Char('q'));
+        assert_eq!(app.view.mode, view::Mode::Normal);
+    }
+
+    #[test]
+    fn the_rows_that_the_full_screen_view_hid_show_when_it_closes() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = "```bash\necho a\nread\necho b\n```\n";
+        let mut app = app(&format!("{first}\n{FULL_SCREEN}"), tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains('a'));
+        key(&mut app, KeyCode::Down);
+        enter(&mut app, SIZE);
+        app.ran[&1].run.as_ref().unwrap().write(b"\n");
+        until_mode(&mut app, None);
+        app.ran[&0].run.as_ref().unwrap().write(b"\n");
+        read_until(&mut app, SIZE, |app| !app.view.running(0));
+        assert!(!output(&app, 0).contains('b'));
+        // The refresh that closes the view makes the rows that it hid.
+        app.ran[&1].run.as_ref().unwrap().write(b"\n");
+        until_mode(&mut app, Some(view::Mode::Normal));
+        assert_eq!(output(&app, 0), "a\n\nb");
+        app.ran[&1].run.as_ref().unwrap().write(b"y\n");
+        read_until(&mut app, SIZE, |app| !running(app));
     }
 
     #[test]

@@ -230,7 +230,8 @@ impl View {
                 let keys = format!("keys go to {}  ^o leave", self.doc.label(i));
                 (" INPUT ", vec![Span::raw(keys)])
             }
-            (None, None, Mode::Full(full), _) => {
+            (None, None, Mode::Full(_), Some(notice)) => (" OUTPUT ", escaped(notice, WARNING)),
+            (None, None, Mode::Full(full), None) => {
                 let keys = format!("{}  ↑↓ scroll  o back", self.doc.label(full.block));
                 (" OUTPUT ", vec![Span::raw(keys)])
             }
@@ -2351,6 +2352,8 @@ pub(crate) mod tests {
         });
         assert_snapshot!(footer(&view), @"«r: INPUT »  keys go to check  ^o leave");
         view.set_status(0, Status::NotStarted("cannot start".into()));
+        assert_snapshot!(footer(&view), @"«r: OUTPUT »  «yellow:already running: i to type, o to view»");
+        view.notice = None;
         assert_snapshot!(footer(&view), @"«r: OUTPUT »  check  ↑↓ scroll  o back");
     }
 
