@@ -545,10 +545,12 @@ impl App {
         }
         if let Some(i) = self.view.input_block() {
             if !self.send(i, event, size) {
-                // The view opens on its own no more for this run: a
-                // program that enters and leaves the alternate screen in
-                // a loop would take the keys back each time.
-                if let Some(ran) = self.ran.get_mut(&i) {
+                // After ctrl-o, the view opens on its own no more for this
+                // run: a program that enters and leaves the alternate
+                // screen in a loop would take the keys back each time.
+                if let (Event::Key(key), Some(ran)) = (event, self.ran.get_mut(&i))
+                    && is_ctrl_o(key)
+                {
                     ran.follow = false;
                 }
                 self.leave(size);
@@ -932,6 +934,7 @@ impl App {
                 continue;
             };
             let switched = self.view.set_alternate(i, rows.alternate);
+            let rows_ended_on_alternate = rows.ended_on_alternate;
             match &mut self.view.mode {
                 view::Mode::Full(full) => full.rows = rows,
                 // Under the block, the rows from before the switch stay:
@@ -939,7 +942,9 @@ impl App {
                 _ if rows.alternate => {}
                 _ => self.view.set_output(i, rows, size),
             }
-            if switched {
+            // stepbook leaves the alternate screen of a run that ended on
+            // it: its full-screen view stays, with the last screen.
+            if switched && !rows_ended_on_alternate {
                 self.switch(i, size);
                 if !matches!(self.view.mode, view::Mode::Full(_)) {
                     self.changed.append(&mut hidden);
@@ -1478,6 +1483,8 @@ mod tests {
         let enter_key = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.handle(&enter_key, small), None);
         assert_eq!(app.view.mode, view::Mode::Normal);
+        // Only ctrl-o keeps the view from opening on its own again.
+        assert!(app.ran[&0].follow);
         std::thread::sleep(Duration::from_millis(100));
         assert!(running(&app));
         app.ran[&0].run.as_ref().unwrap().write(b"\n");
@@ -1805,6 +1812,28 @@ echo \"got $x\"
         key(&mut app, KeyCode::Enter);
         read_until(&mut app, SIZE, |app| !running(app));
         assert!(output(&app, 0).ends_with("got y"), "{}", output(&app, 0));
+    }
+
+    #[test]
+    fn the_full_screen_view_of_a_run_that_ends_on_the_alternate_screen_stays() {
+        let tmp = tempfile::tempdir().unwrap();
+        let block = "```bash\necho before\nprintf '\\e[?1049h'\necho crash\nread\n```\n";
+        let mut app = app(block, tmp.path());
+        enter(&mut app, SIZE);
+        until_mode(&mut app, None);
+        app.ran[&0].run.as_ref().unwrap().write(b"\n");
+        read_until(&mut app, SIZE, |app| !running(app));
+        let mark = "«d:[stepbook: the last screen of the full-screen program]»";
+        let lines = markup(&full(&app).rows.lines);
+        assert!(
+            lines.starts_with(&format!("before\n{mark}\ncrash")),
+            "{lines}"
+        );
+        // Back in the document view, the main screen shows under the block.
+        app.paused_until = None;
+        key(&mut app, KeyCode::Char('q'));
+        app.refresh(SIZE);
+        assert_eq!(output(&app, 0), "before");
     }
 
     #[test]

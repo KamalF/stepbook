@@ -41,7 +41,7 @@ pub struct Terminal {
     rows: u16,
     /// The last screen of a program that was still on the alternate
     /// screen when its run ended.
-    last_screen: Vec<Line<'static>>,
+    last_screen: Option<Vec<Line<'static>>>,
 }
 
 /// The terminal of a run, between the reader thread of the run, which
@@ -77,6 +77,9 @@ pub struct Rows {
     /// Whether the program was on the alternate screen, such as vim, less
     /// or top (spec 6.3).
     pub alternate: bool,
+    /// Whether the run ended on the alternate screen, which stepbook then
+    /// left: the program did not leave it.
+    pub ended_on_alternate: bool,
 }
 
 /// What the main thread takes of a terminal.
@@ -236,7 +239,7 @@ impl Terminal {
             parser: parser(columns, rows),
             columns,
             rows,
-            last_screen: Vec::new(),
+            last_screen: None,
         }
     }
 
@@ -280,16 +283,20 @@ impl Terminal {
                 lines,
                 cursor,
                 alternate,
+                ended_on_alternate: false,
             }
         };
         let mut rows = match self.guarded(read) {
             Some(rows) => rows,
             None => read(&mut self.parser),
         };
-        if want == Want::All && !self.last_screen.is_empty() {
-            let mark = "[stepbook: the last screen of the full-screen program]";
-            rows.lines.push(Line::styled(mark, DIM));
-            rows.lines.extend(self.last_screen.iter().cloned());
+        if let Some(last_screen) = &self.last_screen {
+            rows.ended_on_alternate = true;
+            if want == Want::All {
+                let mark = "[stepbook: the last screen of the full-screen program]";
+                rows.lines.push(Line::styled(mark, DIM));
+                rows.lines.extend(last_screen.iter().cloned());
+            }
         }
         rows
     }
@@ -307,7 +314,7 @@ impl Terminal {
             lines.pop();
         }
         self.process(b"\x1b[?1049l");
-        self.last_screen = lines;
+        self.last_screen = Some(lines);
     }
 }
 
@@ -786,9 +793,10 @@ mod tests {
         let mut terminal = after(b"before\r\n\x1b[?1049hon-alt\r\n", 20, 4);
         terminal.end();
         let rows = terminal.rows(LAST);
+        let state = (rows.alternate, rows.ended_on_alternate);
         assert_eq!(
-            (markup(&rows.lines).as_str(), rows.alternate),
-            ("before", false)
+            (markup(&rows.lines).as_str(), state),
+            ("before", (false, true))
         );
         let all = markup(&terminal.rows(Want::All).lines);
         let mark = "«d:[stepbook: the last screen of the full-screen program]»";
@@ -796,7 +804,11 @@ mod tests {
         // On the main screen, the end changes nothing.
         let mut terminal = after(b"main", 20, 4);
         terminal.end();
-        assert_eq!(markup(&terminal.rows(Want::All).lines), "main");
+        let rows = terminal.rows(Want::All);
+        assert_eq!(
+            (markup(&rows.lines).as_str(), rows.ended_on_alternate),
+            ("main", false)
+        );
     }
 
     #[test]

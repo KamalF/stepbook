@@ -2280,6 +2280,7 @@ pub(crate) mod tests {
             lines: output(&["a", "Password: "]).lines,
             cursor: Some((1, 10)),
             alternate: false,
+            ended_on_alternate: false,
         };
         view.set_output(0, rows, Size::new(80, 30));
         let cursor = |view: &View, height| {
@@ -2366,6 +2367,7 @@ pub(crate) mod tests {
             lines,
             cursor: Some((1, 3)),
             alternate: false,
+            ended_on_alternate: false,
         };
         view.mode = Mode::Full(Full {
             block: 1,
