@@ -70,6 +70,17 @@ pub struct Full {
     pub rows: Rows,
     /// After the run, the lines under the view.
     pub scroll: usize,
+    /// If the program was on the alternate screen when the view opened:
+    /// the mode that the view goes back to when the program leaves it.
+    pub back: Option<Back>,
+}
+
+/// The mode after the full-screen view of a program that leaves the
+/// alternate screen (spec 6.3).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Back {
+    Normal,
+    Input,
 }
 
 /// The state of the screen: the document, its file name, the selection,
@@ -87,6 +98,8 @@ pub struct View {
     /// The notification that the footer shows, in place of the keys.
     pub notice: Option<String>,
     statuses: Vec<Option<Status>>,
+    /// Whether the program of each block is on the alternate screen.
+    alternates: Vec<bool>,
     /// The width of the sidebar: the labels never change.
     sidebar: u16,
     /// The output under each block: the last rows of its terminal.
@@ -115,6 +128,7 @@ impl View {
             question: None,
             notice: None,
             statuses: vec![None; blocks],
+            alternates: vec![false; blocks],
             outputs: vec![Rows::default(); blocks],
             page: RefCell::default(),
             infos: RefCell::new(vec![None; blocks]),
@@ -266,7 +280,8 @@ impl View {
         for (i, info) in infos.iter_mut().enumerate() {
             // The first info row takes the list marker of the item.
             info.get_or_insert_with(|| {
-                let rows = info_rows(&self.doc, i, self.statuses[i].as_ref(), page.widths[i]);
+                let status = self.statuses[i].as_ref();
+                let rows = info_rows(&self.doc, i, status, self.alternates[i], page.widths[i]);
                 prefixed(&page.firsts[i], &page.prefixes[i], rows).collect()
             });
         }
@@ -312,6 +327,15 @@ impl View {
         let lines = (0..shown.len()).map(|row| self.line(&shown, row, None));
         let blocks = (0..self.doc.blocks.len()).map(|i| shown.block(i));
         (lines.collect(), blocks.collect())
+    }
+
+    /// Sets whether the program of block `i` is on the alternate screen.
+    /// While it runs there, its info line says so (spec 6.3).
+    pub fn set_alternate(&mut self, i: usize, alternate: bool) {
+        if self.alternates[i] != alternate {
+            self.alternates[i] = alternate;
+            self.infos.get_mut()[i] = None;
+        }
     }
 
     /// Sets the state of block `i`.
@@ -765,12 +789,16 @@ fn info_rows(
     doc: &Document,
     i: usize,
     status: Option<&Status>,
+    alternate: bool,
     width: usize,
 ) -> Vec<Line<'static>> {
     let mut info = vec![Span::styled(doc.label(i), BOLD)];
     if let Some(status) = status {
         info.push(Span::raw("  "));
         info.extend(status_spans(status));
+    }
+    if alternate && matches!(status, Some(Status::Running(_))) {
+        info.push(Span::raw("  full-screen program, press o"));
     }
     if let Some(problem) = doc.blocks[i].problem {
         info.extend([Span::raw("  "), Span::styled(problem, ERROR)]);
@@ -2128,7 +2156,7 @@ pub(crate) mod tests {
         let lines = rows.iter().map(|row| Line::from(row.to_string()));
         Rows {
             lines: lines.collect(),
-            cursor: None,
+            ..Rows::default()
         }
     }
 
@@ -2209,6 +2237,7 @@ pub(crate) mod tests {
         let rows = Rows {
             lines: output(&["a", "Password: "]).lines,
             cursor: Some((1, 10)),
+            alternate: false,
         };
         view.set_output(0, rows, Size::new(80, 30));
         let cursor = |view: &View, height| {
@@ -2277,6 +2306,7 @@ pub(crate) mod tests {
             block: 0,
             rows: Rows::default(),
             scroll: 0,
+            back: None,
         });
         assert_snapshot!(footer(&view), @"«r: INPUT »  keys go to check  ^o leave");
         view.set_status(0, Status::NotStarted("cannot start".into()));
@@ -2291,11 +2321,13 @@ pub(crate) mod tests {
         let rows = Rows {
             lines,
             cursor: Some((1, 3)),
+            alternate: false,
         };
         view.mode = Mode::Full(Full {
             block: 1,
             rows,
             scroll: 0,
+            back: None,
         });
         assert_snapshot!(screen_with_footer(&view, 40, 8), @"
         $ top
@@ -2321,6 +2353,7 @@ pub(crate) mod tests {
             block: 0,
             rows: output(&lines),
             scroll: 0,
+            back: None,
         });
         assert_snapshot!(screen(&view, 40, 8), @"
         14
@@ -2347,6 +2380,18 @@ pub(crate) mod tests {
         // A screen too small shows only a message.
         let small = screen(&view, 39, 8);
         assert!(small.starts_with("Enlarge the terminal"), "{small}");
+    }
+
+    #[test]
+    fn the_info_line_says_when_a_running_program_is_full_screen() {
+        let mut view = view("```bash [name:edit]\nvim\n```\n");
+        let info = |view: &View| markup(&view.rows(60).0[..1]);
+        view.set_alternate(0, true);
+        assert_snapshot!(info(&view), @"▐ «b:edit»");
+        view.set_status(0, Status::Running(Duration::from_secs(3)));
+        assert_snapshot!(info(&view), @"▐ «b:edit»  «yellow:●» running 0:03  full-screen program, press o");
+        view.set_alternate(0, false);
+        assert_snapshot!(info(&view), @"▐ «b:edit»  «yellow:●» running 0:03");
     }
 
     #[test]

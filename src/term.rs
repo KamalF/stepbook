@@ -71,6 +71,9 @@ pub struct Rows {
     pub lines: Vec<Line<'static>>,
     /// The line and the column of the cursor, if the program shows it.
     pub cursor: Option<(usize, u16)>,
+    /// Whether the program was on the alternate screen, such as vim, less
+    /// or top (spec 6.3).
+    pub alternate: bool,
 }
 
 /// What the main thread takes of a terminal.
@@ -253,10 +256,14 @@ impl Terminal {
     }
 
     pub fn rows(&mut self, want: Want) -> Rows {
-        let read = |parser: &mut Parser| match want {
-            Want::Last { cursor } => last_rows(parser, cursor),
-            Want::Screen => screen_rows(parser.screen()),
-            Want::All => all_rows(parser),
+        let read = |parser: &mut Parser| {
+            let alternate = parser.screen().alternate_screen();
+            let rows = match want {
+                Want::Last { cursor } => last_rows(parser, cursor),
+                Want::Screen => screen_rows(parser.screen()),
+                Want::All => all_rows(parser),
+            };
+            Rows { alternate, ..rows }
         };
         match self.guarded(read) {
             Some(rows) => rows,
@@ -282,6 +289,7 @@ fn screen_rows(screen: &vt100::Screen) -> Rows {
     Rows {
         lines: lines.collect(),
         cursor: (!screen.hide_cursor()).then_some((usize::from(row), column)),
+        alternate: false,
     }
 }
 
@@ -305,6 +313,7 @@ fn all_rows(parser: &mut Parser) -> Rows {
     Rows {
         lines,
         cursor: None,
+        alternate: false,
     }
 }
 
@@ -343,7 +352,11 @@ fn last_rows(parser: &mut Parser, cursor: bool) -> Rows {
         all.append(&mut lines);
         lines = all;
     }
-    Rows { lines, cursor }
+    Rows {
+        lines,
+        cursor,
+        alternate: false,
+    }
 }
 
 /// Whether a cell shows: text other than a space, or a style, such as a
@@ -713,6 +726,17 @@ mod tests {
             paste_bytes("a\x1b[201~b\x1b", true),
             b"\x1b[200~a[201~b\x1b[201~"
         );
+    }
+
+    #[test]
+    fn rows_tell_whether_the_program_is_on_the_alternate_screen() {
+        let mut terminal = after(b"a\x1b[?1049hb", 80, 24);
+        for want in [LAST, Want::Screen, Want::All] {
+            assert!(terminal.rows(want).alternate, "{want:?}");
+        }
+        terminal.process(b"\x1b[?1049l");
+        let rows = terminal.rows(LAST);
+        assert_eq!((markup(&rows.lines).as_str(), rows.alternate), ("a", false));
     }
 
     #[test]

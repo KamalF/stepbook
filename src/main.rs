@@ -328,6 +328,8 @@ struct Ran {
     screen: Arc<term::Shared>,
     run: Option<run::Run>,
     started: Instant,
+    /// Whether its program was on the alternate screen at the last rows.
+    alternate: bool,
 }
 
 /// The state that the event loop owns.
@@ -533,18 +535,23 @@ impl App {
             }
             Action::Input => {
                 let i = self.view.selected?;
-                match self.ran.get(&i).is_some_and(|ran| ran.run.is_some()) {
-                    true => {
+                match self.ran.get(&i) {
+                    // The program of the block shows only in the
+                    // full-screen view.
+                    Some(ran) if ran.run.is_some() && ran.alternate => {
+                        self.open_full(i, size, view::Back::Input);
+                    }
+                    Some(ran) if ran.run.is_some() => {
                         self.view.mode = view::Mode::Input(i);
                         self.view.show_output_end(i, size);
                     }
-                    false => self.notify("not running: ↵ runs it".into()),
+                    _ => self.notify("not running: ↵ runs it".into()),
                 }
             }
             Action::Output => {
                 let i = self.view.selected?;
                 match self.ran.contains_key(&i) {
-                    true => self.open_full(i, size),
+                    true => self.open_full(i, size, view::Back::Normal),
                     false => self.notify("no output: ↵ runs it".into()),
                 }
             }
@@ -612,12 +619,16 @@ impl App {
     }
 
     /// Opens the full-screen view of block `i`. While the block runs, its
-    /// PTY takes the screen without the footer (spec 7.3).
-    fn open_full(&mut self, i: usize, size: Size) {
+    /// PTY takes the screen without the footer (spec 7.3). If its program
+    /// is on the alternate screen, the view goes `back` when it leaves it
+    /// (spec 6.3).
+    fn open_full(&mut self, i: usize, size: Size, back: view::Back) {
+        let alternate = self.ran.get(&i).is_some_and(|ran| ran.alternate);
         self.view.mode = view::Mode::Full(view::Full {
             block: i,
             rows: term::Rows::default(),
             scroll: 0,
+            back: alternate.then_some(back),
         });
         self.resize_pty(i, size);
         self.changed.insert(i);
@@ -749,6 +760,7 @@ impl App {
                         screen,
                         run,
                         started,
+                        alternate: false,
                     },
                 );
                 view::Status::Running(Duration::ZERO)
@@ -764,6 +776,7 @@ impl App {
             }
         };
         self.view.set_status(i, status);
+        self.view.set_alternate(i, false);
         self.view.set_output(i, term::Rows::default(), size);
     }
 
@@ -796,7 +809,7 @@ impl App {
     /// event after it.
     fn refresh(&mut self, size: Size) {
         for i in std::mem::take(&mut self.changed) {
-            let Some(ran) = self.ran.get(&i) else {
+            let Some(ran) = self.ran.get_mut(&i) else {
                 continue;
             };
             let running = ran.run.is_some();
@@ -809,11 +822,55 @@ impl App {
                 (Some(_), false) => term::Want::All,
                 (None, cursor) => term::Want::Last { cursor },
             };
-            match (ran.screen.try_rows(want), full) {
-                (Some(rows), Some(full)) => full.rows = rows,
-                (Some(rows), None) => self.view.set_output(i, rows, size),
-                (None, _) => _ = self.changed.insert(i),
+            let Some(rows) = ran.screen.try_rows(want) else {
+                self.changed.insert(i);
+                continue;
+            };
+            let switched = std::mem::replace(&mut ran.alternate, rows.alternate) != rows.alternate;
+            match full {
+                Some(full) => full.rows = rows,
+                // Under the block, the rows from before the switch stay:
+                // a full-screen program shows in the full-screen view.
+                None if rows.alternate => {}
+                None => self.view.set_output(i, rows, size),
             }
+            if switched {
+                self.switch(i, size);
+            }
+        }
+    }
+
+    /// Opens the full-screen view when the program of the selected block
+    /// enters the alternate screen, and closes it when the program leaves
+    /// it (spec 6.3). A question in the footer keeps the document view.
+    fn switch(&mut self, i: usize, size: Size) {
+        let ran = &self.ran[&i];
+        let (alternate, running) = (ran.alternate, ran.run.is_some());
+        self.view.set_alternate(i, alternate);
+        match &self.view.mode {
+            view::Mode::Full(full) if full.block == i && !alternate => {
+                let Some(back) = full.back else {
+                    return;
+                };
+                self.close_full(size);
+                if back == view::Back::Input && running {
+                    self.view.mode = view::Mode::Input(i);
+                    self.view.show_output_end(i, size);
+                }
+            }
+            view::Mode::Input(j) if *j == i && alternate => {
+                self.open_full(i, size, view::Back::Input);
+            }
+            view::Mode::Normal
+                if alternate
+                    && running
+                    && self.view.selected == Some(i)
+                    && self.question.is_none()
+                    && self.stopping.is_none() =>
+            {
+                self.open_full(i, size, view::Back::Normal);
+            }
+            _ => {}
         }
     }
 
@@ -1348,6 +1405,17 @@ mod tests {
         }
     }
 
+    /// Makes the rows of the full-screen view until `done`. While the
+    /// reader of the run holds its terminal, the rows come later.
+    fn until_full_rows(app: &mut App, done: impl Fn(&[Line]) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !done(&full(app).rows.lines) {
+            assert!(Instant::now() < deadline, "no rows");
+            app.refresh(SIZE);
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
     #[test]
     fn the_full_screen_view_of_a_running_block_has_the_size_of_the_screen() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1356,9 +1424,8 @@ mod tests {
         enter(&mut app, SIZE);
         read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
         key(&mut app, KeyCode::Char('o'));
-        app.refresh(SIZE);
         // The rows of the screen, while the block runs.
-        assert_eq!(full(&app).rows.lines.len(), 23);
+        until_full_rows(&mut app, |lines| lines.len() == 23);
         // The keys go to the program.
         key(&mut app, KeyCode::Enter);
         read_until(&mut app, SIZE, |app| {
@@ -1429,6 +1496,121 @@ mod tests {
             assert_eq!(app.view.mode, view::Mode::Normal, "{event:?}");
             key(&mut app, KeyCode::Char('o'));
         }
+    }
+
+    /// Reads the messages of the runs until the mode of the view is
+    /// `mode`, or until the full-screen view if `mode` is `None`.
+    fn until_mode(app: &mut App, mode: Option<view::Mode>) {
+        read_until(app, SIZE, |app| match &mode {
+            Some(mode) => app.view.mode == *mode,
+            None => matches!(app.view.mode, view::Mode::Full(_)),
+        });
+    }
+
+    /// A block that waits for a line, enters the alternate screen, waits
+    /// for a line, leaves it, then waits for a line that it prints.
+    const FULL_SCREEN: &str = "```bash
+echo before
+read
+printf '\\e[?1049h'
+echo inside
+read
+printf '\\e[?1049l'
+read x
+echo \"got $x\"
+```
+";
+
+    #[test]
+    fn a_program_on_the_alternate_screen_shows_in_the_full_screen_view_until_it_leaves() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app(FULL_SCREEN, tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("before"));
+        app.ran[&0].run.as_ref().unwrap().write(b"\n");
+        until_mode(&mut app, None);
+        // The keys go to the program, and the view shows its screen. Under
+        // the block, the rows from before the switch stay.
+        until_full_rows(&mut app, |lines| markup(lines).starts_with("inside\n"));
+        let under = output(&app, 0);
+        assert!(
+            under.starts_with("before") && !under.contains("inside"),
+            "{under}"
+        );
+        key(&mut app, KeyCode::Enter);
+        until_mode(&mut app, Some(view::Mode::Normal));
+        app.ran[&0].run.as_ref().unwrap().write(b"y\n");
+        read_until(&mut app, SIZE, |app| !running(app));
+        // The terminal echoes the lines that the block read.
+        assert_eq!(output(&app, 0), "before\n\ny\ngot y");
+    }
+
+    #[test]
+    fn from_input_mode_a_full_screen_program_goes_back_to_input_mode() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app(FULL_SCREEN, tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("before"));
+        key(&mut app, KeyCode::Char('i'));
+        key(&mut app, KeyCode::Enter);
+        until_mode(&mut app, None);
+        key(&mut app, KeyCode::Enter);
+        until_mode(&mut app, Some(view::Mode::Input(0)));
+        key(&mut app, KeyCode::Char('y'));
+        key(&mut app, KeyCode::Enter);
+        read_until(&mut app, SIZE, |app| !running(app));
+        // The terminal echoes the lines that the keys typed.
+        assert_eq!(output(&app, 0), "before\n\ny\ngot y");
+    }
+
+    #[test]
+    fn after_ctrl_o_o_or_i_shows_the_full_screen_program_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app(FULL_SCREEN, tmp.path());
+        enter(&mut app, SIZE);
+        app.ran[&0].run.as_ref().unwrap().write(b"\n");
+        until_mode(&mut app, None);
+        assert_eq!(app.handle(&ctrl('o'), SIZE), None);
+        assert_eq!(app.view.mode, view::Mode::Normal);
+        key(&mut app, KeyCode::Char('i'));
+        assert_eq!(full(&app).back, Some(view::Back::Input));
+        assert_eq!(app.handle(&ctrl('o'), SIZE), None);
+        key(&mut app, KeyCode::Char('o'));
+        assert_eq!(full(&app).back, Some(view::Back::Normal));
+        key(&mut app, KeyCode::Enter);
+        until_mode(&mut app, Some(view::Mode::Normal));
+        // Opened on the main screen, the view stays when the program
+        // enters and leaves the alternate screen.
+        key(&mut app, KeyCode::Char('o'));
+        assert_eq!(full(&app).back, None);
+        app.ran[&0].run.as_ref().unwrap().write(b"y\n");
+        read_until(&mut app, SIZE, |app| !running(app));
+        assert!(matches!(app.view.mode, view::Mode::Full(_)));
+    }
+
+    #[test]
+    fn a_question_or_another_selection_keeps_the_document_view() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app(&format!("{FULL_SCREEN}\n{FULL_SCREEN}"), tmp.path());
+        enter(&mut app, SIZE);
+        key(&mut app, KeyCode::Down);
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 1).contains("before"));
+        // Block 0 is not selected.
+        app.ran[&0].run.as_ref().unwrap().write(b"\n");
+        read_until(&mut app, SIZE, |app| app.ran[&0].alternate);
+        // A question is open.
+        key(&mut app, KeyCode::Char('q'));
+        app.ran[&1].run.as_ref().unwrap().write(b"\n");
+        read_until(&mut app, SIZE, |app| app.ran[&1].alternate);
+        assert_eq!(app.view.mode, view::Mode::Normal);
+        assert!(app.question.is_some());
+        key(&mut app, KeyCode::Char('n'));
+        for i in 0..2 {
+            app.ran[&i].run.as_ref().unwrap().write(b"\ny\n");
+        }
+        read_until(&mut app, SIZE, |app| !running(app));
+        assert_eq!(app.view.mode, view::Mode::Normal);
     }
 
     #[test]
@@ -1551,6 +1733,7 @@ mod tests {
         markup(app.view.output(i))
     }
 
+    use ratatui::text::Line;
     use view::tests::markup;
 
     #[test]
