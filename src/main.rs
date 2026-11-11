@@ -329,6 +329,11 @@ struct Ran {
     screen: Arc<term::Shared>,
     run: Option<run::Run>,
     started: Instant,
+    ended: Option<Instant>,
+    /// Whether the full-screen view opens on its own when the program
+    /// enters the alternate screen: not after the user left a view of the
+    /// run, until `i` or `o` (spec 6.3).
+    follow: bool,
 }
 
 /// The state that the event loop owns.
@@ -361,6 +366,9 @@ enum Question {
     Rerun(usize),
     /// Stop the runs and quit.
     Quit,
+    /// Send a paste of several lines to the program of block i, which did
+    /// not turn on bracketed paste (spec 7.2).
+    Paste(usize, Vec<u8>),
 }
 
 /// How long the runs have to end after SIGHUP, when stepbook quits (spec
@@ -500,16 +508,6 @@ impl App {
         if self.stopping.is_some() || paused && matches!(event, Event::Key(_)) {
             return None;
         }
-        if let Some(i) = self.view.input_block() {
-            if !self.send(i, event, size) {
-                self.leave(size);
-            }
-            return None;
-        }
-        if let view::Mode::Full(_) = self.view.mode {
-            self.browse(event, size);
-            return None;
-        }
         if let Some(question) = self.question.take() {
             match event {
                 // On a screen too small for the view, the question does not
@@ -525,11 +523,32 @@ impl App {
                             false => self.ask_rerun(i),
                         },
                         Question::Quit if yes => self.stop_runs(),
-                        Question::Rerun(_) | Question::Quit => {}
+                        Question::Paste(i, bytes) if yes => {
+                            if let Some(run) = self.ran.get(&i).and_then(|ran| ran.run.as_ref()) {
+                                run.write(&bytes);
+                            }
+                        }
+                        Question::Rerun(_) | Question::Quit | Question::Paste(..) => {}
                     }
                 }
                 _ => self.question = Some(question),
             }
+            return None;
+        }
+        if let Some(i) = self.view.input_block() {
+            if !self.send(i, event, size) {
+                // The view opens on its own no more for this run: a
+                // program that enters and leaves the alternate screen in
+                // a loop would take the keys back each time.
+                if let Some(ran) = self.ran.get_mut(&i) {
+                    ran.follow = false;
+                }
+                self.leave(size);
+            }
+            return None;
+        }
+        if let view::Mode::Full(_) = self.view.mode {
+            self.browse(event, size);
             return None;
         }
         match action(event, size)? {
@@ -557,16 +576,29 @@ impl App {
             }
             Action::Input => {
                 let i = self.view.selected?;
-                match self.view.running(i) {
-                    true => self.enter_input(i, size),
-                    false => self.notify("not running: ↵ runs it".into()),
+                let ended = self.just_ended(i);
+                if let Some(ran) = self.ran.get_mut(&i) {
+                    ran.follow = true;
+                }
+                match (self.view.running(i), ended) {
+                    (true, _) => self.enter_input(i, size),
+                    // The run ended as i came: the keys after it were
+                    // typed for the program.
+                    (false, true) => self.pause(i),
+                    (false, false) => self.notify("not running: ↵ runs it".into()),
                 }
             }
             Action::Output => {
                 let i = self.view.selected?;
-                match self.ran.contains_key(&i) {
-                    true => self.open_full(i, size, view::Back::Normal),
-                    false => self.notify("no output: ↵ runs it".into()),
+                let ended = self.just_ended(i);
+                let Some(ran) = self.ran.get_mut(&i) else {
+                    self.notify("no output: ↵ runs it".into());
+                    return None;
+                };
+                ran.follow = true;
+                self.open_full(i, size, view::Back::Normal);
+                if ended {
+                    self.pause(i);
                 }
             }
         }
@@ -577,10 +609,15 @@ impl App {
     /// its full-screen view, and returns whether to go on. `ctrl-o` leaves,
     /// and so does any key or paste on a screen too small for the view,
     /// which does not show what they do (spec 6.1, 7.2).
-    fn send(&self, i: usize, event: &Event, size: Size) -> bool {
+    /// A paste of several lines to a program that did not turn on
+    /// bracketed paste waits for a `y` in the footer: each line would run.
+    /// stepbook keeps bracketed paste on in the outer terminal, which then
+    /// takes every paste for safe and gives no warning of its own.
+    fn send(&mut self, i: usize, event: &Event, size: Size) -> bool {
         let Some(run) = self.ran.get(&i).and_then(|ran| ran.run.as_ref()) else {
             return true;
         };
+        let mut lines = 0;
         let bytes = match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 if is_ctrl_o(key) {
@@ -588,14 +625,37 @@ impl App {
                 }
                 term::key_bytes(key, run.screen.application_cursor())
             }
-            Event::Paste(text) => term::paste_bytes(text, run.screen.bracketed_paste()),
+            Event::Paste(text) => {
+                let bracketed = run.screen.bracketed_paste();
+                if !bracketed && text.contains(['\r', '\n']) {
+                    let parts = text.split(['\r', '\n']);
+                    lines = parts.filter(|line| !line.is_empty()).count().max(1);
+                }
+                term::paste_bytes(text, bracketed)
+            }
             _ => return true,
         };
         if view::too_small(size) {
             return false;
         }
-        run.write(&bytes);
+        if lines == 0 {
+            run.write(&bytes);
+            return true;
+        }
+        let lines = match lines {
+            1 => "1 line".to_string(),
+            n => format!("{n} lines"),
+        };
+        let text = format!("Paste {lines} to {}? (y/N)", self.view.doc.label(i));
+        self.ask(Question::Paste(i, bytes), text);
         true
+    }
+
+    /// Whether the run of block `i` ended less than the pause of the keys
+    /// ago.
+    fn just_ended(&self, i: usize) -> bool {
+        let ended = self.ran.get(&i).and_then(|ran| ran.ended);
+        ended.is_some_and(|ended| ended.elapsed() < PAUSE)
     }
 
     /// The keys of the full-screen view after the run: they scroll the
@@ -679,9 +739,9 @@ impl App {
     /// the document view: if a program went full-screen meanwhile, its view
     /// opened in input mode, and the key would reach the program.
     fn handle_waiting(&mut self, event: &Event, size: Size) -> Option<Exit> {
-        match self.view.mode {
-            view::Mode::Normal => self.handle(event, size),
-            _ => None,
+        match self.question.is_some() || self.view.mode == view::Mode::Normal {
+            true => self.handle(event, size),
+            false => None,
         }
     }
 
@@ -692,13 +752,11 @@ impl App {
         let Event::Key(key) = event else {
             return false;
         };
-        if self.view.mode != view::Mode::Normal {
-            return false;
-        }
-        let acts = matches!(
-            action(event, size),
-            Some(Action::Run | Action::Input | Action::Output)
-        );
+        let acts = self.view.mode == view::Mode::Normal
+            && matches!(
+                action(event, size),
+                Some(Action::Run | Action::Input | Action::Output)
+            );
         key.kind == KeyEventKind::Press && (self.question.is_some() || acts)
     }
 
@@ -776,6 +834,8 @@ impl App {
                         screen,
                         run,
                         started,
+                        ended: None,
+                        follow: true,
                     },
                 );
                 view::Status::Running(Duration::ZERO)
@@ -803,6 +863,7 @@ impl App {
             run::Event::Output(_) => {}
             run::Event::Exit(status) => {
                 let run = ran.run.take().expect("a run sends its exit status once");
+                ran.ended = Some(Instant::now());
                 let saved = self.session.finish(&run);
                 let input = self.view.input_block() == Some(i);
                 let took = ran.started.elapsed();
@@ -900,6 +961,7 @@ impl App {
             view::Mode::Normal
                 if alternate
                     && running
+                    && self.ran[&i].follow
                     && self.view.selected == Some(i)
                     && self.question.is_none()
                     && self.stopping.is_none() =>
@@ -1505,6 +1567,8 @@ mod tests {
         let mut app = app("```bash\nseq 100\n```\n", tmp.path());
         enter(&mut app, SIZE);
         read_until(&mut app, SIZE, |app| !running(app));
+        // Long after the end of the run, as the keys pause just after it.
+        app.ran.get_mut(&0).unwrap().ended = Some(Instant::now() - Duration::from_secs(5));
         let scroll = |app: &mut App, code| {
             key(app, code);
             full(app).scroll
@@ -1803,6 +1867,91 @@ echo \"got $x\"
         key(&mut app, KeyCode::Char('o'));
         assert_eq!(app.view.mode, view::Mode::Normal);
         assert_eq!(app.view.notice.as_deref(), Some("no output: ↵ runs it"));
+    }
+
+    #[test]
+    fn a_paste_of_several_lines_to_a_program_without_bracketed_paste_asks_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let block = "```bash\nstty -echo\necho ready\nread a\nread b\necho \"$a+$b\"\n```\n";
+        let mut app = app(block, tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        key(&mut app, KeyCode::Char('i'));
+        let paste = |app: &mut App, text: &str| {
+            assert_eq!(app.handle(&Event::Paste(text.into()), SIZE), None);
+        };
+        // One line with no line feed goes at once.
+        paste(&mut app, "x");
+        paste(&mut app, "1\r2\r");
+        let question = "Paste 2 lines to #1? (y/N)";
+        assert_eq!(app.view.question.as_deref(), Some(question));
+        // The answer waits for the frame that shows the question.
+        let y = Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
+        assert!(app.acts(&y, SIZE));
+        key(&mut app, KeyCode::Char('n'));
+        assert_eq!(app.view.mode, view::Mode::Input(0));
+        paste(&mut app, "y\r");
+        let question = "Paste 1 line to #1? (y/N)";
+        assert_eq!(app.view.question.as_deref(), Some(question));
+        assert_eq!(app.handle_waiting(&y, SIZE), None);
+        key(&mut app, KeyCode::Char('z'));
+        key(&mut app, KeyCode::Enter);
+        read_until(&mut app, SIZE, |app| !running(app));
+        assert!(output(&app, 0).ends_with("xy+z"), "{}", output(&app, 0));
+    }
+
+    #[test]
+    fn i_or_o_just_after_the_end_of_the_run_pause_the_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\ntrue\n```\n", tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        key(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.view.mode, view::Mode::Normal);
+        assert!(app.paused_until.is_some());
+        app.paused_until = None;
+        key(&mut app, KeyCode::Char('o'));
+        assert!(matches!(app.view.mode, view::Mode::Full(_)) && app.paused_until.is_some());
+        app.paused_until = None;
+        key(&mut app, KeyCode::Char('q'));
+        // Long after the end, i only says why it does nothing.
+        app.ran.get_mut(&0).unwrap().ended = Some(Instant::now() - Duration::from_secs(5));
+        key(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.paused_until, None);
+        assert_eq!(app.view.notice.as_deref(), Some("not running: ↵ runs it"));
+    }
+
+    #[test]
+    fn after_ctrl_o_the_view_opens_again_only_with_i_or_o() {
+        let tmp = tempfile::tempdir().unwrap();
+        let block = "```bash
+printf '\\e[?1049h'
+read
+printf '\\e[?1049l'
+read
+printf '\\e[?1049h'
+read
+printf '\\e[?1049l'
+read
+```
+";
+        let mut app = app(block, tmp.path());
+        enter(&mut app, SIZE);
+        until_mode(&mut app, None);
+        assert_eq!(app.handle(&ctrl('o'), SIZE), None);
+        let write = |app: &App| app.ran[&0].run.as_ref().unwrap().write(b"\n");
+        write(&app);
+        read_until(&mut app, SIZE, |app| !app.view.alternate(0));
+        write(&app);
+        read_until(&mut app, SIZE, |app| app.view.alternate(0));
+        assert_eq!(app.view.mode, view::Mode::Normal);
+        // o follows the program again.
+        key(&mut app, KeyCode::Char('o'));
+        write(&app);
+        until_mode(&mut app, Some(view::Mode::Normal));
+        app.paused_until = None;
+        write(&app);
+        read_until(&mut app, SIZE, |app| !running(app));
     }
 
     #[test]
