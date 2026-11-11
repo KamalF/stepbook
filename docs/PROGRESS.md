@@ -17,7 +17,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 | # | Milestone | Status |
 |---|---|---|
 | 1 | Document view | Done, merged into `main` on 2026-11-10 |
-| 2 | Running blocks | In progress, on `m2-running-blocks` |
+| 2 | Running blocks | Done, merged into `main` on 2026-11-11 |
 | 3 | Input and full-screen view | — |
 | 4 | Log and reload | — |
 | 5 | Migration | — |
@@ -157,10 +157,13 @@ What tmux cannot show, in herdr in Ghostty: open `~/dev/claude/runbooks/2026-11-
 4. Paste: a paste of `j` and `q` with a line feed moves nothing and quits nothing.
 5. Quit with a running block: `q`, then `y`, gives a clean shell prompt.
 
+Kamal ran the checklist on 2026-11-11: the five checks pass.
+
 ## Next
 
-1. Kamal's manual checklist of milestone 2, then the merge into `main`. The log of the review loop, with its Decisions, Follow-ups and Nits deferred, is `~/.cache/stepbook-review/m2-review-loop-log.md`.
-2. The look and feel review, before milestone 3.
+1. Kamal pushes `main`.
+2. The look and feel review, before milestone 3 (see the open points).
+3. Milestone 3, input and full-screen view. Its plan starts from the follow-ups of milestone 2 in the open points. The log of the review loop of milestone 2, with its Decisions and Nits deferred, is `~/.cache/stepbook-review/m2-review-loop-log.md`.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
 
