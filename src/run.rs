@@ -1861,7 +1861,9 @@ mod tests {
     fn a_job_that_writes_without_a_pause_never_holds_the_end_of_its_run() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
-        let run = session.start("yes &\n", "check", 80, 24).unwrap();
+        // Not a child of the wrapper, which would wait 1 s for it while yes
+        // loads the machine.
+        let run = session.start("(yes &)\n", "check", 80, 24).unwrap();
         // One deadline for all events: the output of yes never pauses.
         let deadline = std::time::Instant::now() + WAIT;
         let status = loop {
@@ -1899,7 +1901,12 @@ mod tests {
             let _ = sender.send(());
         });
         assert!(ended.recv_timeout(WAIT).is_ok());
-        assert_eq!(session_of(&run), []);
+        // A process dies a moment after its SIGKILL.
+        let deadline = std::time::Instant::now() + WAIT;
+        while !session_of(&run).is_empty() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     fn session_of(run: &Run) -> Vec<Pid> {
