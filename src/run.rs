@@ -171,8 +171,9 @@ fn check_parent(parent: &Path) -> std::io::Result<()> {
 /// Whether the owner `uid` of a directory is root or the user. In a user
 /// namespace that maps only some users, such as a bwrap sandbox, root shows
 /// as the overflow uid, as does each user that the namespace does not map.
-/// No process inside has that uid. The check cannot tell these users
-/// apart, and trusts them all.
+/// The check cannot tell these users apart, and trusts them all. In a
+/// namespace that maps the overflow uid too, it is also a user inside,
+/// such as nobody, and the check trusts it as well.
 fn trusted_owner(uid: u32) -> bool {
     if uid == 0 || uid == rustix::process::geteuid().as_raw() {
         return true;

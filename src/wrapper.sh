@@ -70,8 +70,9 @@ __stepbook_save() {
         builtin trap - ERR
         set +eEu
         # Under localvar_unset, an unset would leave the local unset, with
-        # the global variable still hidden.
-        shopt -u localvar_unset
+        # the global variable still hidden. bash before 5.0 has no such
+        # option.
+        shopt -u localvar_unset 2>/dev/null
         # mapfile splits on line feeds, whatever IFS the script exported.
         mapfile -t __stepbook_names <<<"$(builtin compgen -e)"
         builtin printf '%s\0' "${PWD-}"
