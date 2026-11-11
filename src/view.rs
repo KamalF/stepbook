@@ -49,13 +49,27 @@ pub enum Status {
     NotStarted(String),
 }
 
-/// Where the keys go.
-#[derive(Clone, Copy, Debug, PartialEq)]
+/// Where the keys go, and what the screen shows.
+#[derive(Clone, Debug, PartialEq)]
 pub enum Mode {
     /// The keys of the document view (spec 7.1).
     Normal,
     /// The keys go to the run of block i, the selected block (spec 7.2).
     Input(usize),
+    /// The full-screen view of a block (spec 7.3).
+    Full(Full),
+}
+
+/// The full-screen view of a block. While the block runs, the keys go to
+/// its program.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Full {
+    pub block: usize,
+    /// While the block runs, each row of its screen. After its run, its
+    /// scrollback and its screen.
+    pub rows: Rows,
+    /// After the run, the lines under the view.
+    pub scroll: usize,
 }
 
 /// The state of the screen: the document, its file name, the selection,
@@ -114,6 +128,10 @@ impl View {
             frame.render_widget(text, frame.area());
             return;
         }
+        if let Mode::Full(full) = &self.mode {
+            self.draw_full(frame, full);
+            return;
+        }
         let (sidebar, document, footer) = self.areas(frame.area());
         if let Some(sidebar) = sidebar {
             self.draw_sidebar(frame, sidebar);
@@ -140,21 +158,59 @@ impl View {
         frame.render_widget(self.footer(), footer);
     }
 
+    /// The full-screen view: only the terminal of the block, so that a
+    /// selection copies its text alone (spec 6.4), then the footer.
+    fn draw_full(&self, frame: &mut Frame, full: &Full) {
+        let [area, footer] =
+            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(frame.area());
+        let lines = &full.rows.lines;
+        // After the run, the view ends `scroll` lines above the last line.
+        let height = usize::from(area.height);
+        let first = match self.running(full.block) {
+            true => 0,
+            false => lines.len().saturating_sub(height + full.scroll),
+        };
+        for (y, line) in (area.y..area.bottom()).zip(&lines[first..]) {
+            frame.buffer_mut().set_line(area.x, y, line, area.width);
+        }
+        if let Some((row, column)) = full.rows.cursor
+            && row < height
+            && column < area.width
+        {
+            frame.set_cursor_position((area.x + column, area.y + row as u16));
+        }
+        frame.render_widget(self.footer(), footer);
+    }
+
+    /// Whether block `i` runs.
+    pub fn running(&self, i: usize) -> bool {
+        matches!(self.statuses[i], Some(Status::Running(_)))
+    }
+
     /// The mode, then the question, the notification or the keys that
     /// apply now (spec 6.1). Both can quote a directory name (spec 6.5).
     fn footer(&self) -> Line<'static> {
         let reversed = Style::new().add_modifier(Modifier::REVERSED);
-        let (mode, text) = match (&self.question, self.mode, &self.notice) {
+        let input = |i: usize| {
+            let keys = format!("keys go to {}  ^o leave", self.doc.label(i));
+            (" INPUT ", vec![Span::raw(keys)])
+        };
+        let (mode, text) = match (&self.question, &self.mode, &self.notice) {
             (Some(question), _, _) => (" CONFIRM ", escaped(question, Style::new())),
-            (None, Mode::Input(i), _) => {
-                let keys = format!("keys go to {}  ^o leave", self.doc.label(i));
-                (" INPUT ", vec![Span::raw(keys)])
+            (None, Mode::Input(i), _) => input(*i),
+            (None, Mode::Full(full), _) if self.running(full.block) => input(full.block),
+            (None, Mode::Full(full), _) => {
+                let keys = format!("{}  ↑↓ scroll  o back", self.doc.label(full.block));
+                (" OUTPUT ", vec![Span::raw(keys)])
             }
             (None, Mode::Normal, Some(notice)) => (" NORMAL ", escaped(notice, WARNING)),
             (None, Mode::Normal, None) => {
-                let running = (self.selected)
-                    .is_some_and(|i| matches!(self.statuses[i], Some(Status::Running(_))));
-                let input = if running { "  i input" } else { "" };
+                let status = self.selected.and_then(|i| self.statuses[i].as_ref());
+                let input = match status {
+                    Some(Status::Running(_)) => "  i input  o output",
+                    Some(Status::Ended { .. }) => "  o output",
+                    Some(Status::NotStarted(_)) | None => "",
+                };
                 let keys = format!("↑↓ move  ↵ run{input}  q quit");
                 (" NORMAL ", vec![Span::raw(keys)])
             }
@@ -2201,13 +2257,96 @@ pub(crate) mod tests {
         let footer = |view: &View| markup(&[view.footer()]);
         assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  q quit");
         view.set_status(0, Status::Running(Duration::ZERO));
-        assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  i input  q quit");
+        assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  i input  o output  q quit");
         view.selected = Some(1);
+        assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  q quit");
+        let ended = Status::Ended {
+            status: run::Status::Code(0),
+            took: Duration::ZERO,
+            saved: true,
+        };
+        view.set_status(1, ended);
+        assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  o output  q quit");
+        view.set_status(1, Status::NotStarted("cannot start".into()));
         assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  q quit");
         view.selected = Some(0);
         view.mode = Mode::Input(0);
         view.notice = Some("already running: i to type, o to view".into());
         assert_snapshot!(footer(&view), @"«r: INPUT »  keys go to check  ^o leave");
+        view.mode = Mode::Full(Full {
+            block: 0,
+            rows: Rows::default(),
+            scroll: 0,
+        });
+        assert_snapshot!(footer(&view), @"«r: INPUT »  keys go to check  ^o leave");
+        view.set_status(0, Status::NotStarted("cannot start".into()));
+        assert_snapshot!(footer(&view), @"«r: OUTPUT »  check  ↑↓ scroll  o back");
+    }
+
+    #[test]
+    fn the_full_screen_view_shows_only_the_terminal_of_the_block() {
+        let mut view = view(BLOCKS);
+        view.set_status(1, Status::Running(Duration::ZERO));
+        let lines = output(&["$ top", "", "x"]).lines;
+        let rows = Rows {
+            lines,
+            cursor: Some((1, 3)),
+        };
+        view.mode = Mode::Full(Full {
+            block: 1,
+            rows,
+            scroll: 0,
+        });
+        assert_snapshot!(screen_with_footer(&view, 40, 8), @"
+        $ top
+
+        x
+
+
+
+
+        «r: INPUT »  keys go to restart  ^o leave
+        ");
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        terminal.draw(|frame| view.draw(frame)).unwrap();
+        assert_eq!(terminal.backend().cursor_position(), Position::new(3, 1));
+    }
+
+    #[test]
+    fn after_the_run_the_full_screen_view_scrolls_from_the_end() {
+        let mut view = view(BLOCKS);
+        let lines: Vec<String> = (1..=20).map(|i| i.to_string()).collect();
+        let lines = lines.iter().map(String::as_str).collect::<Vec<_>>();
+        view.mode = Mode::Full(Full {
+            block: 0,
+            rows: output(&lines),
+            scroll: 0,
+        });
+        assert_snapshot!(screen(&view, 40, 8), @"
+        14
+        15
+        16
+        17
+        18
+        19
+        20
+        ");
+        let Mode::Full(full) = &mut view.mode else {
+            unreachable!()
+        };
+        full.scroll = 13;
+        assert_snapshot!(screen(&view, 40, 8), @"
+        1
+        2
+        3
+        4
+        5
+        6
+        7
+        ");
+        // A screen too small shows only a message.
+        let small = screen(&view, 39, 8);
+        assert!(small.starts_with("Enlarge the terminal"), "{small}");
     }
 
     #[test]

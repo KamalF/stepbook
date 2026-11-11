@@ -79,6 +79,12 @@ pub enum Want {
     /// The last rows, under the block. With `cursor`, they go down to the
     /// row of the cursor at least.
     Last { cursor: bool },
+    /// Each row of the screen, with the cursor: the full-screen view of a
+    /// running block.
+    Screen,
+    /// The scrollback and the screen, without the blank rows at the end:
+    /// the full-screen view after the run.
+    All,
 }
 
 #[derive(Default)]
@@ -247,19 +253,58 @@ impl Terminal {
     }
 
     pub fn rows(&mut self, want: Want) -> Rows {
-        let Want::Last { cursor } = want;
-        self.last_rows(cursor)
+        let read = |parser: &mut Parser| match want {
+            Want::Last { cursor } => last_rows(parser, cursor),
+            Want::Screen => screen_rows(parser.screen()),
+            Want::All => all_rows(parser),
+        };
+        match self.guarded(read) {
+            Some(rows) => rows,
+            None => read(&mut self.parser),
+        }
     }
 
     /// The last `OUTPUT_ROWS` rows of the terminal, scrollback included,
     /// without the blank rows at the end. If `cursor`, the rows go down to
     /// the row of the cursor at least, where a running program writes next,
     /// and they give the cursor.
+    #[cfg(test)]
     pub fn last_rows(&mut self, cursor: bool) -> Rows {
-        match self.guarded(|parser| last_rows(parser, cursor)) {
-            Some(rows) => rows,
-            None => last_rows(&mut self.parser, cursor),
-        }
+        self.rows(Want::Last { cursor })
+    }
+}
+
+/// Each row of the screen, and the cursor if the program shows it.
+fn screen_rows(screen: &vt100::Screen) -> Rows {
+    let (rows, columns) = screen.size();
+    let lines = (0..rows.get()).map(|row| line(screen, row, columns.get()));
+    let (row, column) = screen.cursor_position();
+    Rows {
+        lines: lines.collect(),
+        cursor: (!screen.hide_cursor()).then_some((usize::from(row), column)),
+    }
+}
+
+/// The lines of the scrollback, then the rows of the screen, without the
+/// blank rows at the end.
+fn all_rows(parser: &mut Parser) -> Rows {
+    let screen = parser.screen_mut();
+    let columns = screen.size().1.get();
+    let mut lines = Vec::new();
+    // With an offset of n, the first row of the screen shows the n-th line
+    // above it.
+    for offset in (1..=screen.scrollback_len()).rev() {
+        screen.set_scrollback(offset);
+        lines.push(line(screen, 0, columns));
+    }
+    screen.set_scrollback(0);
+    lines.extend(screen_rows(screen).lines);
+    while lines.last().is_some_and(|line| line.spans.is_empty()) {
+        lines.pop();
+    }
+    Rows {
+        lines,
+        cursor: None,
     }
 }
 
@@ -668,6 +713,36 @@ mod tests {
             paste_bytes("a\x1b[201~b\x1b", true),
             b"\x1b[200~a[201~b\x1b[201~"
         );
+    }
+
+    #[test]
+    fn the_screen_rows_give_each_row_and_the_cursor() {
+        let mut terminal = after(format!("{}x\r\ny", seq(6)).as_bytes(), 80, 4);
+        let rows = terminal.rows(Want::Screen);
+        assert_eq!(markup(&rows.lines), "5\n6\nx\ny");
+        assert_eq!(rows.cursor, Some((3, 1)));
+        let mut terminal = after(b"a\x1b[?25l", 80, 3);
+        let rows = terminal.rows(Want::Screen);
+        assert_eq!((markup(&rows.lines).as_str(), rows.cursor), ("a\n\n", None));
+    }
+
+    #[test]
+    fn all_rows_give_the_scrollback_and_the_screen_without_the_blank_rows_at_the_end() {
+        let mut terminal = after(
+            format!("{}\r\n\x1b[41m \x1b[0m\r\n", seq(20)).as_bytes(),
+            80,
+            5,
+        );
+        let rows = terminal.rows(Want::All);
+        let numbers: Vec<_> = (1..=20).map(|i| i.to_string()).collect();
+        let expected = format!("{}\n\n«bg=red: »", numbers.join("\n"));
+        assert_eq!((markup(&rows.lines), rows.cursor), (expected, None));
+        assert_eq!(terminal.parser.screen().scrollback(), 0);
+        // The scrollback keeps 5,000 lines.
+        let mut terminal = after(seq(5_010).as_bytes(), 80, 5);
+        let rows = terminal.rows(Want::All);
+        assert_eq!(rows.lines.len(), 5_004);
+        assert_eq!(markup(&rows.lines[..1]), "7");
     }
 
     #[test]

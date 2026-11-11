@@ -128,7 +128,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 
 - **Sidebar:** one row per block, with a status glyph and the name. An unnamed block shows `#<n>`, where n is its position among all the blocks of the file, from 1. Its width, with its left border, is the longest name plus 4, between 12 and 30 columns. A longer name ends with `…`. The sidebar scrolls to keep the selected row visible, and it is hidden on terminals under 80 columns.
 - **Document view:** the rendered runbook. The selected block has a highlighted gutter and sidebar row.
-- **Footer:** the mode, then the keys that apply now. A notification or a question (7.4) shows in place of the keys. A notification lasts 3 seconds.
+- **Footer:** the mode, then the keys that apply now: `i input` while the selected block runs, and `o output` once it has run. A notification or a question (7.4) shows in place of the keys. A notification lasts 3 seconds.
 - **Minimum size:** on a terminal smaller than 40 columns or 8 rows, stepbook shows only `Enlarge the terminal to at least 40 columns and 8 rows.`, and only the keys that quit work. A question (7.4) waits for a screen large enough to show it. Below that size, code under a list marker has no room, and the layout of a crafted file costs too much.
 
 ### 6.2 Block states
@@ -200,7 +200,7 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 | `↓`, `j` / `↑`, `k` | Select the next / previous block, and scroll so that the block and the paragraph above it are visible. If they do not fit, the whole block shows, with the end of the paragraph. A block taller than the view shows from its paragraph, or from its info line. |
 | `Home` / `End` | Select the first / last block. Without blocks, scroll to the top / bottom. |
 | `PageDown` / `PageUp` | Scroll one page. The selection moves to the first block whose info line is in view, else to the first block in view. `PageDown` never moves it to an earlier block, and `PageUp` never to a later one. |
-| `Enter` | Run the selected block (8.1). If `j` or `k` would scroll to show the block, `Enter` only does that scroll: it never runs code that is off the screen, such as after the startup or a resize. `Enter`, `i` and the answer to a question act on the screen as drawn: after other events, such as keys typed ahead, they wait for the next frame. |
+| `Enter` | Run the selected block (8.1). If `j` or `k` would scroll to show the block, `Enter` only does that scroll: it never runs code that is off the screen, such as after the startup or a resize. `Enter`, `i`, `o` and the answer to a question act on the screen as drawn: after other events, such as keys typed ahead, they wait for the next frame. |
 | `i` | Enter input mode, if the selected block is running. The view scrolls as little as possible to show the last row of its output. |
 | `o` | Open the full-screen view of the selected block, if it has run. |
 | `ctrl-r` | Reload the file now. |
@@ -223,9 +223,10 @@ A paste does nothing in the document view: a line feed in it would run the selec
 | Key | While running | When done |
 |---|---|---|
 | `ctrl-o` | Back to the document view | Back to the document view |
-| Other keys | Go to the program (input mode) | `↑`/`↓`, `PageUp`/`PageDown` scroll the scrollback. `o`, `q` and `Esc` go back. |
+| Other keys | Go to the program (input mode) | `↑`/`k` and `↓`/`j` scroll the scrollback by a line, `PageUp`/`PageDown` by a page, `Home`/`End` to its start or its end. `o`, `q`, `Esc` and `ctrl-c` go back. |
 
-While the view is open, the PTY takes the full terminal size. It gets its document size back when the view closes.
+- The view shows only the terminal of the block, then the footer, with the mode and the name of the block. While the block runs, the mode is `INPUT`. After the run, it is `OUTPUT`, and the view starts at the end of the output.
+- While the view is open, the PTY of a running block takes the screen without the footer. It gets its document size back when the view closes. After the run, the view does not change the size of the terminal of the block: a resize would cut its lines.
 
 ### 7.4 Confirmation dialogs
 
@@ -572,3 +573,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | Input mode (7.2): `i` waits for the frame as `Enter` does, the cursor of the program shows in its output, and a writer thread per run writes the keys (13): a program that read no input would block the main thread | 2026-11-11 |
 | A bracketed paste loses the ESC characters of its text (7.2): an `ESC[201~` in it would end the paste early | 2026-11-11 |
 | The terminal of a run answers DSR 5 and 6 and DA1 (6.3), at Kamal's choice: a program that asked waited for its timeout | 2026-11-11 |
+| The full-screen view keeps the footer, and the scrollback stays at 5,000 lines (7.3, 6.3), at Kamal's choice. After the run, `j`, `k`, `Home` and `End` scroll too, and `ctrl-c` goes back as `q` does | 2026-11-11 |

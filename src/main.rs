@@ -467,9 +467,24 @@ impl App {
         if self.stopping.is_some() {
             return None;
         }
-        if let view::Mode::Input(i) = self.view.mode {
-            self.input(i, event, size);
-            return None;
+        match &self.view.mode {
+            view::Mode::Input(i) => {
+                if !self.send(*i, event, size) {
+                    self.view.mode = view::Mode::Normal;
+                }
+                return None;
+            }
+            view::Mode::Full(full) if self.view.running(full.block) => {
+                if !self.send(full.block, event, size) {
+                    self.close_full(size);
+                }
+                return None;
+            }
+            view::Mode::Full(_) => {
+                self.browse(event, size);
+                return None;
+            }
+            view::Mode::Normal => {}
         }
         if let Some(question) = self.question.take() {
             match event {
@@ -526,39 +541,126 @@ impl App {
                     false => self.notify("not running: ↵ runs it".into()),
                 }
             }
+            Action::Output => {
+                let i = self.view.selected?;
+                match self.ran.contains_key(&i) {
+                    true => self.open_full(i, size),
+                    false => self.notify("no output: ↵ runs it".into()),
+                }
+            }
         }
         None
     }
 
-    /// Sends a key or a paste of input mode to the run of block `i`.
-    /// `ctrl-o` leaves input mode, and so does any key or paste on a screen
-    /// too small for the view, which does not show what they do (spec 6.1,
-    /// 7.2).
-    fn input(&mut self, i: usize, event: &Event, size: Size) {
+    /// Sends a key or a paste to the run of block `i`, in input mode or in
+    /// its full-screen view, and returns whether to go on. `ctrl-o` leaves,
+    /// and so does any key or paste on a screen too small for the view,
+    /// which does not show what they do (spec 6.1, 7.2).
+    fn send(&self, i: usize, event: &Event, size: Size) -> bool {
         let Some(run) = self.ran.get(&i).and_then(|ran| ran.run.as_ref()) else {
-            return;
+            return true;
         };
         let bytes = match event {
             Event::Key(key) if key.kind != KeyEventKind::Release => {
                 if key.code == KeyCode::Char('o') && key.modifiers == KeyModifiers::CONTROL {
-                    self.view.mode = view::Mode::Normal;
-                    return;
+                    return false;
                 }
                 term::key_bytes(key, run.screen.application_cursor())
             }
             Event::Paste(text) => term::paste_bytes(text, run.screen.bracketed_paste()),
-            _ => return,
+            _ => return true,
         };
         if view::too_small(size) {
-            self.view.mode = view::Mode::Normal;
-            return;
+            return false;
         }
         run.write(&bytes);
+        true
+    }
+
+    /// The keys of the full-screen view after the run: they scroll the
+    /// scrollback, or go back to the document view (spec 7.3).
+    fn browse(&mut self, event: &Event, size: Size) {
+        let Event::Key(key) = event else {
+            return;
+        };
+        let view::Mode::Full(full) = &mut self.view.mode else {
+            return;
+        };
+        if key.kind == KeyEventKind::Release {
+            return;
+        }
+        let page = usize::from(size.height.saturating_sub(1));
+        let last = full.rows.lines.len().saturating_sub(page);
+        let scroll = full.scroll;
+        full.scroll = match key.code {
+            KeyCode::Up | KeyCode::Char('k') => scroll + 1,
+            KeyCode::Down | KeyCode::Char('j') => scroll.saturating_sub(1),
+            KeyCode::PageUp => scroll + page,
+            KeyCode::PageDown => scroll.saturating_sub(page),
+            KeyCode::Home => last,
+            KeyCode::End => 0,
+            KeyCode::Char('o' | 'q' | 'c') | KeyCode::Esc => {
+                let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+                if key.code != KeyCode::Char('c') || ctrl {
+                    self.close_full(size);
+                }
+                return;
+            }
+            _ => return,
+        }
+        .min(last);
+    }
+
+    /// Opens the full-screen view of block `i`. While the block runs, its
+    /// PTY takes the screen without the footer (spec 7.3).
+    fn open_full(&mut self, i: usize, size: Size) {
+        self.view.mode = view::Mode::Full(view::Full {
+            block: i,
+            rows: term::Rows::default(),
+            scroll: 0,
+        });
+        self.resize_pty(i, size);
+        self.changed.insert(i);
+    }
+
+    /// Goes back to the document view. A running block gets its PTY of
+    /// the document view back.
+    fn close_full(&mut self, size: Size) {
+        let view::Mode::Full(full) = std::mem::replace(&mut self.view.mode, view::Mode::Normal)
+        else {
+            return;
+        };
+        self.resize_pty(full.block, size);
+        self.changed.insert(full.block);
+    }
+
+    /// The size of the PTY of block `i`: the screen without the footer in
+    /// its full-screen view, else the columns of its code (spec 6.3, 7.3).
+    fn pty_size(&self, i: usize, size: Size) -> (u16, u16) {
+        match &self.view.mode {
+            view::Mode::Full(full) if full.block == i => {
+                (size.width, size.height.saturating_sub(1).max(1))
+            }
+            _ => self.view.pty_size(i, size),
+        }
+    }
+
+    /// Gives block `i` a PTY of its size, if it runs. The kernel sends
+    /// SIGWINCH to the program.
+    fn resize_pty(&self, i: usize, size: Size) {
+        let Some(ran) = self.ran.get(&i) else {
+            return;
+        };
+        if let Some(run) = &ran.run {
+            let (columns, rows) = self.pty_size(i, size);
+            let _ = run.resize(columns, rows);
+            ran.screen.resize(columns, rows);
+        }
     }
 
     /// Whether a key of the document view acts on what the screen shows:
-    /// `Enter`, `i`, or the answer to a question. In input mode, keys go
-    /// to the program, in order.
+    /// `Enter`, `i`, `o`, or the answer to a question. In input mode and
+    /// in the full-screen view, keys go to the program, in order.
     fn acts(&self, event: &Event, size: Size) -> bool {
         let Event::Key(key) = event else {
             return false;
@@ -566,7 +668,10 @@ impl App {
         if self.view.mode != view::Mode::Normal {
             return false;
         }
-        let acts = matches!(action(event, size), Some(Action::Run | Action::Input));
+        let acts = matches!(
+            action(event, size),
+            Some(Action::Run | Action::Input | Action::Output)
+        );
         key.kind == KeyEventKind::Press && (self.question.is_some() || acts)
     }
 
@@ -631,7 +736,7 @@ impl App {
     fn start(&mut self, i: usize, size: Size) {
         debug_assert!(!self.ran.get(&i).is_some_and(|ran| ran.run.is_some()));
         let block = &self.view.doc.blocks[i];
-        let (columns, rows) = self.view.pty_size(i, size);
+        let (columns, rows) = self.pty_size(i, size);
         let label = self.view.doc.label(i);
         let status = match self.session.start(&block.code, &label, columns, rows) {
             Ok(run) => {
@@ -694,12 +799,20 @@ impl App {
             let Some(ran) = self.ran.get(&i) else {
                 continue;
             };
-            let want = term::Want::Last {
-                cursor: ran.run.is_some(),
+            let running = ran.run.is_some();
+            let full = match &mut self.view.mode {
+                view::Mode::Full(full) if full.block == i => Some(full),
+                _ => None,
             };
-            match ran.screen.try_rows(want) {
-                Some(lines) => self.view.set_output(i, lines, size),
-                None => _ = self.changed.insert(i),
+            let want = match (&full, running) {
+                (Some(_), true) => term::Want::Screen,
+                (Some(_), false) => term::Want::All,
+                (None, cursor) => term::Want::Last { cursor },
+            };
+            match (ran.screen.try_rows(want), full) {
+                (Some(rows), Some(full)) => full.rows = rows,
+                (Some(rows), None) => self.view.set_output(i, rows, size),
+                (None, _) => _ = self.changed.insert(i),
             }
         }
     }
@@ -720,13 +833,10 @@ impl App {
         if view::too_small(size) {
             return;
         }
-        for (&i, ran) in &mut self.ran {
-            if let Some(run) = &ran.run {
-                let (columns, rows) = self.view.pty_size(i, size);
-                let _ = run.resize(columns, rows);
-                ran.screen.resize(columns, rows);
-                self.changed.insert(i);
-            }
+        let running: Vec<_> = self.runs().map(|(i, _)| i).collect();
+        for i in running {
+            self.resize_pty(i, size);
+            self.changed.insert(i);
         }
     }
 }
@@ -830,6 +940,9 @@ enum Action {
     Run,
     /// Enter input mode, if the selected block runs (spec 7.2).
     Input,
+    /// Open the full-screen view of the selected block, if it has run
+    /// (spec 7.3).
+    Output,
 }
 
 /// On a screen too small for the view, only the keys that quit work. A
@@ -853,6 +966,7 @@ fn action(event: &Event, size: Size) -> Option<Action> {
         KeyCode::PageUp => Action::Page(-1),
         KeyCode::Enter => Action::Run,
         KeyCode::Char('i') => Action::Input,
+        KeyCode::Char('o') => Action::Output,
         _ => return None,
     };
     (action == Action::Quit || !view::too_small(size)).then_some(action)
@@ -967,6 +1081,7 @@ mod tests {
             (key(KeyCode::PageUp), Some(Action::Page(-1))),
             (key(KeyCode::Enter), Some(Action::Run)),
             (key(KeyCode::Char('i')), Some(Action::Input)),
+            (key(KeyCode::Char('o')), Some(Action::Output)),
             (key(KeyCode::Char('x')), None),
         ];
         for (key, expected) in cases {
@@ -1226,12 +1341,112 @@ mod tests {
         assert_eq!(output(&app, 0), "ready\n$'\\E[200~a\\tb\\E[201~'");
     }
 
+    fn full(app: &App) -> &view::Full {
+        match &app.view.mode {
+            view::Mode::Full(full) => full,
+            mode => panic!("not in the full-screen view: {mode:?}"),
+        }
+    }
+
+    #[test]
+    fn the_full_screen_view_of_a_running_block_has_the_size_of_the_screen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let block = "```bash\necho ready\nread\nstty size\nread\nstty size\n```\n";
+        let mut app = app(block, tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        key(&mut app, KeyCode::Char('o'));
+        app.refresh(SIZE);
+        // The rows of the screen, while the block runs.
+        assert_eq!(full(&app).rows.lines.len(), 23);
+        // The keys go to the program.
+        key(&mut app, KeyCode::Enter);
+        read_until(&mut app, SIZE, |app| {
+            markup(&full(app).rows.lines).contains("23 80")
+        });
+        // ctrl-o gives the PTY its size in the document view back.
+        assert_eq!(app.handle(&ctrl('o'), SIZE), None);
+        assert_eq!(app.view.mode, view::Mode::Normal);
+        app.ran[&0].run.as_ref().unwrap().write(b"\n");
+        read_until(&mut app, SIZE, |app| !running(app));
+        let (columns, rows) = app.view.pty_size(0, SIZE);
+        assert_eq!(
+            output(&app, 0).lines().last(),
+            Some(&*format!("{rows} {columns}"))
+        );
+    }
+
+    #[test]
+    fn a_resize_gives_the_block_of_the_full_screen_view_the_new_screen() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\necho ready\nread\nstty size\n```\n", tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        key(&mut app, KeyCode::Char('o'));
+        let size = Size::new(100, 30);
+        assert_eq!(app.handle(&Event::Resize(100, 30), size), None);
+        app.ran[&0].run.as_ref().unwrap().write(b"\n");
+        read_until(&mut app, size, |app| !running(app));
+        // After the run, the view stays, with the scrollback and the screen.
+        assert_eq!(markup(&full(&app).rows.lines), "ready\n\n29 100");
+    }
+
+    #[test]
+    fn after_the_run_the_keys_of_the_full_screen_view_scroll_or_go_back() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\nseq 100\n```\n", tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        let scroll = |app: &mut App, code| {
+            key(app, code);
+            full(app).scroll
+        };
+        key(&mut app, KeyCode::Char('o'));
+        app.refresh(SIZE);
+        assert_eq!(full(&app).rows.lines.len(), 100);
+        // The screen shows 23 lines: the scroll stops at line 1.
+        assert_eq!(scroll(&mut app, KeyCode::Up), 1);
+        assert_eq!(scroll(&mut app, KeyCode::Char('k')), 2);
+        assert_eq!(scroll(&mut app, KeyCode::Char('j')), 1);
+        assert_eq!(scroll(&mut app, KeyCode::PageUp), 24);
+        assert_eq!(scroll(&mut app, KeyCode::PageDown), 1);
+        assert_eq!(scroll(&mut app, KeyCode::Down), 0);
+        assert_eq!(scroll(&mut app, KeyCode::Down), 0);
+        assert_eq!(scroll(&mut app, KeyCode::Home), 77);
+        assert_eq!(scroll(&mut app, KeyCode::Up), 77);
+        assert_eq!(scroll(&mut app, KeyCode::End), 0);
+        assert_eq!(scroll(&mut app, KeyCode::Char('c')), 0);
+        let back = [
+            Event::Key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE)),
+            Event::Key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            ctrl('o'),
+            ctrl('c'),
+        ];
+        for event in back {
+            assert!(matches!(app.view.mode, view::Mode::Full(_)));
+            assert_eq!(app.handle(&event, SIZE), None);
+            assert_eq!(app.view.mode, view::Mode::Normal, "{event:?}");
+            key(&mut app, KeyCode::Char('o'));
+        }
+    }
+
+    #[test]
+    fn o_needs_a_block_that_has_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\ntrue\n```\n", tmp.path());
+        key(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.view.mode, view::Mode::Normal);
+        assert_eq!(app.view.notice.as_deref(), Some("no output: ↵ runs it"));
+    }
+
     #[test]
     fn enter_and_i_wait_for_the_frame_but_keys_of_input_mode_do_not() {
         let tmp = tempfile::tempdir().unwrap();
         let mut app = app("```bash\ntrue\n```\n", tmp.path());
         let press = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
         assert!(app.acts(&press(KeyCode::Char('i')), SIZE));
+        assert!(app.acts(&press(KeyCode::Char('o')), SIZE));
         app.view.mode = view::Mode::Input(0);
         assert!(!app.acts(&press(KeyCode::Enter), SIZE));
     }
@@ -1333,8 +1548,10 @@ mod tests {
     }
 
     fn output(app: &App, i: usize) -> String {
-        view::tests::markup(app.view.output(i))
+        markup(app.view.output(i))
     }
+
+    use view::tests::markup;
 
     #[test]
     fn enter_runs_the_selected_block_and_shows_its_output() {
