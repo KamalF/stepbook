@@ -530,24 +530,30 @@ impl App {
         None
     }
 
-    /// Sends a key of input mode to the run of block `i`. `ctrl-o` leaves
-    /// input mode, and so does any key on a screen too small for the view,
-    /// which does not show what the keys do (spec 6.1, 7.2).
+    /// Sends a key or a paste of input mode to the run of block `i`.
+    /// `ctrl-o` leaves input mode, and so does any key or paste on a screen
+    /// too small for the view, which does not show what they do (spec 6.1,
+    /// 7.2).
     fn input(&mut self, i: usize, event: &Event, size: Size) {
-        let Event::Key(key) = event else {
+        let Some(run) = self.ran.get(&i).and_then(|ran| ran.run.as_ref()) else {
             return;
         };
-        if key.kind == KeyEventKind::Release {
-            return;
-        }
-        let leave = key.code == KeyCode::Char('o') && key.modifiers == KeyModifiers::CONTROL;
-        if leave || view::too_small(size) {
+        let bytes = match event {
+            Event::Key(key) if key.kind != KeyEventKind::Release => {
+                if key.code == KeyCode::Char('o') && key.modifiers == KeyModifiers::CONTROL {
+                    self.view.mode = view::Mode::Normal;
+                    return;
+                }
+                term::key_bytes(key, run.screen.application_cursor())
+            }
+            Event::Paste(text) => term::paste_bytes(text, run.screen.bracketed_paste()),
+            _ => return,
+        };
+        if view::too_small(size) {
             self.view.mode = view::Mode::Normal;
             return;
         }
-        if let Some(run) = self.ran.get(&i).and_then(|ran| ran.run.as_ref()) {
-            run.write(&term::key_bytes(key, run.screen.application_cursor()));
-        }
+        run.write(&bytes);
     }
 
     /// Whether a key of the document view acts on what the screen shows:
@@ -1203,6 +1209,21 @@ mod tests {
         key(&mut app, KeyCode::Up);
         read_until(&mut app, SIZE, |app| !running(app));
         assert_eq!(output(&app, 0), "ready\n$'\\EOA'");
+    }
+
+    #[test]
+    fn a_paste_in_input_mode_reaches_the_program_between_the_marks_it_asked_for() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app(
+            "```bash\nprintf '\\e[?2004h'\necho ready\nIFS= read -rsN15 k\nprintf '%q\\n' \"$k\"\n```\n",
+            tmp.path(),
+        );
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        key(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.handle(&Event::Paste("a\tb".into()), SIZE), None);
+        read_until(&mut app, SIZE, |app| !running(app));
+        assert_eq!(output(&app, 0), "ready\n$'\\E[200~a\\tb\\E[201~'");
     }
 
     #[test]

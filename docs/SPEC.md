@@ -212,9 +212,9 @@ A paste does nothing in the document view: a line feed in it would run the selec
 - All keys go to the program, except `ctrl-o`, which leaves input mode.
 - stepbook leaves input mode when the run ends.
 - The footer shows `INPUT` and the name of the block. The cursor shows where the program shows it, in the output under the block, if the view shows that row.
-- On a screen too small for the view (6.1), a key leaves input mode, and does not reach the program: the screen does not show what it would do.
+- On a screen too small for the view (6.1), a key or a paste leaves input mode, and does not reach the program: the screen does not show what it would do.
 - A writer thread per run writes the keys to its PTY. A program that reads no input fills the PTY, and a write then waits until it reads. After 256 writes that wait, stepbook drops the next keys.
-- A paste from the outer terminal goes to the program. It is wrapped in `ESC[200~ … ESC[201~` if the program turned on bracketed paste mode.
+- A paste from the outer terminal goes to the program. It is wrapped in `ESC[200~ … ESC[201~` if the program turned on bracketed paste mode. The text of such a paste loses its ESC characters: an `ESC[201~` in it would end the paste early, and the program would take the rest for keys.
 - Key encoding follows xterm: application cursor mode, modifiers on arrow keys (`ESC[1;5A`), F1 to F12, Insert, Delete, Home, End, Page Up and Page Down.
 
 ### 7.3 Full-screen view
@@ -569,3 +569,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | Three limits of a run stay, with the workarounds in 8.2: sudo asks for the password in each block, gpg-agent can draw the pinentry of an ssh key on the terminal of stepbook, and `$0` names the wrapper | 2026-11-11 |
 | While the reader of a run holds its screen, it makes the rows that the view asked for (6.3): during a flood, the view took no rows in 120 frames | 2026-11-11 |
 | Input mode (7.2): `i` waits for the frame as `Enter` does, the cursor of the program shows in its output, and a writer thread per run writes the keys (13): a program that read no input would block the main thread | 2026-11-11 |
+| A bracketed paste loses the ESC characters of its text (7.2): an `ESC[201~` in it would end the paste early | 2026-11-11 |

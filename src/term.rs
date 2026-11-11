@@ -60,6 +60,9 @@ pub struct Shared {
     /// changes what the arrows send. The reader sets it after each read, so
     /// that a key never waits for the terminal.
     application_cursor: AtomicBool,
+    /// Whether the program turned on bracketed paste mode, which marks the
+    /// start and the end of a paste.
+    bracketed_paste: AtomicBool,
 }
 
 /// Rows of a terminal, as lines of the view.
@@ -91,6 +94,7 @@ impl Shared {
             size: AtomicU32::new(u32::from(columns) << 16 | u32::from(rows)),
             exchange: Mutex::default(),
             application_cursor: AtomicBool::new(false),
+            bracketed_paste: AtomicBool::new(false),
         }
     }
 
@@ -100,8 +104,9 @@ impl Shared {
         let terminal = self.terminal.lock().unwrap_or_else(PoisonError::into_inner);
         let mut terminal = self.sized(terminal);
         terminal.process(bytes);
-        let mode = terminal.parser.screen().application_cursor();
-        self.application_cursor.store(mode, Ordering::Relaxed);
+        let screen = terminal.parser.screen();
+        (self.application_cursor).store(screen.application_cursor(), Ordering::Relaxed);
+        (self.bracketed_paste).store(screen.bracketed_paste(), Ordering::Relaxed);
         let asked = self.exchange().asked.take();
         if let Some(want) = asked {
             let rows = terminal.rows(want);
@@ -136,6 +141,10 @@ impl Shared {
 
     pub fn application_cursor(&self) -> bool {
         self.application_cursor.load(Ordering::Relaxed)
+    }
+
+    pub fn bracketed_paste(&self) -> bool {
+        self.bracketed_paste.load(Ordering::Relaxed)
     }
 
     fn exchange(&self) -> MutexGuard<'_, Exchange> {
@@ -369,6 +378,18 @@ pub fn key_bytes(key: &KeyEvent, application_cursor: bool) -> Vec<u8> {
     bytes
 }
 
+/// The bytes of a paste (spec 7.2). If the program turned bracketed paste
+/// on, they come between `ESC[200~` and `ESC[201~`, without the ESC
+/// characters of the text: an `ESC[201~` in it would end the paste early,
+/// and the program would take the rest for keys.
+pub fn paste_bytes(text: &str, bracketed: bool) -> Vec<u8> {
+    if !bracketed {
+        return text.as_bytes().to_vec();
+    }
+    let text = text.replace('\x1b', "");
+    [b"\x1b[200~", text.as_bytes(), b"\x1b[201~"].concat()
+}
+
 /// The byte of a character with ctrl, as xterm sends it, if it has one.
 /// crossterm reads the bytes 0x1c to 0x1f as ctrl with 4 to 7, and 0 as
 /// ctrl with a space.
@@ -572,13 +593,26 @@ mod tests {
     }
 
     #[test]
-    fn the_shared_terminal_tells_the_application_cursor_mode() {
+    fn the_shared_terminal_tells_the_modes_of_the_program() {
         let shared = Shared::new(80, 24);
-        assert!(!shared.application_cursor());
+        let modes = |shared: &Shared| (shared.application_cursor(), shared.bracketed_paste());
+        assert_eq!(modes(&shared), (false, false));
         shared.process(b"\x1b[?1h");
-        assert!(shared.application_cursor());
-        shared.process(b"\x1b[?1l");
-        assert!(!shared.application_cursor());
+        assert_eq!(modes(&shared), (true, false));
+        shared.process(b"\x1b[?2004h\x1b[?1l");
+        assert_eq!(modes(&shared), (false, true));
+        shared.process(b"\x1b[?2004l");
+        assert_eq!(modes(&shared), (false, false));
+    }
+
+    #[test]
+    fn a_bracketed_paste_has_its_marks_and_no_escape_of_its_own() {
+        assert_eq!(paste_bytes("a\x1b[201~b\r", false), b"a\x1b[201~b\r");
+        assert_eq!(paste_bytes("ab\r", true), b"\x1b[200~ab\r\x1b[201~");
+        assert_eq!(
+            paste_bytes("a\x1b[201~b\x1b", true),
+            b"\x1b[200~a[201~b\x1b[201~"
+        );
     }
 
     #[test]
