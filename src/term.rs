@@ -351,11 +351,22 @@ mod tests {
     }
 
     #[test]
-    fn a_resize_changes_the_size_of_the_screen() {
+    fn a_new_terminal_and_a_resize_set_the_size_of_the_screen() {
+        assert_eq!(
+            rows(&mut after(b"0123456789abc", 10, 3), false),
+            "0123456789\nabc"
+        );
         let mut terminal = Terminal::new(80, 24);
         terminal.resize(10, 3);
         terminal.process(b"0123456789abc");
         assert_eq!(rows(&mut terminal, false), "0123456789\nabc");
+    }
+
+    #[test]
+    fn the_panic_hook_tells_a_failure_of_vt100_from_other_panics() {
+        let mut terminal = Terminal::new(80, 24);
+        assert_eq!(terminal.guarded(|_| in_vt100()), Some(true));
+        assert!(!in_vt100());
     }
 
     #[test]

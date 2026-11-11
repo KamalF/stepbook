@@ -777,11 +777,11 @@ fn wait_for_jobs(reader: &File, wrapper: Pid, buffer: &mut [u8]) {
             let mut fds = [PollFd::new(reader, PollFlags::IN)];
             match rustix::event::poll(&mut fds, Some(&timeout)) {
                 Ok(0) | Err(rustix::io::Errno::INTR) => {}
-                // Once the jobs close the PTY, a read fails with EIO.
+                // Once the jobs close the PTY, a read fails with EIO. It never
+                // fails with EINTR: the signal handlers have SA_RESTART.
                 Ok(_) => match (&*reader).read(buffer) {
-                    Ok(0) => open = false,
+                    Ok(0) | Err(_) => open = false,
                     Ok(_) => {}
-                    Err(e) => open = e.kind() == std::io::ErrorKind::Interrupted,
                 },
                 Err(_) => open = false,
             }
@@ -1857,6 +1857,51 @@ mod tests {
 
     /// The processes of a run, without the zombies that wait for their
     /// parent.
+    #[test]
+    fn a_job_that_writes_without_a_pause_never_holds_the_end_of_its_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let run = session.start("yes &\n", "check", 80, 24).unwrap();
+        // One deadline for all events: the output of yes never pauses.
+        let deadline = std::time::Instant::now() + WAIT;
+        let status = loop {
+            match run.events.recv_deadline(deadline).unwrap() {
+                Event::Output(_) => {}
+                Event::Exit(status) => break status,
+            }
+        };
+        assert_eq!(status, Status::Code(0));
+        end_sessions(&[run.pid.as_raw_pid()]);
+        assert_eq!(session_of(&run), []);
+    }
+
+    #[test]
+    fn a_run_gets_time_after_sighup_then_sigkill() {
+        // As when the terminal closes, a handler of SIGHUP gets up to 0.2 s.
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "trap 'sleep 0.03; echo done >\"$PWD/hup\"; exit' HUP\n\
+            echo ready\nsleep 30 & wait\n";
+        let run = session.start(code, "check", 80, 24).unwrap();
+        wait_for(&run, "ready");
+        end_sessions(&[run.pid.as_raw_pid()]);
+        let hup = fs::read_to_string(tmp.path().join("hup"));
+        assert_eq!(hup.ok().as_deref(), Some("done\n"));
+        // A run that ignores SIGHUP gets SIGKILL.
+        let run = session
+            .start("trap '' HUP\necho ready\nsleep 30\n", "check", 80, 24)
+            .unwrap();
+        wait_for(&run, "ready");
+        let pid = run.pid.as_raw_pid();
+        let (sender, ended) = crossbeam_channel::bounded(1);
+        std::thread::spawn(move || {
+            end_sessions(&[pid]);
+            let _ = sender.send(());
+        });
+        assert!(ended.recv_timeout(WAIT).is_ok());
+        assert_eq!(session_of(&run), []);
+    }
+
     fn session_of(run: &Run) -> Vec<Pid> {
         let session = |p: &Process| p.session == run.pid.as_raw_pid() && !p.zombie;
         processes()

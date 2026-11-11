@@ -54,6 +54,12 @@ exclude_re = [
     # A read of the PTY never fails with EINTR: signal-hook and crossterm
     # install their handlers with SA_RESTART.
     "replace match guard e.kind\\(\\) == std::io::ErrorKind::Interrupted with false in read_run",
+    # The flags of waitid, and the halves of a size, are distinct bits: ^
+    # gives the same value as |.
+    "replace \\| with \\^ in read_run",
+    "replace \\| with \\^ in Shared::resize",
+    # Two instants are never equal: <= gives the same wait as <.
+    "replace < with <= in end_sessions",
     # With as many rows as asked, the scrollback adds none.
     "term.rs:\\d+:\\d+: replace < with <= in last_rows$",
 ]
