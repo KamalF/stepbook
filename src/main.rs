@@ -467,7 +467,8 @@ impl App {
     }
 
     /// When the loop must wake up with no event: at the end of the
-    /// notification, and when the runs that stop get SIGKILL.
+    /// notification, at the end of the pause of the keys, and when the
+    /// runs that stop get SIGKILL.
     fn deadline(&self) -> Option<Instant> {
         [self.notice_until, self.paused_until, self.stopping]
             .into_iter()
@@ -871,6 +872,11 @@ impl App {
             run::Event::Exit(status) => {
                 let run = ran.run.take().expect("a run sends its exit status once");
                 ran.ended = Some(Instant::now());
+                // A paste for the program has nowhere to go.
+                if matches!(self.question, Some(Question::Paste(j, _)) if j == i) {
+                    self.question = None;
+                    self.view.question = None;
+                }
                 let saved = self.session.finish(&run);
                 let input = self.view.input_block() == Some(i);
                 let took = ran.started.elapsed();
@@ -1905,6 +1911,20 @@ echo \"got $x\"
         key(&mut app, KeyCode::Enter);
         read_until(&mut app, SIZE, |app| !running(app));
         assert!(output(&app, 0).ends_with("xy+z"), "{}", output(&app, 0));
+    }
+
+    #[test]
+    fn the_question_of_a_paste_ends_with_the_run() {
+        let tmp = tempfile::tempdir().unwrap();
+        let block = "```bash\necho ready\nread -t 1\n```\n";
+        let mut app = app(block, tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        key(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.handle(&Event::Paste("1\r2\r".into()), SIZE), None);
+        assert!(app.question.is_some());
+        read_until(&mut app, SIZE, |app| !running(app));
+        assert_eq!((app.question, app.view.question.as_ref()), (None, None));
     }
 
     #[test]

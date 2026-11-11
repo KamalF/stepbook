@@ -766,6 +766,7 @@ fn read_run(
         Some(signal) => Status::Signal(signal),
         None => Status::Code(status.exit_status().unwrap_or(0)),
     };
+    screen.end();
     let _ = sender.send(Event::Exit(status));
     wait_for_jobs(&reader, pid, &mut buffer);
     let _ = child.wait();
@@ -2006,6 +2007,20 @@ mod tests {
             "{:?}",
             &output[output.len() - 20..]
         );
+    }
+
+    #[test]
+    fn a_run_that_ends_on_the_alternate_screen_shows_its_main_screen_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let run = session.start("echo before\nprintf '\\e[?1049hon-alt'\n", "check", 80, 24);
+        let run = run.unwrap();
+        wait(&run);
+        let rows = run
+            .screen
+            .try_rows(term::Want::Last { cursor: false })
+            .unwrap();
+        assert_eq!(crate::view::tests::markup(&rows.lines), "before");
     }
 
     #[test]

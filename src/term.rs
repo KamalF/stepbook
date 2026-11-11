@@ -10,7 +10,7 @@ use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 
-use crate::doc::escaped;
+use crate::doc::{DIM, escaped};
 
 /// The lines of scrollback of a run (spec 6.3).
 const SCROLLBACK: usize = 5_000;
@@ -39,6 +39,9 @@ pub struct Terminal {
     parser: Parser,
     columns: u16,
     rows: u16,
+    /// The last screen of a program that was still on the alternate
+    /// screen when its run ended.
+    last_screen: Vec<Line<'static>>,
 }
 
 /// The terminal of a run, between the reader thread of the run, which
@@ -123,6 +126,12 @@ impl Shared {
             self.exchange().made = Some((want, rows));
         }
         answers
+    }
+
+    /// Ends the terminal of a run that has ended: see `Terminal::end`.
+    pub fn end(&self) {
+        let terminal = self.terminal.lock().unwrap_or_else(PoisonError::into_inner);
+        self.sized(terminal).end();
     }
 
     pub fn resize(&self, columns: u16, rows: u16) {
@@ -227,6 +236,7 @@ impl Terminal {
             parser: parser(columns, rows),
             columns,
             rows,
+            last_screen: Vec::new(),
         }
     }
 
@@ -272,10 +282,32 @@ impl Terminal {
                 alternate,
             }
         };
-        match self.guarded(read) {
+        let mut rows = match self.guarded(read) {
             Some(rows) => rows,
             None => read(&mut self.parser),
+        };
+        if want == Want::All && !self.last_screen.is_empty() {
+            let mark = "[stepbook: the last screen of the full-screen program]";
+            rows.lines.push(Line::styled(mark, DIM));
+            rows.lines.extend(self.last_screen.iter().cloned());
         }
+        rows
+    }
+
+    /// Leaves the alternate screen at the end of a run, as `reset` would:
+    /// vt100 gives no access to the main screen and its scrollback while
+    /// the alternate screen shows. The last screen of the program, where a
+    /// crash may have left its message, comes after them in `Want::All`.
+    pub fn end(&mut self) {
+        if !self.parser.screen().alternate_screen() {
+            return;
+        }
+        let mut lines = self.rows(Want::Screen).lines;
+        while lines.last().is_some_and(|line| line.spans.is_empty()) {
+            lines.pop();
+        }
+        self.process(b"\x1b[?1049l");
+        self.last_screen = lines;
     }
 }
 
@@ -747,6 +779,24 @@ mod tests {
         terminal.process(b"\x1b[?1049l");
         let rows = terminal.rows(LAST);
         assert_eq!((markup(&rows.lines).as_str(), rows.alternate), ("a", false));
+    }
+
+    #[test]
+    fn a_run_that_ends_on_the_alternate_screen_shows_both_screens() {
+        let mut terminal = after(b"before\r\n\x1b[?1049hon-alt\r\n", 20, 4);
+        terminal.end();
+        let rows = terminal.rows(LAST);
+        assert_eq!(
+            (markup(&rows.lines).as_str(), rows.alternate),
+            ("before", false)
+        );
+        let all = markup(&terminal.rows(Want::All).lines);
+        let mark = "«d:[stepbook: the last screen of the full-screen program]»";
+        assert_eq!(all, format!("before\n{mark}\non-alt"));
+        // On the main screen, the end changes nothing.
+        let mut terminal = after(b"main", 20, 4);
+        terminal.end();
+        assert_eq!(markup(&terminal.rows(Want::All).lines), "main");
     }
 
     #[test]
