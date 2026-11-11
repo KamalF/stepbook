@@ -36,7 +36,7 @@ pub fn in_vt100() -> bool {
 /// The screen of a run. Program output reaches the outer terminal only
 /// through it, as text and styles: never as escape sequences (spec 6.4).
 pub struct Terminal {
-    parser: vt100::Parser,
+    parser: Parser,
     columns: u16,
     rows: u16,
 }
@@ -99,11 +99,12 @@ impl Shared {
     }
 
     /// Reads the output of the run, then makes the rows that the main
-    /// thread asked for meanwhile. It waits for the lock.
-    pub fn process(&self, bytes: &[u8]) {
+    /// thread asked for meanwhile. It waits for the lock. It returns the
+    /// answers to the queries of the program.
+    pub fn process(&self, bytes: &[u8]) -> Vec<u8> {
         let terminal = self.terminal.lock().unwrap_or_else(PoisonError::into_inner);
         let mut terminal = self.sized(terminal);
-        terminal.process(bytes);
+        let answers = terminal.process(bytes);
         let screen = terminal.parser.screen();
         (self.application_cursor).store(screen.application_cursor(), Ordering::Relaxed);
         (self.bracketed_paste).store(screen.bracketed_paste(), Ordering::Relaxed);
@@ -112,6 +113,7 @@ impl Shared {
             let rows = terminal.rows(want);
             self.exchange().made = Some((want, rows));
         }
+        answers
     }
 
     pub fn resize(&self, columns: u16, rows: u16) {
@@ -165,8 +167,46 @@ fn size(n: u16) -> NonZeroU16 {
     NonZeroU16::new(n).unwrap_or(NonZeroU16::MIN)
 }
 
-fn parser(columns: u16, rows: u16) -> vt100::Parser {
-    vt100::Parser::new(size(rows), size(columns), SCROLLBACK)
+type Parser = vt100::Parser<Answers>;
+
+fn parser(columns: u16, rows: u16) -> Parser {
+    Parser::new_with_callbacks(size(rows), size(columns), SCROLLBACK, Answers::default())
+}
+
+/// The answers of the terminal to the queries of a program, which programs
+/// such as fzf wait for: its status and the position of its cursor (DSR),
+/// and its device attributes (DA1). They hold only numbers, never text from
+/// the program, which could write keys for it. Other queries, such as
+/// those of the colors (OSC 10 and 11), get no answer: most programs send
+/// DA1 after them, and stop waiting at its answer.
+#[derive(Default)]
+pub struct Answers(Vec<u8>);
+
+impl vt100::Callbacks for Answers {
+    fn unhandled_csi(
+        &mut self,
+        screen: &mut vt100::Screen,
+        first: Option<u8>,
+        second: Option<u8>,
+        params: &[&[u16]],
+        c: char,
+    ) {
+        if (first, second) != (None, None) {
+            return;
+        }
+        match (c, params) {
+            ('n', [[5]]) => self.0.extend(b"\x1b[0n"),
+            ('n', [[6]]) => {
+                let (row, column) = screen.cursor_position();
+                let answer = format!("\x1b[{};{}R", row + 1, column + 1);
+                self.0.extend(answer.as_bytes());
+            }
+            // A VT100 with the advanced video option, as tmux and screen
+            // answer.
+            ('c', [] | [[0]]) => self.0.extend(b"\x1b[?1;2c"),
+            _ => {}
+        }
+    }
 }
 
 impl Terminal {
@@ -182,7 +222,7 @@ impl Terminal {
     /// crafted bytes made it unwrap a None. The panic must not end stepbook
     /// and the other runs: the terminal starts again, with a row that says
     /// so, and `f` gives nothing.
-    fn guarded<T>(&mut self, f: impl FnOnce(&mut vt100::Parser) -> T) -> Option<T> {
+    fn guarded<T>(&mut self, f: impl FnOnce(&mut Parser) -> T) -> Option<T> {
         IN_VT100.set(true);
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| f(&mut self.parser)));
         IN_VT100.set(false);
@@ -193,10 +233,12 @@ impl Terminal {
         result.ok()
     }
 
-    /// Reads the output of a run. vt100 keeps the start of a UTF-8
-    /// character that ends in the next read (upmd issue K18).
-    pub fn process(&mut self, bytes: &[u8]) {
+    /// Reads the output of a run, and returns the answers to its queries.
+    /// vt100 keeps the start of a UTF-8 character that ends in the next
+    /// read (upmd issue K18).
+    pub fn process(&mut self, bytes: &[u8]) -> Vec<u8> {
         self.guarded(|parser| parser.process(bytes));
+        std::mem::take(&mut self.parser.callbacks_mut().0)
     }
 
     pub fn resize(&mut self, columns: u16, rows: u16) {
@@ -222,7 +264,7 @@ impl Terminal {
 }
 
 /// The last `OUTPUT_ROWS` rows of the terminal: see `Terminal::last_rows`.
-fn last_rows(parser: &mut vt100::Parser, cursor: bool) -> Rows {
+fn last_rows(parser: &mut Parser, cursor: bool) -> Rows {
     let screen = parser.screen();
     let (rows, columns) = screen.size();
     let (rows, columns) = (rows.get(), columns.get());
@@ -593,6 +635,19 @@ mod tests {
     }
 
     #[test]
+    fn the_terminal_answers_the_queries_of_its_status_cursor_and_attributes() {
+        let mut terminal = Terminal::new(80, 24);
+        let answers = terminal.process(b"\r\nab\x1b[5n\x1b[6n\x1b[c\x1b[0c");
+        assert_eq!(answers, b"\x1b[0n\x1b[2;3R\x1b[?1;2c\x1b[?1;2c");
+        // Each read gives its own answers.
+        assert_eq!(terminal.process(b"\x1b[6n"), b"\x1b[2;3R");
+        // Other queries get no answer: DA2, DECXCPR, the colors, the
+        // window title.
+        let other = terminal.process(b"\x1b[>c\x1b[?6n\x1b[1c\x1b[7n\x1b]11;?\x07\x1b[21t");
+        assert_eq!(other, b"");
+    }
+
+    #[test]
     fn the_shared_terminal_tells_the_modes_of_the_program() {
         let shared = Shared::new(80, 24);
         let modes = |shared: &Shared| (shared.application_cursor(), shared.bracketed_paste());
@@ -788,7 +843,7 @@ mod tests {
             let mut terminal = Terminal::new(columns, rows);
             for step in steps {
                 match step {
-                    Step::Read(bytes) => terminal.process(&bytes),
+                    Step::Read(bytes) => _ = terminal.process(&bytes),
                     Step::Resize(columns, rows) => terminal.resize(columns, rows),
                 }
                 terminal.last_rows(true);

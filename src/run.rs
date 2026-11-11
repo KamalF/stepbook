@@ -476,8 +476,9 @@ impl Session {
             .push(pid);
         let screen = Arc::new(term::Shared::new(columns, rows));
         let feed = screen.clone();
-        std::thread::spawn(move || read_run(reader, child, sender, &feed));
         let (input, bytes) = crossbeam_channel::bounded(INPUT_MESSAGES);
+        let answers = input.clone();
+        std::thread::spawn(move || read_run(reader, child, sender, answers, &feed));
         std::thread::spawn(move || write_run(writer, bytes));
         Ok(Run {
             events,
@@ -698,7 +699,15 @@ fn open_pty(columns: u16, rows: u16) -> std::io::Result<(File, OwnedFd, OsString
 /// its state held back. After the exit, the reader takes only the output
 /// that waits in the PTY. On Linux, a read fails with EIO once every
 /// process has closed the PTY.
-fn read_run(reader: File, mut child: Child, sender: Sender<Event>, screen: &term::Shared) {
+/// The answers of the terminal to the queries of the program go to the
+/// writer thread: a program that reads no input must not block the reader.
+fn read_run(
+    reader: File,
+    mut child: Child,
+    sender: Sender<Event>,
+    answers: Sender<Vec<u8>>,
+    screen: &term::Shared,
+) {
     let exit = rustix::process::pidfd_open(Pid::from_child(&child), PidfdFlags::empty()).ok();
     let mut buffer = vec![0; READ_SIZE];
     // The reads after the exit: a job that writes without a pause must
@@ -726,7 +735,10 @@ fn read_run(reader: File, mut child: Child, sender: Sender<Event>, screen: &term
         match (&reader).read(&mut buffer) {
             Ok(0) => break,
             Ok(n) => {
-                screen.process(&buffer[..n]);
+                let answer = screen.process(&buffer[..n]);
+                if !answer.is_empty() {
+                    let _ = answers.try_send(answer);
+                }
                 if sender.send(Event::Output(buffer[..n].to_vec())).is_err() {
                     return;
                 }
@@ -1939,6 +1951,15 @@ mod tests {
             .filter(session)
             .map(|p| p.pid)
             .collect()
+    }
+
+    #[test]
+    fn a_program_gets_the_position_of_its_cursor_from_the_terminal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "printf 'ab\\e[6n'\nIFS= read -rsd R pos\necho \" at ${pos#*[}\"\n";
+        let (output, status, _) = run(&mut session, code);
+        assert_eq!((&*output, status), ("ab\x1b[6n at 1;3\n", Status::Code(0)));
     }
 
     #[test]

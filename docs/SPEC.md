@@ -157,6 +157,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 - If the vt100 screen fails on the output of a run, the output so far is lost, and a row of the output says so. stepbook and the other runs go on.
 - The reader thread of each run feeds its vt100 screen, and the view takes the rows when the screen is free. While the reader holds the screen, it makes the rows that the view asked for, after its next read: during a flood of output, the screen is almost never free. vt100 can take seconds on crafted output, such as a repeat of a character 65,535 times or a scroll of the whole screen: only the run that prints it waits, and the view and the keys go on.
 - A UTF-8 character that is split across two reads of the PTY shows whole (upmd issue K18, see 18).
+- The terminal of a run answers three queries: its status (`ESC[5n` gets `ESC[0n`), the position of its cursor (`ESC[6n`), and its device attributes (`ESC[c` gets `ESC[?1;2c`, a VT100 with the advanced video option, as tmux answers). Programs such as fzf wait for them. The answers hold only numbers, never text from the program, which could write keys for it. Other queries get no answer, such as those of the colors (OSC 10 and 11): most programs send `ESC[c` after them, and stop waiting at its answer. The writer thread of the run writes the answers (13).
 - When the selected running block switches to the alternate screen (vim, less, top), stepbook opens the full-screen view in input mode. When the program leaves the alternate screen, stepbook returns to the document view. If the block is not selected, its info line shows `full-screen program, press o`.
 - When the selected block's output grows past the bottom of the view, the view scrolls to keep its last row visible.
 
@@ -570,3 +571,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | While the reader of a run holds its screen, it makes the rows that the view asked for (6.3): during a flood, the view took no rows in 120 frames | 2026-11-11 |
 | Input mode (7.2): `i` waits for the frame as `Enter` does, the cursor of the program shows in its output, and a writer thread per run writes the keys (13): a program that read no input would block the main thread | 2026-11-11 |
 | A bracketed paste loses the ESC characters of its text (7.2): an `ESC[201~` in it would end the paste early | 2026-11-11 |
+| The terminal of a run answers DSR 5 and 6 and DA1 (6.3), at Kamal's choice: a program that asked waited for its timeout | 2026-11-11 |
