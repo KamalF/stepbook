@@ -467,6 +467,10 @@ impl App {
         if self.stopping.is_some() {
             return None;
         }
+        if let view::Mode::Input(i) = self.view.mode {
+            self.input(i, event, size);
+            return None;
+        }
         if let Some(question) = self.question.take() {
             match event {
                 // On a screen too small for the view, the question does not
@@ -512,18 +516,52 @@ impl App {
                     self.enter(i, size);
                 }
             }
+            Action::Input => {
+                let i = self.view.selected?;
+                match self.ran.get(&i).is_some_and(|ran| ran.run.is_some()) {
+                    true => {
+                        self.view.mode = view::Mode::Input(i);
+                        self.view.show_output_end(i, size);
+                    }
+                    false => self.notify("not running: ↵ runs it".into()),
+                }
+            }
         }
         None
     }
 
-    /// Whether a key starts or stops runs: `Enter`, or the answer to a
-    /// question.
+    /// Sends a key of input mode to the run of block `i`. `ctrl-o` leaves
+    /// input mode, and so does any key on a screen too small for the view,
+    /// which does not show what the keys do (spec 6.1, 7.2).
+    fn input(&mut self, i: usize, event: &Event, size: Size) {
+        let Event::Key(key) = event else {
+            return;
+        };
+        if key.kind == KeyEventKind::Release {
+            return;
+        }
+        let leave = key.code == KeyCode::Char('o') && key.modifiers == KeyModifiers::CONTROL;
+        if leave || view::too_small(size) {
+            self.view.mode = view::Mode::Normal;
+            return;
+        }
+        if let Some(run) = self.ran.get(&i).and_then(|ran| ran.run.as_ref()) {
+            run.write(&term::key_bytes(key, run.screen.application_cursor()));
+        }
+    }
+
+    /// Whether a key of the document view acts on what the screen shows:
+    /// `Enter`, `i`, or the answer to a question. In input mode, keys go
+    /// to the program, in order.
     fn acts(&self, event: &Event, size: Size) -> bool {
         let Event::Key(key) = event else {
             return false;
         };
-        let run = action(event, size) == Some(Action::Run);
-        key.kind == KeyEventKind::Press && (self.question.is_some() || run)
+        if self.view.mode != view::Mode::Normal {
+            return false;
+        }
+        let acts = matches!(action(event, size), Some(Action::Run | Action::Input));
+        key.kind == KeyEventKind::Press && (self.question.is_some() || acts)
     }
 
     /// What `Enter` does on block `i`, by its state (spec 8.1).
@@ -615,7 +653,7 @@ impl App {
             }
         };
         self.view.set_status(i, status);
-        self.view.set_output(i, Vec::new(), size);
+        self.view.set_output(i, term::Rows::default(), size);
     }
 
     /// Reads a message from the run of block `i`. Its rows are made before
@@ -627,6 +665,9 @@ impl App {
             run::Event::Exit(status) => {
                 let run = ran.run.take().expect("a run sends its exit status once");
                 let saved = self.session.finish(&run);
+                if self.view.mode == view::Mode::Input(i) {
+                    self.view.mode = view::Mode::Normal;
+                }
                 let took = ran.started.elapsed();
                 let ended = view::Status::Ended {
                     status,
@@ -781,6 +822,8 @@ enum Action {
     Page(isize),
     /// Run the selected block, if the view shows it (spec 7.1).
     Run,
+    /// Enter input mode, if the selected block runs (spec 7.2).
+    Input,
 }
 
 /// On a screen too small for the view, only the keys that quit work. A
@@ -803,6 +846,7 @@ fn action(event: &Event, size: Size) -> Option<Action> {
         KeyCode::PageDown => Action::Page(1),
         KeyCode::PageUp => Action::Page(-1),
         KeyCode::Enter => Action::Run,
+        KeyCode::Char('i') => Action::Input,
         _ => return None,
     };
     (action == Action::Quit || !view::too_small(size)).then_some(action)
@@ -916,6 +960,7 @@ mod tests {
             (key(KeyCode::PageDown), Some(Action::Page(1))),
             (key(KeyCode::PageUp), Some(Action::Page(-1))),
             (key(KeyCode::Enter), Some(Action::Run)),
+            (key(KeyCode::Char('i')), Some(Action::Input)),
             (key(KeyCode::Char('x')), None),
         ];
         for (key, expected) in cases {
@@ -1090,8 +1135,84 @@ mod tests {
         app.expire();
         assert_eq!((app.view.notice.as_ref(), app.deadline()), (None, None));
         let ran = &app.ran[&0];
-        ran.run.as_ref().unwrap().write(b"\n").unwrap();
+        ran.run.as_ref().unwrap().write(b"\n");
         read_until(&mut app, SIZE, |app| !running(app));
+    }
+
+    fn ctrl(c: char) -> Event {
+        Event::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    #[test]
+    fn input_mode_sends_the_keys_to_the_program_until_its_run_ends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app(
+            "```bash\nread -rs -p 'Password: ' pw\necho\necho \"got $pw\"\n```\n",
+            tmp.path(),
+        );
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("Password:"));
+        key(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.view.mode, view::Mode::Input(0));
+        // The keys of the document view go to the program too.
+        for c in "qj x".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        key(&mut app, KeyCode::Enter);
+        read_until(&mut app, SIZE, |app| !running(app));
+        assert_eq!(output(&app, 0), "Password:\ngot qj x");
+        assert_eq!(app.view.mode, view::Mode::Normal);
+    }
+
+    #[test]
+    fn ctrl_o_leaves_input_mode_and_i_needs_a_running_block() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\necho ready\nread\n```\n", tmp.path());
+        key(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.view.mode, view::Mode::Normal);
+        assert_eq!(app.view.notice.as_deref(), Some("not running: ↵ runs it"));
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        key(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.handle(&ctrl('o'), SIZE), None);
+        assert_eq!(app.view.mode, view::Mode::Normal);
+        // On a screen too small for the view, a key leaves input mode, and
+        // goes nowhere.
+        key(&mut app, KeyCode::Char('i'));
+        let small = Size::new(30, 6);
+        assert_eq!(app.handle(&Event::Resize(30, 6), small), None);
+        let enter_key = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(app.handle(&enter_key, small), None);
+        assert_eq!(app.view.mode, view::Mode::Normal);
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(running(&app));
+        app.ran[&0].run.as_ref().unwrap().write(b"\n");
+        read_until(&mut app, SIZE, |app| !running(app));
+    }
+
+    #[test]
+    fn the_arrows_follow_the_application_cursor_mode_of_the_program() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app(
+            "```bash\nprintf '\\e[?1h'\necho ready\nIFS= read -rsn3 k\nprintf '%q\\n' \"$k\"\n```\n",
+            tmp.path(),
+        );
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        key(&mut app, KeyCode::Char('i'));
+        key(&mut app, KeyCode::Up);
+        read_until(&mut app, SIZE, |app| !running(app));
+        assert_eq!(output(&app, 0), "ready\n$'\\EOA'");
+    }
+
+    #[test]
+    fn enter_and_i_wait_for_the_frame_but_keys_of_input_mode_do_not() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\ntrue\n```\n", tmp.path());
+        let press = |code| Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
+        assert!(app.acts(&press(KeyCode::Char('i')), SIZE));
+        app.view.mode = view::Mode::Input(0);
+        assert!(!app.acts(&press(KeyCode::Enter), SIZE));
     }
 
     #[test]
@@ -1273,7 +1394,7 @@ read
         };
         assert!(*took >= Duration::from_secs(5));
         let ran = &app.ran[&0];
-        ran.run.as_ref().unwrap().write(b"\n").unwrap();
+        ran.run.as_ref().unwrap().write(b"\n");
         read_until(&mut app, SIZE, |app| !running(app));
     }
 
@@ -1286,7 +1407,7 @@ read
         enter(&mut app, SIZE);
         assert!(!app.session.workspace().join("run-2.sh").exists());
         let ran = &app.ran[&0];
-        ran.run.as_ref().unwrap().write(b"\n").unwrap();
+        ran.run.as_ref().unwrap().write(b"\n");
         read_until(&mut app, SIZE, |app| !running(app));
     }
 
@@ -1310,7 +1431,7 @@ read
         let size = Size::new(100, 30);
         assert_eq!(app.handle(&Event::Resize(100, 30), size), None);
         let ran = &app.ran[&0];
-        ran.run.as_ref().unwrap().write(b"\n").unwrap();
+        ran.run.as_ref().unwrap().write(b"\n");
         read_until(&mut app, size, |app| !running(app));
         let (columns, rows) = app.view.pty_size(0, size);
         assert_eq!(

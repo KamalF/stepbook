@@ -3,9 +3,10 @@
 use std::cell::Cell;
 use std::num::NonZeroU16;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Mutex, MutexGuard, PoisonError, TryLockError};
 
+use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Line;
 
@@ -55,6 +56,18 @@ pub struct Shared {
     /// of output, the reader holds the terminal at almost each try of the
     /// main thread, whose rows would stay old for seconds.
     exchange: Mutex<Exchange>,
+    /// Whether the program turned on the application cursor mode, which
+    /// changes what the arrows send. The reader sets it after each read, so
+    /// that a key never waits for the terminal.
+    application_cursor: AtomicBool,
+}
+
+/// Rows of a terminal, as lines of the view.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Rows {
+    pub lines: Vec<Line<'static>>,
+    /// The line and the column of the cursor, if the program shows it.
+    pub cursor: Option<(usize, u16)>,
 }
 
 /// What the main thread takes of a terminal.
@@ -68,7 +81,7 @@ pub enum Want {
 #[derive(Default)]
 struct Exchange {
     asked: Option<Want>,
-    made: Option<(Want, Vec<Line<'static>>)>,
+    made: Option<(Want, Rows)>,
 }
 
 impl Shared {
@@ -77,6 +90,7 @@ impl Shared {
             terminal: Mutex::new(Terminal::new(columns, rows)),
             size: AtomicU32::new(u32::from(columns) << 16 | u32::from(rows)),
             exchange: Mutex::default(),
+            application_cursor: AtomicBool::new(false),
         }
     }
 
@@ -86,6 +100,8 @@ impl Shared {
         let terminal = self.terminal.lock().unwrap_or_else(PoisonError::into_inner);
         let mut terminal = self.sized(terminal);
         terminal.process(bytes);
+        let mode = terminal.parser.screen().application_cursor();
+        self.application_cursor.store(mode, Ordering::Relaxed);
         let asked = self.exchange().asked.take();
         if let Some(want) = asked {
             let rows = terminal.rows(want);
@@ -101,7 +117,7 @@ impl Shared {
     /// The rows of the terminal. While the reader holds it, the rows that
     /// the reader made since the last call, if any: the reader makes them
     /// after its next read.
-    pub fn try_rows(&self, want: Want) -> Option<Vec<Line<'static>>> {
+    pub fn try_rows(&self, want: Want) -> Option<Rows> {
         let terminal = match self.terminal.try_lock() {
             Ok(terminal) => terminal,
             Err(TryLockError::Poisoned(error)) => error.into_inner(),
@@ -116,6 +132,10 @@ impl Shared {
         // Rows that the reader made before are older than these.
         *self.exchange() = Exchange::default();
         Some(terminal.rows(want))
+    }
+
+    pub fn application_cursor(&self) -> bool {
+        self.application_cursor.load(Ordering::Relaxed)
     }
 
     fn exchange(&self) -> MutexGuard<'_, Exchange> {
@@ -175,15 +195,16 @@ impl Terminal {
         self.guarded(|parser| parser.set_size(size(rows), size(columns)));
     }
 
-    pub fn rows(&mut self, want: Want) -> Vec<Line<'static>> {
+    pub fn rows(&mut self, want: Want) -> Rows {
         let Want::Last { cursor } = want;
         self.last_rows(cursor)
     }
 
     /// The last `OUTPUT_ROWS` rows of the terminal, scrollback included,
     /// without the blank rows at the end. If `cursor`, the rows go down to
-    /// the row of the cursor at least: a running program writes there next.
-    pub fn last_rows(&mut self, cursor: bool) -> Vec<Line<'static>> {
+    /// the row of the cursor at least, where a running program writes next,
+    /// and they give the cursor.
+    pub fn last_rows(&mut self, cursor: bool) -> Rows {
         match self.guarded(|parser| last_rows(parser, cursor)) {
             Some(rows) => rows,
             None => last_rows(&mut self.parser, cursor),
@@ -192,7 +213,7 @@ impl Terminal {
 }
 
 /// The last `OUTPUT_ROWS` rows of the terminal: see `Terminal::last_rows`.
-fn last_rows(parser: &mut vt100::Parser, cursor: bool) -> Vec<Line<'static>> {
+fn last_rows(parser: &mut vt100::Parser, cursor: bool) -> Rows {
     let screen = parser.screen();
     let (rows, columns) = screen.size();
     let (rows, columns) = (rows.get(), columns.get());
@@ -200,10 +221,14 @@ fn last_rows(parser: &mut vt100::Parser, cursor: bool) -> Vec<Line<'static>> {
         .rev()
         .find(|&row| (0..columns).any(|column| screen.cell(row, column).is_some_and(shows)))
         .map_or(0, |row| row + 1);
+    let (cursor_row, cursor_column) = screen.cursor_position();
     if cursor {
-        end = end.max(screen.cursor_position().0 + 1);
+        end = end.max(cursor_row + 1);
     }
     let start = end.saturating_sub(OUTPUT_ROWS as u16);
+    // The cursor can be above the last rows, under the text that ends them.
+    let shown = cursor && !screen.hide_cursor() && cursor_row >= start;
+    let mut cursor = shown.then(|| (usize::from(cursor_row - start), cursor_column));
     let mut lines: Vec<_> = (start..end).map(|row| line(screen, row, columns)).collect();
     if lines.len() < OUTPUT_ROWS {
         // The scrollback shows above the screen. With an offset of n,
@@ -216,10 +241,13 @@ fn last_rows(parser: &mut vt100::Parser, cursor: bool) -> Vec<Line<'static>> {
             all.push(line(screen, 0, columns));
         }
         screen.set_scrollback(0);
+        if let Some((row, _)) = &mut cursor {
+            *row += all.len();
+        }
         all.append(&mut lines);
         lines = all;
     }
-    lines
+    Rows { lines, cursor }
 }
 
 /// Whether a cell shows: text other than a space, or a style, such as a
@@ -280,6 +308,84 @@ fn style(cell: &vt100::Cell) -> Style {
     style
 }
 
+/// The bytes that xterm sends for a key (spec 7.2), or none. In the
+/// application cursor mode, which a program turns on with `ESC[?1h`, the
+/// arrows, Home and End send `ESC O` instead of `ESC [`. A key with
+/// modifiers sends their sum plus 1 as a parameter: 2 for shift, 3 for alt,
+/// 5 for ctrl.
+pub fn key_bytes(key: &KeyEvent, application_cursor: bool) -> Vec<u8> {
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let modifiers = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
+    // A key that sends a letter after ESC [ or ESC O: ESC [ 1 ; m X with
+    // modifiers.
+    let letter = |letter: char, prefix: &str| match modifiers {
+        1 => format!("\x1b{prefix}{letter}"),
+        m => format!("\x1b[1;{m}{letter}"),
+    };
+    let cursor = if application_cursor { "O" } else { "[" };
+    // A key that sends ESC [ n ~, with ESC [ n ; m ~ for modifiers.
+    let tilde = |n: u8| match modifiers {
+        1 => format!("\x1b[{n}~"),
+        m => format!("\x1b[{n};{m}~"),
+    };
+    let text = match key.code {
+        KeyCode::Char(c) => {
+            let mut bytes = match ctrl.then(|| control(c)).flatten() {
+                Some(byte) => vec![byte],
+                None => c.to_string().into_bytes(),
+            };
+            if alt {
+                bytes.insert(0, 0x1b);
+            }
+            return bytes;
+        }
+        KeyCode::Enter => "\r".into(),
+        KeyCode::Tab => "\t".into(),
+        KeyCode::BackTab => "\x1b[Z".into(),
+        KeyCode::Backspace => "\x7f".into(),
+        KeyCode::Esc => "\x1b".into(),
+        KeyCode::Null => "\0".into(),
+        KeyCode::Up => letter('A', cursor),
+        KeyCode::Down => letter('B', cursor),
+        KeyCode::Right => letter('C', cursor),
+        KeyCode::Left => letter('D', cursor),
+        KeyCode::Home => letter('H', cursor),
+        KeyCode::End => letter('F', cursor),
+        KeyCode::F(n @ 1..=4) => letter(char::from(b'P' + n - 1), "O"),
+        KeyCode::F(n @ 5..=12) => tilde([15, 17, 18, 19, 20, 21, 23, 24][usize::from(n - 5)]),
+        KeyCode::Insert => tilde(2),
+        KeyCode::Delete => tilde(3),
+        KeyCode::PageUp => tilde(5),
+        KeyCode::PageDown => tilde(6),
+        _ => return Vec::new(),
+    };
+    let mut bytes = text.into_bytes();
+    // Alt before a key of one byte sends ESC first, as for a character.
+    if alt && bytes.len() == 1 {
+        bytes.insert(0, 0x1b);
+    }
+    bytes
+}
+
+/// The byte of a character with ctrl, as xterm sends it, if it has one.
+/// crossterm reads the bytes 0x1c to 0x1f as ctrl with 4 to 7, and 0 as
+/// ctrl with a space.
+fn control(c: char) -> Option<u8> {
+    Some(match c {
+        'a'..='z' | 'A'..='Z' => c.to_ascii_lowercase() as u8 - b'a' + 1,
+        ' ' | '@' | '2' => 0,
+        '[' | '3' => 0x1b,
+        '\\' | '4' => 0x1c,
+        ']' | '5' => 0x1d,
+        '^' | '~' | '6' => 0x1e,
+        '_' | '/' | '7' => 0x1f,
+        '?' | '8' => 0x7f,
+        _ => return None,
+    })
+}
+
 /// The program's colors, as a terminal shows them (spec 6.3). The first 16
 /// indexed colors are the palette's named colors.
 fn color(color: vt100::Color) -> Option<Color> {
@@ -322,7 +428,7 @@ mod tests {
     use proptest::prelude::*;
 
     fn rows(terminal: &mut Terminal, cursor: bool) -> String {
-        markup(&terminal.last_rows(cursor))
+        markup(&terminal.last_rows(cursor).lines)
     }
 
     fn after(bytes: &[u8], columns: u16, rows: u16) -> Terminal {
@@ -356,7 +462,123 @@ mod tests {
         assert_eq!(rows(&mut terminal, false), "a\n\nb");
         // A row of spaces is blank too.
         let mut terminal = after(b"a\r\n\r     \r\n\r\n", 80, 24);
-        assert_eq!(terminal.last_rows(false).len(), 1);
+        assert_eq!(terminal.last_rows(false).lines.len(), 1);
+    }
+
+    #[test]
+    fn the_last_rows_of_a_running_block_give_the_cursor_that_the_program_shows() {
+        let mut terminal = after(b"a\r\nPassword: ", 80, 24);
+        assert_eq!(terminal.last_rows(true).cursor, Some((1, 10)));
+        assert_eq!(terminal.last_rows(false).cursor, None);
+        // Above the screen, the scrollback lines count.
+        let mut terminal = after(format!("{}ab", seq(30)).as_bytes(), 80, 5);
+        assert_eq!(terminal.last_rows(true).cursor, Some((14, 2)));
+        // A program can hide the cursor, or move it above the last rows.
+        terminal.process(b"\x1b[?25l");
+        assert_eq!(terminal.last_rows(true).cursor, None);
+        let mut terminal = after(format!("{}\x1b[H", seq(20)).as_bytes(), 80, 24);
+        assert_eq!(terminal.last_rows(true).cursor, None);
+    }
+
+    #[test]
+    fn keys_send_what_xterm_sends() {
+        let key = |code, modifiers| KeyEvent::new(code, modifiers);
+        let none = KeyModifiers::NONE;
+        let ctrl = KeyModifiers::CONTROL;
+        let alt = KeyModifiers::ALT;
+        let shift = KeyModifiers::SHIFT;
+        let cases: &[(KeyEvent, bool, &[u8])] = &[
+            (key(KeyCode::Char('a'), none), false, b"a"),
+            (key(KeyCode::Char('A'), shift), false, b"A"),
+            (
+                key(KeyCode::Char('\u{e9}'), none),
+                false,
+                "\u{e9}".as_bytes(),
+            ),
+            (key(KeyCode::Char('c'), ctrl), false, b"\x03"),
+            (key(KeyCode::Char('C'), ctrl | shift), false, b"\x03"),
+            (key(KeyCode::Char(' '), ctrl), false, b"\x00"),
+            (key(KeyCode::Char('4'), ctrl), false, b"\x1c"),
+            (key(KeyCode::Char('7'), ctrl), false, b"\x1f"),
+            (key(KeyCode::Char('1'), ctrl), false, b"1"),
+            (key(KeyCode::Char('x'), alt), false, b"\x1bx"),
+            (key(KeyCode::Char('x'), alt | ctrl), false, b"\x1b\x18"),
+            (key(KeyCode::Enter, none), false, b"\r"),
+            (key(KeyCode::Enter, alt), false, b"\x1b\r"),
+            (key(KeyCode::Tab, none), false, b"\t"),
+            (key(KeyCode::BackTab, shift), false, b"\x1b[Z"),
+            (key(KeyCode::Backspace, none), false, b"\x7f"),
+            (key(KeyCode::Esc, none), false, b"\x1b"),
+            (key(KeyCode::Up, none), false, b"\x1b[A"),
+            (key(KeyCode::Up, none), true, b"\x1bOA"),
+            (key(KeyCode::Down, ctrl), true, b"\x1b[1;5B"),
+            (key(KeyCode::Right, shift), false, b"\x1b[1;2C"),
+            (key(KeyCode::Left, alt), false, b"\x1b[1;3D"),
+            (key(KeyCode::Home, none), false, b"\x1b[H"),
+            (key(KeyCode::End, none), true, b"\x1bOF"),
+            (key(KeyCode::End, ctrl | shift), false, b"\x1b[1;6F"),
+            (key(KeyCode::F(1), none), false, b"\x1bOP"),
+            (key(KeyCode::F(4), none), true, b"\x1bOS"),
+            (key(KeyCode::F(2), ctrl), false, b"\x1b[1;5Q"),
+            (key(KeyCode::F(5), none), false, b"\x1b[15~"),
+            (key(KeyCode::F(6), none), false, b"\x1b[17~"),
+            (key(KeyCode::F(10), none), false, b"\x1b[21~"),
+            (key(KeyCode::F(11), none), false, b"\x1b[23~"),
+            (key(KeyCode::F(12), shift), false, b"\x1b[24;2~"),
+            (key(KeyCode::F(13), none), false, b""),
+            (key(KeyCode::Insert, none), false, b"\x1b[2~"),
+            (
+                key(KeyCode::Delete, alt | ctrl | shift),
+                false,
+                b"\x1b[3;8~",
+            ),
+            (key(KeyCode::PageUp, none), false, b"\x1b[5~"),
+            (key(KeyCode::PageDown, none), false, b"\x1b[6~"),
+            (key(KeyCode::CapsLock, none), false, b""),
+        ];
+        for (key, application_cursor, bytes) in cases {
+            assert_eq!(
+                key_bytes(key, *application_cursor),
+                *bytes,
+                "{key:?} {application_cursor}"
+            );
+        }
+    }
+
+    #[test]
+    fn ctrl_gives_the_control_byte_of_each_character_that_has_one() {
+        let cases = [
+            ('a', 1),
+            ('z', 26),
+            ('@', 0),
+            ('2', 0),
+            ('[', 0x1b),
+            ('3', 0x1b),
+            ('\\', 0x1c),
+            (']', 0x1d),
+            ('5', 0x1d),
+            ('^', 0x1e),
+            ('~', 0x1e),
+            ('6', 0x1e),
+            ('_', 0x1f),
+            ('/', 0x1f),
+            ('?', 0x7f),
+            ('8', 0x7f),
+        ];
+        for (c, byte) in cases {
+            assert_eq!(control(c), Some(byte), "{c}");
+        }
+        assert_eq!(control('9'), None);
+    }
+
+    #[test]
+    fn the_shared_terminal_tells_the_application_cursor_mode() {
+        let shared = Shared::new(80, 24);
+        assert!(!shared.application_cursor());
+        shared.process(b"\x1b[?1h");
+        assert!(shared.application_cursor());
+        shared.process(b"\x1b[?1l");
+        assert!(!shared.application_cursor());
     }
 
     #[test]
@@ -379,7 +601,7 @@ mod tests {
     #[test]
     fn a_row_ends_at_its_last_text_or_background() {
         let mut terminal = after(b"a\r\nb\x1b[41m  \x1b[0m", 80, 24);
-        let rows = terminal.last_rows(false);
+        let rows = terminal.last_rows(false).lines;
         let widths: Vec<_> = rows.iter().map(Line::width).collect();
         assert_eq!(widths, [1, 3]);
     }
@@ -426,7 +648,7 @@ mod tests {
         drop(held);
         shared.resize(1, 3);
         let rows = shared.try_rows(LAST).unwrap();
-        assert_eq!(markup(&rows), "a");
+        assert_eq!(markup(&rows.lines), "a");
         assert_eq!(shared.terminal.lock().unwrap().columns, 1);
     }
 
@@ -439,7 +661,7 @@ mod tests {
         drop(held);
         shared.process(b"b");
         let held = shared.terminal.lock().unwrap();
-        let rows = shared.try_rows(LAST).map(|rows| markup(&rows));
+        let rows = shared.try_rows(LAST).map(|rows| markup(&rows.lines));
         assert_eq!(rows.as_deref(), Some("ab"));
         // Rows of another kind never show.
         assert_eq!(shared.try_rows(Want::Last { cursor: true }), None);
@@ -447,7 +669,7 @@ mod tests {
         shared.process(b"c");
         let held = shared.terminal.lock().unwrap();
         let rows = shared.try_rows(Want::Last { cursor: true });
-        assert_eq!(rows.map(|rows| markup(&rows)).as_deref(), Some("abc"));
+        assert_eq!(rows.map(|rows| markup(&rows.lines)).as_deref(), Some("abc"));
         drop(held);
     }
 
@@ -459,7 +681,7 @@ mod tests {
         drop(held);
         shared.process(b"a");
         shared.process(b"b");
-        assert_eq!(markup(&shared.try_rows(LAST).unwrap()), "ab");
+        assert_eq!(markup(&shared.try_rows(LAST).unwrap().lines), "ab");
         let held = shared.terminal.lock().unwrap();
         assert_eq!(shared.try_rows(LAST), None);
         drop(held);
@@ -549,7 +771,7 @@ mod tests {
                 terminal.process(read);
             }
             terminal.process(text.as_bytes());
-            for line in terminal.last_rows(true) {
+            for line in terminal.last_rows(true).lines {
                 for span in &line.spans {
                     prop_assert!(!span.content.chars().any(needs_escape), "{:?}", span);
                 }

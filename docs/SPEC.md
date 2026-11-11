@@ -199,8 +199,8 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 | `↓`, `j` / `↑`, `k` | Select the next / previous block, and scroll so that the block and the paragraph above it are visible. If they do not fit, the whole block shows, with the end of the paragraph. A block taller than the view shows from its paragraph, or from its info line. |
 | `Home` / `End` | Select the first / last block. Without blocks, scroll to the top / bottom. |
 | `PageDown` / `PageUp` | Scroll one page. The selection moves to the first block whose info line is in view, else to the first block in view. `PageDown` never moves it to an earlier block, and `PageUp` never to a later one. |
-| `Enter` | Run the selected block (8.1). If `j` or `k` would scroll to show the block, `Enter` only does that scroll: it never runs code that is off the screen, such as after the startup or a resize. `Enter` and the answer to a question act on the screen as drawn: after other events, such as keys typed ahead, they wait for the next frame. |
-| `i` | Enter input mode, if the selected block is running. |
+| `Enter` | Run the selected block (8.1). If `j` or `k` would scroll to show the block, `Enter` only does that scroll: it never runs code that is off the screen, such as after the startup or a resize. `Enter`, `i` and the answer to a question act on the screen as drawn: after other events, such as keys typed ahead, they wait for the next frame. |
+| `i` | Enter input mode, if the selected block is running. The view scrolls as little as possible to show the last row of its output. |
 | `o` | Open the full-screen view of the selected block, if it has run. |
 | `ctrl-r` | Reload the file now. |
 | `q`, `ctrl-c` | Quit. See 11. |
@@ -211,6 +211,9 @@ A paste does nothing in the document view: a line feed in it would run the selec
 
 - All keys go to the program, except `ctrl-o`, which leaves input mode.
 - stepbook leaves input mode when the run ends.
+- The footer shows `INPUT` and the name of the block. The cursor shows where the program shows it, in the output under the block, if the view shows that row.
+- On a screen too small for the view (6.1), a key leaves input mode, and does not reach the program: the screen does not show what it would do.
+- A writer thread per run writes the keys to its PTY. A program that reads no input fills the PTY, and a write then waits until it reads. After 256 writes that wait, stepbook drops the next keys.
 - A paste from the outer terminal goes to the program. It is wrapped in `ESC[200~ … ESC[201~` if the program turned on bracketed paste mode.
 - Key encoding follows xterm: application cursor mode, modifiers on arrow keys (`ESC[1;5A`), F1 to F12, Insert, Delete, Home, End, Page Up and Page Down.
 
@@ -409,7 +412,7 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 
 - Rust, one crate, no async runtime, no component framework. The target size is 2,000 to 3,000 lines without tests.
 - Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `rustix` (the PTY, poll, and the signals to the processes of a run), `vt100` without its `std` feature (with it, vte keeps each byte of an OSC that never ends), `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
-- The main thread owns all state, except the vt100 screen of each run, which the reader of the run feeds: the main thread only tries its lock. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events.
+- The main thread owns all state, except the vt100 screen of each run, which the reader of the run feeds: the main thread only tries its lock. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events. One writer per run writes the keys to its PTY: a write to a program that reads no input would block the main thread.
 - Control events (keys, paste, resize, signals, file change) go to their own channel. The loop handles them before pending output, so keys stay responsive while a block prints a lot.
 - After output, the loop reads the events of the next 16 ms before it draws: a program that prints a lot redraws the view at most about 60 times a second, and at least as often, since the frame ends after 16 ms even while output keeps coming.
 - Each run sends its output, then its exit status, through its own bounded channel, so that the end of a run never comes before its output. A slow UI slows the program, and no output is lost.
@@ -565,3 +568,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | If `stepbook-<pid>` exists, the workspace takes the first free name of `stepbook-<pid>-<n>` (8.3), at Kamal's choice: after a SIGKILL in a PID namespace, every later start with the same pid failed | 2026-11-11 |
 | Three limits of a run stay, with the workarounds in 8.2: sudo asks for the password in each block, gpg-agent can draw the pinentry of an ssh key on the terminal of stepbook, and `$0` names the wrapper | 2026-11-11 |
 | While the reader of a run holds its screen, it makes the rows that the view asked for (6.3): during a flood, the view took no rows in 120 frames | 2026-11-11 |
+| Input mode (7.2): `i` waits for the frame as `Enter` does, the cursor of the program shows in its output, and a writer thread per run writes the keys (13): a program that read no input would block the main thread | 2026-11-11 |

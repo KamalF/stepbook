@@ -14,6 +14,7 @@ use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
 
 use crate::doc::{Cell, DIM, Document, Item, Kind, WARNING, escaped};
 use crate::run;
+use crate::term::Rows;
 
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const ERROR: Style = Style::new().fg(Color::Red);
@@ -48,6 +49,15 @@ pub enum Status {
     NotStarted(String),
 }
 
+/// Where the keys go.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Mode {
+    /// The keys of the document view (spec 7.1).
+    Normal,
+    /// The keys go to the run of block i, the selected block (spec 7.2).
+    Input(usize),
+}
+
 /// The state of the screen: the document, its file name, the selection,
 /// and the state and output of the blocks.
 pub struct View {
@@ -55,6 +65,7 @@ pub struct View {
     pub title: String,
     pub selected: Option<usize>,
     pub scroll: usize,
+    pub mode: Mode,
     /// Whether the glyph of a running block shows: it blinks.
     pub blink: bool,
     /// The question that the footer asks, in place of the keys (spec 7.4).
@@ -65,7 +76,7 @@ pub struct View {
     /// The width of the sidebar: the labels never change.
     sidebar: u16,
     /// The output under each block: the last rows of its terminal.
-    outputs: Vec<Vec<Line<'static>>>,
+    outputs: Vec<Rows>,
     /// The layout of the document at the last width: each key and each
     /// frame needs it, and 1 MB of tabs in code takes 0.9 s to lay out.
     page: RefCell<Option<Rc<Page>>>,
@@ -85,11 +96,12 @@ impl View {
             title,
             selected,
             scroll: 0,
+            mode: Mode::Normal,
             blink: true,
             question: None,
             notice: None,
             statuses: vec![None; blocks],
-            outputs: vec![Vec::new(); blocks],
+            outputs: vec![Rows::default(); blocks],
             page: RefCell::default(),
             infos: RefCell::new(vec![None; blocks]),
         }
@@ -112,6 +124,19 @@ impl View {
             let line = self.line(&shown, row, self.selected);
             frame.buffer_mut().set_line(text.x, y, &line, text.width);
         }
+        // In input mode, the cursor of the program shows in its output.
+        if let Mode::Input(i) = self.mode
+            && let Some((line, column)) = self.outputs[i].cursor
+        {
+            let row = shown.block(i).end + line;
+            let x = text_width(&shown.page.prefixes[i]) + GUTTER_WIDTH + usize::from(column);
+            if (scroll..scroll + usize::from(text.height)).contains(&row)
+                && x < usize::from(text.width)
+            {
+                let y = text.y + (row - scroll) as u16;
+                frame.set_cursor_position((text.x + x as u16, y));
+            }
+        }
         frame.render_widget(self.footer(), footer);
     }
 
@@ -119,10 +144,20 @@ impl View {
     /// apply now (spec 6.1). Both can quote a directory name (spec 6.5).
     fn footer(&self) -> Line<'static> {
         let reversed = Style::new().add_modifier(Modifier::REVERSED);
-        let (mode, text) = match (&self.question, &self.notice) {
-            (Some(question), _) => (" CONFIRM ", escaped(question, Style::new())),
-            (None, Some(notice)) => (" NORMAL ", escaped(notice, WARNING)),
-            (None, None) => (" NORMAL ", vec![Span::raw("↑↓ move  ↵ run  q quit")]),
+        let (mode, text) = match (&self.question, self.mode, &self.notice) {
+            (Some(question), _, _) => (" CONFIRM ", escaped(question, Style::new())),
+            (None, Mode::Input(i), _) => {
+                let keys = format!("keys go to {}  ^o leave", self.doc.label(i));
+                (" INPUT ", vec![Span::raw(keys)])
+            }
+            (None, Mode::Normal, Some(notice)) => (" NORMAL ", escaped(notice, WARNING)),
+            (None, Mode::Normal, None) => {
+                let running = (self.selected)
+                    .is_some_and(|i| matches!(self.statuses[i], Some(Status::Running(_))));
+                let input = if running { "  i input" } else { "" };
+                let keys = format!("↑↓ move  ↵ run{input}  q quit");
+                (" NORMAL ", vec![Span::raw(keys)])
+            }
         };
         let spans = [vec![Span::styled(mode, reversed), Span::raw("  ")], text];
         Line::from(spans.concat())
@@ -180,7 +215,7 @@ impl View {
             });
         }
         let infos = infos.iter().map(|info| info.as_ref().map_or(0, Vec::len));
-        let outputs = self.outputs.iter().map(Vec::len);
+        let outputs = self.outputs.iter().map(|output| output.lines.len());
         Shown::new(page, infos.collect(), outputs.collect())
     }
 
@@ -207,7 +242,7 @@ impl View {
             Row::Output(block, i) => {
                 let mut spans = page.prefixes[block].clone();
                 spans.push(Span::raw(" ".repeat(GUTTER_WIDTH)));
-                spans.extend(self.outputs[block][i].spans.iter().cloned());
+                spans.extend(self.outputs[block].lines[i].spans.iter().cloned());
                 Line::from(spans)
             }
         }
@@ -242,7 +277,7 @@ impl View {
 
     #[cfg(test)]
     pub fn output(&self, i: usize) -> &[Line<'static>] {
-        &self.outputs[i]
+        &self.outputs[i].lines
     }
 
     pub fn status(&self, i: usize) -> Option<&Status> {
@@ -252,15 +287,24 @@ impl View {
     /// Sets the output under block `i`. If the block is selected, and its
     /// output grows past the bottom of the view, the view scrolls to keep
     /// its last row visible (spec 6.3).
-    pub fn set_output(&mut self, i: usize, lines: Vec<Line<'static>>, size: Size) {
-        let grew = lines.len() > self.outputs[i].len();
-        self.outputs[i] = lines;
+    pub fn set_output(&mut self, i: usize, rows: Rows, size: Size) {
+        let grew = rows.lines.len() > self.outputs[i].lines.len();
+        self.outputs[i] = rows;
         if !grew || self.selected != Some(i) || too_small(size) {
             return;
         }
         let (shown, text, scroll) = self.shown(screen(size));
         let end = shown.block(i).end + shown.outputs[i];
         self.scroll = scroll.max(end.saturating_sub(usize::from(text.height)));
+    }
+
+    /// Scrolls as little as possible to show the last row of the output of
+    /// block `i`, where a running program shows its cursor.
+    pub fn show_output_end(&mut self, i: usize, size: Size) {
+        let (shown, text, scroll) = self.shown(screen(size));
+        let end = shown.block(i).end + shown.outputs[i];
+        let height = usize::from(text.height);
+        self.scroll = scroll.clamp(end.saturating_sub(height), end - 1);
     }
 
     fn document_block(&self) -> Block<'static> {
@@ -2024,8 +2068,12 @@ pub(crate) mod tests {
         assert_eq!(view.scroll, 12);
     }
 
-    fn output(rows: &[&str]) -> Vec<Line<'static>> {
-        rows.iter().map(|row| Line::from(row.to_string())).collect()
+    fn output(rows: &[&str]) -> Rows {
+        let lines = rows.iter().map(|row| Line::from(row.to_string()));
+        Rows {
+            lines: lines.collect(),
+            cursor: None,
+        }
     }
 
     #[test]
@@ -2095,6 +2143,71 @@ pub(crate) mod tests {
         view.blink = false;
         let sidebar = screen(&view, 80, 20).lines().nth(1).unwrap().to_string();
         assert_snapshot!(sidebar, @"│   run     │ ▐ «b:run»  «yellow:●» running 0:04                                            │");
+    }
+
+    #[test]
+    fn input_mode_shows_the_cursor_of_the_program_in_its_output() {
+        let steps = "Step.\n\n".repeat(10);
+        let mut view = view(&format!("{steps}```bash [name:login]\nread\n```\n"));
+        view.set_status(0, Status::Running(Duration::ZERO));
+        let rows = Rows {
+            lines: output(&["a", "Password: "]).lines,
+            cursor: Some((1, 10)),
+        };
+        view.set_output(0, rows, Size::new(80, 30));
+        let cursor = |view: &View, height| {
+            let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
+            terminal.draw(|frame| view.draw(frame)).unwrap();
+            let backend = terminal.backend();
+            backend
+                .cursor_visible()
+                .then(|| backend.cursor_position().into())
+        };
+        assert_eq!(cursor(&view, 30), None);
+        view.mode = Mode::Input(0);
+        // The text starts at column 14, after the sidebar, a border and a
+        // space, and the output after the gutter. The text starts on row
+        // 1, and the block 20 rows lower, with its info line, its code,
+        // then its output.
+        assert_eq!(cursor(&view, 30), Some((14 + 2 + 10, 1 + 20 + 3)));
+        // No cursor shows out of the view, which shows 21 rows here.
+        assert_eq!(cursor(&view, 24), None);
+        view.scroll = 3;
+        assert_eq!(cursor(&view, 24), Some((26, 21)));
+        view.outputs[0].cursor = None;
+        assert_eq!(cursor(&view, 30), None);
+    }
+
+    #[test]
+    fn input_mode_shows_the_end_of_the_output() {
+        let mut view = steps();
+        // Block 0 ends at row 8, then 10 rows of output, and the view
+        // shows 6 rows.
+        view.set_output(0, output(&["o"; 10]), SMALL);
+        view.scroll = 0;
+        view.show_output_end(0, SMALL);
+        assert_eq!(view.scroll, 12);
+        view.scroll = 20;
+        view.show_output_end(0, SMALL);
+        assert_eq!(view.scroll, 17);
+        view.scroll = 14;
+        view.show_output_end(0, SMALL);
+        assert_eq!(view.scroll, 14);
+    }
+
+    #[test]
+    fn the_footer_shows_the_keys_that_apply_now() {
+        let mut view = view(BLOCKS);
+        let footer = |view: &View| markup(&[view.footer()]);
+        assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  q quit");
+        view.set_status(0, Status::Running(Duration::ZERO));
+        assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  i input  q quit");
+        view.selected = Some(1);
+        assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  q quit");
+        view.selected = Some(0);
+        view.mode = Mode::Input(0);
+        view.notice = Some("already running: i to type, o to view".into());
+        assert_snapshot!(footer(&view), @"«r: INPUT »  keys go to check  ^o leave");
     }
 
     #[test]
