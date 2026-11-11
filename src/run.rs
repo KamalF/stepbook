@@ -52,8 +52,10 @@ impl Workspace {
     /// workspace, and in a PID namespace, the next stepbook often gets the
     /// same pid. It never takes a directory that exists: in a shared temp
     /// dir, another user could have made it. It fails if another user could
-    /// replace the workspace in `parent`.
+    /// replace the workspace in `parent`. The workspace path has no link: a
+    /// link in a directory of another user could change.
     pub fn create(parent: &Path) -> std::io::Result<Workspace> {
+        let parent = &std::fs::canonicalize(parent)?;
         check_parent(parent)?;
         let mut n = 0;
         let dir = loop {
@@ -143,23 +145,42 @@ pub fn start_dir(current: PathBuf, pwd: Option<OsString>) -> PathBuf {
     pwd.map(PathBuf::from).filter(same).unwrap_or(current)
 }
 
-/// Fails if another user could replace the workspace in `parent`. Only
-/// the owner of a directory and root can rename what it holds, and, if
-/// the directory lacks the sticky bit, each user who can write to it.
+/// Fails if another user could replace the workspace in `parent`, a
+/// canonical path: if `parent` or a directory above it belongs to another
+/// user, or lets other users write to it without the sticky bit. Only the
+/// owner of a directory and root can rename what it holds, and, without
+/// the sticky bit, each user who can write to it.
 fn check_parent(parent: &Path) -> std::io::Result<()> {
-    let meta = std::fs::metadata(parent)?;
-    let parent = parent.display();
-    if meta.uid() != 0 && meta.uid() != rustix::process::geteuid().as_raw() {
-        return Err(std::io::Error::other(format!(
-            "{parent} belongs to another user"
-        )));
-    }
-    if meta.mode() & 0o022 != 0 && meta.mode() & 0o1000 == 0 {
-        return Err(std::io::Error::other(format!(
-            "other users can write to {parent}, which has no sticky bit"
-        )));
+    for dir in parent.ancestors() {
+        let meta = std::fs::metadata(dir)?;
+        let dir = dir.display();
+        if !trusted_owner(meta.uid()) {
+            return Err(std::io::Error::other(format!(
+                "{dir} belongs to another user"
+            )));
+        }
+        if meta.mode() & 0o022 != 0 && meta.mode() & 0o1000 == 0 {
+            return Err(std::io::Error::other(format!(
+                "other users can write to {dir}, which has no sticky bit"
+            )));
+        }
     }
     Ok(())
+}
+
+/// Whether the owner `uid` of a directory is root or the user. In a user
+/// namespace that maps only some users, such as a bwrap sandbox, root shows
+/// as the overflow uid, as does each user that the namespace does not map.
+/// No process inside has that uid. The check cannot tell these users
+/// apart, and trusts them all.
+fn trusted_owner(uid: u32) -> bool {
+    if uid == 0 || uid == rustix::process::geteuid().as_raw() {
+        return true;
+    }
+    let read = |path: &str| std::fs::read_to_string(path).unwrap_or_default();
+    let map = read("/proc/self/uid_map");
+    let initial = map.split_whitespace().eq(["0", "0", "4294967295"]);
+    !initial && read("/proc/sys/kernel/overflowuid").trim() == uid.to_string()
 }
 
 /// `$XDG_RUNTIME_DIR` if it is an absolute path to a directory of the
@@ -168,7 +189,8 @@ fn check_parent(parent: &Path) -> std::io::Result<()> {
 pub fn workspace_parent(runtime_dir: Option<OsString>, temp_dir: PathBuf) -> PathBuf {
     let euid = rustix::process::geteuid().as_raw();
     let dir = runtime_dir.map(PathBuf::from).filter(|dir| {
-        dir.is_absolute() && std::fs::metadata(dir).is_ok_and(|meta| meta.uid() == euid)
+        dir.is_absolute()
+            && std::fs::metadata(dir).is_ok_and(|meta| meta.is_dir() && meta.uid() == euid)
     });
     let dir = dir.unwrap_or(temp_dir);
     // The runs open their files from the session directory.
@@ -805,19 +827,41 @@ mod tests {
     }
 
     #[test]
-    fn a_parent_that_others_can_write_to_needs_the_sticky_bit() {
+    fn a_parent_and_the_directories_above_it_need_the_sticky_bit_if_others_can_write() {
         let tmp = tempfile::tempdir().unwrap();
         let set_mode = |mode| fs::set_permissions(tmp.path(), fs::Permissions::from_mode(mode));
+        let parent = tmp.path().join("parent");
+        fs::create_dir(&parent).unwrap();
         set_mode(0o777).unwrap();
-        let error = Workspace::create(tmp.path()).err().unwrap();
         let expected = format!(
             "other users can write to {}, which has no sticky bit",
             tmp.path().display()
         );
-        assert_eq!(error.to_string(), expected);
-        assert!(!Workspace::dir_in(tmp.path(), 0).exists());
+        for dir in [tmp.path(), &parent] {
+            let error = Workspace::create(dir).err().unwrap();
+            assert_eq!(error.to_string(), expected, "{}", dir.display());
+            assert!(!Workspace::dir_in(dir, 0).exists());
+        }
         set_mode(0o1777).unwrap();
-        assert!(Workspace::create(tmp.path()).is_ok());
+        assert!(Workspace::create(&parent).is_ok());
+    }
+
+    #[test]
+    fn the_system_temp_dir_is_a_safe_parent() {
+        // Also in a user namespace that does not map root, where root shows
+        // as the overflow uid.
+        assert!(check_parent(Path::new("/tmp")).is_ok());
+    }
+
+    #[test]
+    fn the_workspace_path_has_no_link() {
+        let tmp = tempfile::tempdir().unwrap();
+        let real = tmp.path().join("real");
+        fs::create_dir(&real).unwrap();
+        let link = tmp.path().join("link");
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        let workspace = Workspace::create(&link).unwrap();
+        assert_eq!(workspace.dir(), Workspace::dir_in(&real, 0));
     }
 
     #[test]
@@ -877,6 +921,9 @@ mod tests {
         // After su, the directory of another user.
         assert_eq!(parent(Some("/"), "/tmp"), Path::new("/tmp"));
         assert_eq!(parent(Some("/nowhere"), "/tmp"), Path::new("/tmp"));
+        let file = tmp.path().join("file");
+        fs::write(&file, "").unwrap();
+        assert_eq!(parent(file.to_str(), "/tmp"), Path::new("/tmp"));
         assert_eq!(parent(Some("run"), "/tmp"), Path::new("/tmp"));
         assert_eq!(parent(Some(""), "/tmp"), Path::new("/tmp"));
         assert_eq!(parent(None, "/tmp"), Path::new("/tmp"));
