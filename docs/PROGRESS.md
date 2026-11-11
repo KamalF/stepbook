@@ -169,9 +169,9 @@ The plan, one commit per line:
 4. `feat`: in input mode, a paste goes to the program, between `ESC[200~` and `ESC[201~` if the program turned bracketed paste on (7.2).
 5. `feat`: the terminal of a run answers the queries of its status and cursor position (DSR) and of its device attributes (DA1) (6.3).
 6. `feat`: the full-screen view: `o`, the PTY at the size of the screen while the view is open, the keys to the program while the block runs, the scrollback after the run, and the footer (7.3).
-7. `feat`: the switch to the alternate screen: the selected running block opens the full-screen view in input mode, and its return closes it; the info line shows `full-screen program, press o`; the rows under the block stay as they were before the switch (6.3).
+7. `feat`: the switch to the alternate screen: the selected running block opens the full-screen view in input mode, and its return closes it; the info line shows `full-screen program, press o`; the rows under the block stay as they were before the switch (6.3). Round 6 of the review dropped the automatic open, at Kamal's choice: the view opens with `o` or `i`, or from input mode.
 
-Done when (spec 16): a `read -s` prompt takes a password in input mode, and `less` opens the full-screen view and closes it on exit. In herdr, a paste reaches the program (manual check).
+Done when (spec 16): a `read -s` prompt takes a password in input mode, and `o` shows `less` in the full-screen view, which closes when less exits. In herdr, a paste reaches the program (manual check).
 
 Kamal's choices on 2026-11-11:
 

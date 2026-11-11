@@ -337,10 +337,6 @@ struct Ran {
     run: Option<run::Run>,
     started: Instant,
     ended: Option<Instant>,
-    /// Whether the full-screen view opens on its own when the program
-    /// enters the alternate screen: not after the user left a view of the
-    /// run, until `i` or `o` (spec 6.3).
-    follow: bool,
 }
 
 /// The state that the event loop owns.
@@ -506,13 +502,9 @@ impl App {
         if let Event::Resize(..) = event {
             self.resize(size);
         }
-        // A program that takes the keys again, in a view that opened
-        // again, gets them: a program that enters and leaves the alternate
-        // screen in a loop would keep the pause on.
         let paused = self
             .paused_until
-            .is_some_and(|until| Instant::now() < until)
-            && self.view.input_block().is_none();
+            .is_some_and(|until| Instant::now() < until);
         if self.stopping.is_some() || paused && matches!(event, Event::Key(_)) {
             return None;
         }
@@ -545,14 +537,6 @@ impl App {
         }
         if let Some(i) = self.view.input_block() {
             if !self.send(i, event, size) {
-                // After ctrl-o, the view opens on its own no more for this
-                // run: a program that enters and leaves the alternate
-                // screen in a loop would take the keys back each time.
-                if let (Event::Key(key), Some(ran)) = (event, self.ran.get_mut(&i))
-                    && is_ctrl_o(key)
-                {
-                    ran.follow = false;
-                }
                 self.leave(size);
             }
             return None;
@@ -586,11 +570,7 @@ impl App {
             }
             Action::Input => {
                 let i = self.view.selected?;
-                let ended = self.just_ended(i);
-                if let Some(ran) = self.ran.get_mut(&i) {
-                    ran.follow = true;
-                }
-                match (self.view.running(i), ended) {
+                match (self.view.running(i), self.just_ended(i)) {
                     (true, _) => self.enter_input(i, size),
                     // The run ended as i came: the keys after it were
                     // typed for the program.
@@ -600,14 +580,12 @@ impl App {
             }
             Action::Output => {
                 let i = self.view.selected?;
-                let ended = self.just_ended(i);
-                let Some(ran) = self.ran.get_mut(&i) else {
+                if !self.ran.contains_key(&i) {
                     self.notify("no output: ↵ runs it".into());
                     return None;
-                };
-                ran.follow = true;
+                }
                 self.open_full(i, size, view::Back::Normal);
-                if ended {
+                if self.just_ended(i) {
                     self.pause(i);
                 }
             }
@@ -745,16 +723,6 @@ impl App {
         }
     }
 
-    /// Applies a key that waited for the frame (see `acts`). It acts only in
-    /// the document view: if a program went full-screen meanwhile, its view
-    /// opened in input mode, and the key would reach the program.
-    fn handle_waiting(&mut self, event: &Event, size: Size) -> Option<Exit> {
-        match self.question.is_some() || self.view.mode == view::Mode::Normal {
-            true => self.handle(event, size),
-            false => None,
-        }
-    }
-
     /// Whether a key of the document view acts on what the screen shows:
     /// `Enter`, `i`, `o`, or the answer to a question. In input mode and
     /// in the full-screen view, keys go to the program, in order.
@@ -845,7 +813,6 @@ impl App {
                         run,
                         started,
                         ended: None,
-                        follow: true,
                     },
                 );
                 view::Status::Running(Duration::ZERO)
@@ -955,9 +922,10 @@ impl App {
         self.changed = later;
     }
 
-    /// Opens the full-screen view when the program of the selected block
-    /// enters the alternate screen, and closes it when the program leaves
-    /// it (spec 6.3). A question in the footer keeps the document view.
+    /// Closes the full-screen view that opened on the alternate screen when
+    /// the program leaves it, and opens the view of the block in input mode
+    /// when its program enters it (spec 6.3). Only `i` and `o` make the
+    /// keys go to a program.
     fn switch(&mut self, i: usize, size: Size) {
         let (alternate, running) = (self.view.alternate(i), self.view.running(i));
         match &self.view.mode {
@@ -975,17 +943,8 @@ impl App {
                     false => self.pause(i),
                 }
             }
+            // The keys already go to the program: its view opens.
             view::Mode::Input(j) if *j == i && alternate => self.enter_input(i, size),
-            view::Mode::Normal
-                if alternate
-                    && running
-                    && self.ran[&i].follow
-                    && self.view.selected == Some(i)
-                    && self.question.is_none()
-                    && self.stopping.is_none() =>
-            {
-                self.open_full(i, size, view::Back::Normal);
-            }
             _ => {}
         }
     }
@@ -1041,7 +1000,7 @@ fn event_loop(
         // block that prints without a pause would let no frame end.
         let mut frame = None;
         if let Some(event) = waiting.take() {
-            if let Some(exit) = app.handle_waiting(&event, size) {
+            if let Some(exit) = app.handle(&event, size) {
                 return Ok(exit);
             }
             frame = Some(Instant::now());
@@ -1483,8 +1442,6 @@ mod tests {
         let enter_key = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(app.handle(&enter_key, small), None);
         assert_eq!(app.view.mode, view::Mode::Normal);
-        // Only ctrl-o keeps the view from opening on its own again.
-        assert!(app.ran[&0].follow);
         std::thread::sleep(Duration::from_millis(100));
         assert!(running(&app));
         app.ran[&0].run.as_ref().unwrap().write(b"\n");
@@ -1647,21 +1604,23 @@ echo \"got $x\"
 ";
 
     #[test]
-    fn a_program_on_the_alternate_screen_shows_in_the_full_screen_view_until_it_leaves() {
+    fn a_full_screen_program_shows_after_o_until_it_leaves() {
         let tmp = tempfile::tempdir().unwrap();
         let mut app = app(FULL_SCREEN, tmp.path());
         enter(&mut app, SIZE);
         read_until(&mut app, SIZE, |app| output(app, 0).contains("before"));
         app.ran[&0].run.as_ref().unwrap().write(b"\n");
-        until_mode(&mut app, None);
-        // The keys go to the program, and the view shows its screen. Under
-        // the block, the rows from before the switch stay.
-        until_full_rows(&mut app, |lines| markup(lines).starts_with("inside\n"));
+        read_until(&mut app, SIZE, |app| app.view.alternate(0));
+        // The keys go to a program only after i or o. Under the block,
+        // the rows from before the switch stay.
+        assert_eq!(app.view.mode, view::Mode::Normal);
         let under = output(&app, 0);
         assert!(
             under.starts_with("before") && !under.contains("inside"),
             "{under}"
         );
+        key(&mut app, KeyCode::Char('o'));
+        until_full_rows(&mut app, |lines| markup(lines).starts_with("inside\n"));
         key(&mut app, KeyCode::Enter);
         until_mode(&mut app, Some(view::Mode::Normal));
         app.ran[&0].run.as_ref().unwrap().write(b"y\n");
@@ -1694,12 +1653,11 @@ echo \"got $x\"
         let mut app = app(FULL_SCREEN, tmp.path());
         enter(&mut app, SIZE);
         app.ran[&0].run.as_ref().unwrap().write(b"\n");
-        until_mode(&mut app, None);
-        assert_eq!(app.handle(&ctrl('o'), SIZE), None);
-        assert_eq!(app.view.mode, view::Mode::Normal);
+        read_until(&mut app, SIZE, |app| app.view.alternate(0));
         key(&mut app, KeyCode::Char('i'));
         assert_eq!(full(&app).back, Some(view::Back::Input));
         assert_eq!(app.handle(&ctrl('o'), SIZE), None);
+        assert_eq!(app.view.mode, view::Mode::Normal);
         key(&mut app, KeyCode::Char('o'));
         assert_eq!(full(&app).back, Some(view::Back::Normal));
         key(&mut app, KeyCode::Enter);
@@ -1717,7 +1675,7 @@ echo \"got $x\"
     }
 
     #[test]
-    fn a_switch_of_a_block_without_the_keys_or_under_a_question_opens_nothing() {
+    fn a_switch_of_another_block_leaves_input_mode_as_it_is() {
         let tmp = tempfile::tempdir().unwrap();
         let mut app = app(&format!("{FULL_SCREEN}\n{FULL_SCREEN}"), tmp.path());
         enter(&mut app, SIZE);
@@ -1725,27 +1683,18 @@ echo \"got $x\"
         enter(&mut app, SIZE);
         read_until(&mut app, SIZE, |app| output(app, 1).contains("before"));
         let write = |app: &App, i, bytes: &[u8]| app.ran[&i].run.as_ref().unwrap().write(bytes);
-        // Block 0 is not selected.
+        // The keys go to block 1, and block 0 enters, then leaves, the
+        // alternate screen.
+        key(&mut app, KeyCode::Char('i'));
         write(&app, 0, b"\n");
         read_until(&mut app, SIZE, |app| app.view.alternate(0));
-        assert_eq!(app.view.mode, view::Mode::Normal);
-        // The keys go to block 1.
-        key(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.view.mode, view::Mode::Input(1));
         write(&app, 0, b"\n");
         read_until(&mut app, SIZE, |app| !app.view.alternate(0));
         assert_eq!(app.view.mode, view::Mode::Input(1));
-        // A question is open.
-        assert_eq!(app.handle(&ctrl('o'), SIZE), None);
-        key(&mut app, KeyCode::Char('q'));
-        write(&app, 1, b"\n");
-        read_until(&mut app, SIZE, |app| app.view.alternate(1));
-        assert_eq!(app.view.mode, view::Mode::Normal);
-        assert!(app.question.is_some());
-        key(&mut app, KeyCode::Char('n'));
         write(&app, 0, b"y\n");
-        write(&app, 1, b"\ny\n");
+        write(&app, 1, b"\n\ny\n");
         read_until(&mut app, SIZE, |app| !running(app));
-        assert_eq!(app.view.mode, view::Mode::Normal);
     }
 
     #[test]
@@ -1788,39 +1737,13 @@ echo \"got $x\"
     }
 
     #[test]
-    fn a_view_that_opens_again_takes_the_keys_during_the_pause() {
-        let tmp = tempfile::tempdir().unwrap();
-        let block = "```bash
-printf '\\e[?1049h'
-read
-printf '\\e[?1049l'
-sleep 0.1
-printf '\\e[?1049h'
-read x
-printf '\\e[?1049l'
-echo \"got $x\"
-```
-";
-        let mut app = app(block, tmp.path());
-        enter(&mut app, SIZE);
-        until_mode(&mut app, None);
-        app.ran[&0].run.as_ref().unwrap().write(b"\n");
-        until_mode(&mut app, Some(view::Mode::Normal));
-        until_mode(&mut app, None);
-        app.paused_until = Some(Instant::now() + Duration::from_secs(60));
-        key(&mut app, KeyCode::Char('y'));
-        key(&mut app, KeyCode::Enter);
-        read_until(&mut app, SIZE, |app| !running(app));
-        assert!(output(&app, 0).ends_with("got y"), "{}", output(&app, 0));
-    }
-
-    #[test]
     fn the_full_screen_view_of_a_run_that_ends_on_the_alternate_screen_stays() {
         let tmp = tempfile::tempdir().unwrap();
         let block = "```bash\necho before\nprintf '\\e[?1049h'\necho crash\nread\n```\n";
         let mut app = app(block, tmp.path());
         enter(&mut app, SIZE);
-        until_mode(&mut app, None);
+        read_until(&mut app, SIZE, |app| app.view.alternate(0));
+        key(&mut app, KeyCode::Char('o'));
         app.ran[&0].run.as_ref().unwrap().write(b"\n");
         read_until(&mut app, SIZE, |app| !running(app));
         let mark = "«d:[stepbook: the last screen of the full-screen program]»";
@@ -1846,7 +1769,8 @@ echo \"got $x\"
         key(&mut app, KeyCode::Down);
         enter(&mut app, SIZE);
         app.ran[&1].run.as_ref().unwrap().write(b"\n");
-        until_mode(&mut app, None);
+        read_until(&mut app, SIZE, |app| app.view.alternate(1));
+        key(&mut app, KeyCode::Char('o'));
         app.ran[&0].run.as_ref().unwrap().write(b"\n");
         read_until(&mut app, SIZE, |app| !app.view.running(0));
         assert!(!output(&app, 0).contains('b'));
@@ -1878,28 +1802,6 @@ echo \"got $x\"
         assert_eq!(app.view.mode, view::Mode::Input(0));
         app.ran[&0].run.as_ref().unwrap().write(b"\n");
         read_until(&mut app, tiny, |app| !running(app));
-    }
-
-    #[test]
-    fn a_key_that_waited_for_the_frame_never_reaches_a_program_that_went_full_screen() {
-        let tmp = tempfile::tempdir().unwrap();
-        let mut app = app(FULL_SCREEN, tmp.path());
-        enter(&mut app, SIZE);
-        read_until(&mut app, SIZE, |app| output(app, 0).contains("before"));
-        let enter_key = Event::Key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        // In the document view, the key acts.
-        assert_eq!(app.handle_waiting(&enter_key, SIZE), None);
-        let notice = "already running: i to type, o to view";
-        assert_eq!(app.view.notice.as_deref(), Some(notice));
-        app.ran[&0].run.as_ref().unwrap().write(b"\n");
-        until_mode(&mut app, None);
-        assert_eq!(app.handle_waiting(&enter_key, SIZE), None);
-        // The program got no line feed: it is still on the alternate screen.
-        std::thread::sleep(Duration::from_millis(200));
-        app.refresh(SIZE);
-        assert!(matches!(app.view.mode, view::Mode::Full(_)));
-        app.ran[&0].run.as_ref().unwrap().write(b"\ny\n");
-        read_until(&mut app, SIZE, |app| !running(app));
     }
 
     #[test]
@@ -1935,7 +1837,7 @@ echo \"got $x\"
         paste(&mut app, "y\r");
         let question = "Paste 1 line to #1? (y/N)";
         assert_eq!(app.view.question.as_deref(), Some(question));
-        assert_eq!(app.handle_waiting(&y, SIZE), None);
+        assert_eq!(app.handle(&y, SIZE), None);
         key(&mut app, KeyCode::Char('z'));
         key(&mut app, KeyCode::Enter);
         read_until(&mut app, SIZE, |app| !running(app));
@@ -1975,39 +1877,6 @@ echo \"got $x\"
         key(&mut app, KeyCode::Char('i'));
         assert_eq!(app.paused_until, None);
         assert_eq!(app.view.notice.as_deref(), Some("not running: ↵ runs it"));
-    }
-
-    #[test]
-    fn after_ctrl_o_the_view_opens_again_only_with_i_or_o() {
-        let tmp = tempfile::tempdir().unwrap();
-        let block = "```bash
-printf '\\e[?1049h'
-read
-printf '\\e[?1049l'
-read
-printf '\\e[?1049h'
-read
-printf '\\e[?1049l'
-read
-```
-";
-        let mut app = app(block, tmp.path());
-        enter(&mut app, SIZE);
-        until_mode(&mut app, None);
-        assert_eq!(app.handle(&ctrl('o'), SIZE), None);
-        let write = |app: &App| app.ran[&0].run.as_ref().unwrap().write(b"\n");
-        write(&app);
-        read_until(&mut app, SIZE, |app| !app.view.alternate(0));
-        write(&app);
-        read_until(&mut app, SIZE, |app| app.view.alternate(0));
-        assert_eq!(app.view.mode, view::Mode::Normal);
-        // o follows the program again.
-        key(&mut app, KeyCode::Char('o'));
-        write(&app);
-        until_mode(&mut app, Some(view::Mode::Normal));
-        app.paused_until = None;
-        write(&app);
-        read_until(&mut app, SIZE, |app| !running(app));
     }
 
     #[test]
