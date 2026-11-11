@@ -18,7 +18,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 |---|---|---|
 | 1 | Document view | Done, merged into `main` on 2026-11-10 |
 | 2 | Running blocks | Done, merged into `main` on 2026-11-11 |
-| 3 | Input and full-screen view | — |
+| 3 | Input and full-screen view | In progress, on `m3-input-full-screen` |
 | 4 | Log and reload | — |
 | 5 | Migration | — |
 
@@ -159,11 +159,32 @@ What tmux cannot show, in herdr in Ghostty: open `~/dev/claude/runbooks/2026-11-
 
 Kamal ran the checklist on 2026-11-11: the five checks pass.
 
+## Milestone 3: input and full-screen view
+
+The plan, one commit per line:
+
+1. `docs`: this plan, and the limits of a run that stepbook cannot change (8.2): sudo asks for the password in each block, gpg-agent can show the pinentry of an ssh key on the terminal of stepbook, and `$0` and `BASH_SOURCE` name files of the workspace.
+2. `fix`: while the reader of a run holds its terminal, it makes the rows that the main thread asked for. During a flood of output, the rows under the block stayed old for a second or more, and the full-screen view would freeze (6.3, 13).
+3. `feat`: input mode: `i` on the selected running block, the keys in the encoding of xterm, `ctrl-o` and the end of the run leave it, and the cursor of the program shows in its output (7.2). A writer thread per run writes to the PTY, so that a program that reads no input never blocks stepbook (13).
+4. `feat`: in input mode, a paste goes to the program, between `ESC[200~` and `ESC[201~` if the program turned bracketed paste on (7.2).
+5. `feat`: the terminal of a run answers the queries of its status and cursor position (DSR) and of its device attributes (DA1) (6.3).
+6. `feat`: the full-screen view: `o`, the PTY at the size of the screen while the view is open, the keys to the program while the block runs, the scrollback after the run, and the footer (7.3).
+7. `feat`: the switch to the alternate screen: the selected running block opens the full-screen view in input mode, and its return closes it; the info line shows `full-screen program, press o`; the rows under the block stay as they were before the switch (6.3).
+
+Done when (spec 16): a `read -s` prompt takes a password in input mode, and `less` opens the full-screen view and closes it on exit. In herdr, a paste reaches the program (manual check).
+
+Kamal's choices on 2026-11-11:
+
+- The full-screen view keeps the footer, with the mode, the block and the keys that go back. The PTY gets the height of the screen minus 1, as under a block.
+- The scrollback stays at 5,000 lines per run. It takes memory only when a block prints that much: about 29 MB at 180 columns.
+- The terminal of a run answers DSR 5 and 6 and DA1. The answers hold only numbers, never text from the program. The color queries (OSC 10 and 11) stay unanswered: most libraries send DA1 after them, and stop waiting at its answer.
+- The look and feel review comes after milestone 3, so that it covers input mode and the full-screen view too.
+
 ## Next
 
 1. Kamal pushes `main`.
-2. The look and feel review, before milestone 3 (see the open points).
-3. Milestone 3, input and full-screen view. Its plan starts from the follow-ups of milestone 2 in the open points. The log of the review loop of milestone 2, with its Decisions and Nits deferred, is `~/.cache/stepbook-review/m2-review-loop-log.md`.
+2. Milestone 3, input and full-screen view (in progress).
+3. The look and feel review (see the open points).
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
 
@@ -171,8 +192,7 @@ Kamal pushes later: the repository has no remote yet (see the first open point).
 
 - Before the first push, Kamal creates `KamalF/stepbook` on GitHub and adds the remote. The sandbox cannot write `.git/config`.
 - Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
-- Look and feel review, between milestones 2 and 3, once blocks show their output and state (Kamal, 2026-11-10). From the first screenshot: prose lines of about 200 characters on a wide terminal (a maximum text width of about 100 columns?); the selection in terminal cyan, which Kamal's theme draws green; the contrast between a block that runs and other code. From the review of milestone 2: output rows have no mark of their own, so output can draw a fake info line and gutter in the column of a nested block. A question or a notice is cut at the right edge of the footer: at 45 columns, "1 block running. Stop it and quit?" loses its "(y/N)". During a flood of output, the rows under the block can stay old for a second or more.
-- Follow-ups of the review loop of milestone 2, for milestone 3: a run's terminal answers no query (DSR, DA, OSC 10/11), so programs that ask wait for their timeout; sudo asks for the password in each block, since each run has its own PTY; vt100 keeps 5,000 lines of scrollback at full width, about 29 MB per block at 180 columns; in a block, `$0` and `BASH_SOURCE` name files of the workspace; gpg-agent's ssh support shows pinentry on its startup tty, which can be stepbook's terminal.
+- Look and feel review, after milestone 3 (Kamal first asked for it between milestones 2 and 3, on 2026-11-10). From the first screenshot: prose lines of about 200 characters on a wide terminal (a maximum text width of about 100 columns?); the selection in terminal cyan, which Kamal's theme draws green; the contrast between a block that runs and other code. From the review of milestone 2: output rows have no mark of their own, so output can draw a fake info line and gutter in the column of a nested block. A question or a notice is cut at the right edge of the footer: at 45 columns, "1 block running. Stop it and quit?" loses its "(y/N)".
 - Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal). Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
 - Before milestone 4 writes the log: the default log of a FILE named `x.log` is the runbook itself. Spec 4 needs a rule.
 - `the_output_of_a_process_substitution_ends_before_the_run` fails its 900 ms bound under heavy load, such as two test suites at once: the reader of the run parses 20,000 lines of output in a debug build, and tee waits on the PTY. It did so before the last changes of milestone 2 too (checked on c7e5ca9, 2026-11-11). A single suite passes.

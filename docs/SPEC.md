@@ -263,6 +263,12 @@ Before the wrapper exits, it closes its files and waits up to 1 s for its childr
 
 A background job, such as `kubectl port-forward … &`, outlives its block, as in a terminal, until stepbook ends (11). When the wrapper exits, the kernel sends SIGHUP to the process group in the foreground of the PTY, which holds the jobs of the script. So, after its wait, the wrapper hands the PTY to a process group that has ended: a `bash -m` takes it, then dies of SIGKILL before it can give it back. After its block, a job's output goes nowhere: stepbook reads it and drops it. A block that replaces its shell with `exec`, or that fails under `set -e` in its `EXIT` handler, skips that step: its jobs get SIGHUP. A job that left the session with `setsid` outlives stepbook too.
 
+A run has these limits, which stepbook cannot change:
+
+- Each run has a PTY and a session of its own. By default, sudo keeps its credentials per terminal (`timestamp_type=tty`), so it asks for the password in each block. With `Defaults timestamp_type=global` in sudoers, it asks once.
+- gpg-agent shows the pinentry of an ssh key on the terminal where it started, not on `GPG_TTY`. If that is the terminal of stepbook, the pinentry draws over the view. A graphical pinentry, or `ssh-add` before stepbook, avoids it.
+- In a block, `$0` names the wrapper, and `BASH_SOURCE` the script of the run, both in the workspace. A block that runs `cd "$(dirname "$0")"` moves the session into the workspace, which stepbook deletes when it ends.
+
 ### 8.3 Workspace
 
 - The workspace is `$XDG_RUNTIME_DIR/stepbook-<pid>/`, or `<temp dir>/stepbook-<pid>/` if `XDG_RUNTIME_DIR` is not set, not absolute, or not a directory of the user. After `su`, it can still name the directory of the first user. A relative temp dir becomes absolute: a run opens its files after its `cd`.
@@ -557,3 +563,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | A background job outlives its block, until stepbook ends (8.2, 11), at Kamal's choice: `kubectl port-forward … &` died with its block, and needed `nohup` or `setsid` | 2026-11-10 |
 | The session directory stays a path, which each run resolves again (9.1), at Kamal's choice: a link that changes between two blocks moves the next block | 2026-11-10 |
 | If `stepbook-<pid>` exists, the workspace takes the first free name of `stepbook-<pid>-<n>` (8.3), at Kamal's choice: after a SIGKILL in a PID namespace, every later start with the same pid failed | 2026-11-11 |
+| Three limits of a run stay, with the workarounds in 8.2: sudo asks for the password in each block, gpg-agent can draw the pinentry of an ssh key on the terminal of stepbook, and `$0` names the wrapper | 2026-11-11 |
