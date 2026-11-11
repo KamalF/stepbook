@@ -647,7 +647,10 @@ impl App {
             let Some(ran) = self.ran.get(&i) else {
                 continue;
             };
-            match ran.screen.try_last_rows(ran.run.is_some()) {
+            let want = term::Want::Last {
+                cursor: ran.run.is_some(),
+            };
+            match ran.screen.try_rows(want) {
                 Some(lines) => self.view.set_output(i, lines, size),
                 None => _ = self.changed.insert(i),
             }

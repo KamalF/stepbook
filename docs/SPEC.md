@@ -155,7 +155,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 - Output keeps the colors of the program, 256 colors and RGB included, as in a terminal.
 - Scrollback keeps 5,000 lines per run.
 - If the vt100 screen fails on the output of a run, the output so far is lost, and a row of the output says so. stepbook and the other runs go on.
-- The reader thread of each run feeds its vt100 screen, and the view takes the rows when the screen is free. vt100 can take seconds on crafted output, such as a repeat of a character 65,535 times or a scroll of the whole screen: only the run that prints it waits, and the view and the keys go on.
+- The reader thread of each run feeds its vt100 screen, and the view takes the rows when the screen is free. While the reader holds the screen, it makes the rows that the view asked for, after its next read: during a flood of output, the screen is almost never free. vt100 can take seconds on crafted output, such as a repeat of a character 65,535 times or a scroll of the whole screen: only the run that prints it waits, and the view and the keys go on.
 - A UTF-8 character that is split across two reads of the PTY shows whole (upmd issue K18, see 18).
 - When the selected running block switches to the alternate screen (vim, less, top), stepbook opens the full-screen view in input mode. When the program leaves the alternate screen, stepbook returns to the document view. If the block is not selected, its info line shows `full-screen program, press o`.
 - When the selected block's output grows past the bottom of the view, the view scrolls to keep its last row visible.
@@ -564,3 +564,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The session directory stays a path, which each run resolves again (9.1), at Kamal's choice: a link that changes between two blocks moves the next block | 2026-11-10 |
 | If `stepbook-<pid>` exists, the workspace takes the first free name of `stepbook-<pid>-<n>` (8.3), at Kamal's choice: after a SIGKILL in a PID namespace, every later start with the same pid failed | 2026-11-11 |
 | Three limits of a run stay, with the workarounds in 8.2: sudo asks for the password in each block, gpg-agent can draw the pinentry of an ssh key on the terminal of stepbook, and `$0` names the wrapper | 2026-11-11 |
+| While the reader of a run holds its screen, it makes the rows that the view asked for (6.3): during a flood, the view took no rows in 120 frames | 2026-11-11 |

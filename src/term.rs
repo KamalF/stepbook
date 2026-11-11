@@ -50,6 +50,25 @@ pub struct Shared {
     /// The size for the terminal, as columns << 16 | rows. The thread that
     /// next holds the lock gives it to the terminal.
     size: AtomicU32,
+    /// The rows that the main thread asked for while the reader held the
+    /// terminal, and the rows that the reader made for it. During a flood
+    /// of output, the reader holds the terminal at almost each try of the
+    /// main thread, whose rows would stay old for seconds.
+    exchange: Mutex<Exchange>,
+}
+
+/// What the main thread takes of a terminal.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Want {
+    /// The last rows, under the block. With `cursor`, they go down to the
+    /// row of the cursor at least.
+    Last { cursor: bool },
+}
+
+#[derive(Default)]
+struct Exchange {
+    asked: Option<Want>,
+    made: Option<(Want, Vec<Line<'static>>)>,
 }
 
 impl Shared {
@@ -57,13 +76,21 @@ impl Shared {
         Shared {
             terminal: Mutex::new(Terminal::new(columns, rows)),
             size: AtomicU32::new(u32::from(columns) << 16 | u32::from(rows)),
+            exchange: Mutex::default(),
         }
     }
 
-    /// Reads the output of the run. It waits for the lock.
+    /// Reads the output of the run, then makes the rows that the main
+    /// thread asked for meanwhile. It waits for the lock.
     pub fn process(&self, bytes: &[u8]) {
         let terminal = self.terminal.lock().unwrap_or_else(PoisonError::into_inner);
-        self.sized(terminal).process(bytes);
+        let mut terminal = self.sized(terminal);
+        terminal.process(bytes);
+        let asked = self.exchange().asked.take();
+        if let Some(want) = asked {
+            let rows = terminal.rows(want);
+            self.exchange().made = Some((want, rows));
+        }
     }
 
     pub fn resize(&self, columns: u16, rows: u16) {
@@ -71,14 +98,28 @@ impl Shared {
         self.size.store(size, Ordering::Relaxed);
     }
 
-    /// The last rows of the terminal, or nothing while the reader holds it.
-    pub fn try_last_rows(&self, cursor: bool) -> Option<Vec<Line<'static>>> {
+    /// The rows of the terminal. While the reader holds it, the rows that
+    /// the reader made since the last call, if any: the reader makes them
+    /// after its next read.
+    pub fn try_rows(&self, want: Want) -> Option<Vec<Line<'static>>> {
         let terminal = match self.terminal.try_lock() {
             Ok(terminal) => terminal,
             Err(TryLockError::Poisoned(error)) => error.into_inner(),
-            Err(TryLockError::WouldBlock) => return None,
+            Err(TryLockError::WouldBlock) => {
+                let mut exchange = self.exchange();
+                exchange.asked = Some(want);
+                let made = exchange.made.take().filter(|(made, _)| *made == want);
+                return made.map(|(_, rows)| rows);
+            }
         };
-        Some(self.sized(terminal).last_rows(cursor))
+        let mut terminal = self.sized(terminal);
+        // Rows that the reader made before are older than these.
+        *self.exchange() = Exchange::default();
+        Some(terminal.rows(want))
+    }
+
+    fn exchange(&self) -> MutexGuard<'_, Exchange> {
+        self.exchange.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn sized<'a>(&self, mut terminal: MutexGuard<'a, Terminal>) -> MutexGuard<'a, Terminal> {
@@ -132,6 +173,11 @@ impl Terminal {
     pub fn resize(&mut self, columns: u16, rows: u16) {
         (self.columns, self.rows) = (columns, rows);
         self.guarded(|parser| parser.set_size(size(rows), size(columns)));
+    }
+
+    pub fn rows(&mut self, want: Want) -> Vec<Line<'static>> {
+        let Want::Last { cursor } = want;
+        self.last_rows(cursor)
     }
 
     /// The last `OUTPUT_ROWS` rows of the terminal, scrollback included,
@@ -369,17 +415,54 @@ mod tests {
         assert!(!in_vt100());
     }
 
+    const LAST: Want = Want::Last { cursor: false };
+
     #[test]
     fn the_shared_terminal_gives_no_rows_while_the_reader_holds_it() {
         let shared = Shared::new(80, 24);
         shared.process(b"a");
         let held = shared.terminal.lock().unwrap();
-        assert_eq!(shared.try_last_rows(false), None);
+        assert_eq!(shared.try_rows(LAST), None);
         drop(held);
         shared.resize(1, 3);
-        let rows = shared.try_last_rows(false).unwrap();
+        let rows = shared.try_rows(LAST).unwrap();
         assert_eq!(markup(&rows), "a");
         assert_eq!(shared.terminal.lock().unwrap().columns, 1);
+    }
+
+    #[test]
+    fn the_reader_makes_the_rows_that_the_view_asked_for_while_it_held_them() {
+        let shared = Shared::new(80, 24);
+        shared.process(b"a");
+        let held = shared.terminal.lock().unwrap();
+        assert_eq!(shared.try_rows(LAST), None);
+        drop(held);
+        shared.process(b"b");
+        let held = shared.terminal.lock().unwrap();
+        let rows = shared.try_rows(LAST).map(|rows| markup(&rows));
+        assert_eq!(rows.as_deref(), Some("ab"));
+        // Rows of another kind never show.
+        assert_eq!(shared.try_rows(Want::Last { cursor: true }), None);
+        drop(held);
+        shared.process(b"c");
+        let held = shared.terminal.lock().unwrap();
+        let rows = shared.try_rows(Want::Last { cursor: true });
+        assert_eq!(rows.map(|rows| markup(&rows)).as_deref(), Some("abc"));
+        drop(held);
+    }
+
+    #[test]
+    fn rows_that_the_reader_made_never_show_after_newer_rows() {
+        let shared = Shared::new(80, 24);
+        let held = shared.terminal.lock().unwrap();
+        assert_eq!(shared.try_rows(LAST), None);
+        drop(held);
+        shared.process(b"a");
+        shared.process(b"b");
+        assert_eq!(markup(&shared.try_rows(LAST).unwrap()), "ab");
+        let held = shared.terminal.lock().unwrap();
+        assert_eq!(shared.try_rows(LAST), None);
+        drop(held);
     }
 
     /// The length of the window title that vt100 gets.
