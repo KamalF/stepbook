@@ -597,8 +597,8 @@ impl App {
     /// its full-screen view, and returns whether to go on. `ctrl-o` leaves,
     /// and so does any key or paste on a screen too small for the view,
     /// which does not show what they do (spec 6.1, 7.2).
-    /// A paste of several lines to a program that did not turn on
-    /// bracketed paste waits for a `y` in the footer: each line would run.
+    /// A paste of lines to a program that did not turn on bracketed paste
+    /// waits for a `y` in the footer: each line would run.
     /// stepbook keeps bracketed paste on in the outer terminal, which then
     /// takes every paste for safe and gives no warning of its own.
     fn send(&mut self, i: usize, event: &Event, size: Size) -> bool {
@@ -615,7 +615,9 @@ impl App {
             }
             Event::Paste(text) => {
                 let bracketed = run.screen.bracketed_paste();
-                if !bracketed && text.contains(['\r', '\n']) {
+                // A control character runs a line too: readline takes
+                // ctrl-o for Enter, as it does a line feed.
+                if !bracketed && text.chars().any(|c| c.is_control() && c != '\t') {
                     let parts = text.split(['\r', '\n']);
                     lines = parts.filter(|line| !line.is_empty()).count().max(1);
                 }
@@ -1824,8 +1826,15 @@ echo \"got $x\"
         let paste = |app: &mut App, text: &str| {
             assert_eq!(app.handle(&Event::Paste(text.into()), SIZE), None);
         };
-        // One line with no line feed goes at once.
-        paste(&mut app, "x");
+        // One line with no line feed goes at once. A control character,
+        // such as ctrl-o, which readline takes for Enter, asks first.
+        paste(&mut app, "\x0fz");
+        assert_eq!(
+            app.view.question.as_deref(),
+            Some("Paste 1 line to #1? (y/N)")
+        );
+        key(&mut app, KeyCode::Char('n'));
+        paste(&mut app, "x\t");
         paste(&mut app, "1\r2\r");
         let question = "Paste 2 lines to #1? (y/N)";
         assert_eq!(app.view.question.as_deref(), Some(question));
@@ -1841,7 +1850,9 @@ echo \"got $x\"
         key(&mut app, KeyCode::Char('z'));
         key(&mut app, KeyCode::Enter);
         read_until(&mut app, SIZE, |app| !running(app));
-        assert!(output(&app, 0).ends_with("xy+z"), "{}", output(&app, 0));
+        // The terminal draws the tab of the first line as spaces.
+        let line = format!("x{}y+z", " ".repeat(7));
+        assert!(output(&app, 0).ends_with(&line), "{}", output(&app, 0));
     }
 
     #[test]
