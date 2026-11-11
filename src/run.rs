@@ -1218,6 +1218,20 @@ mod tests {
     }
 
     #[test]
+    fn a_subshell_can_set_the_handler_of_the_script() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "trap 'echo p' EXIT\n( trap 'echo p' EXIT; echo sub )\n\
+            echo \"[$(trap 'echo p' EXIT; echo cmd)]\"\n( trap -p EXIT )\n";
+        let (output, status, saved) = run(&mut session, code);
+        let expected = "sub\np\n[cmd\np]\ntrap -- 'echo p' EXIT\np\n";
+        assert_eq!(
+            (output.as_str(), status, saved),
+            (expected, Status::Code(0), true)
+        );
+    }
+
+    #[test]
     fn the_wrapper_writes_the_state_only_into_the_file_of_stepbook() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());

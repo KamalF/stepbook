@@ -243,8 +243,16 @@ trap() {
         __stepbook_trap=$__stepbook_slot
         builtin trap -- "$__stepbook_handler" EXIT
     elif [ "$__stepbook_slot" = "$__stepbook_trap" ]; then
-        # A subshell that did not set an EXIT trap has none.
-        builtin trap - EXIT
+        # The call left the slot alone, or set the handler of the script
+        # again. A second call, quiet, with another handler in the slot,
+        # tells them apart: a subshell that did not set an EXIT trap has
+        # none.
+        builtin trap -- __stepbook_none EXIT
+        builtin trap "$@" >/dev/null 2>&1 || :
+        __stepbook_read_slot
+        if [ "$__stepbook_slot" = __stepbook_none ]; then
+            builtin trap - EXIT
+        fi
     fi
     return "$__stepbook_rc"
 }
