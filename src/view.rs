@@ -14,6 +14,7 @@ use ratatui::widgets::{Block, Padding, Paragraph, Wrap};
 
 use crate::doc::{Cell, DIM, Document, Item, Kind, WARNING, escaped};
 use crate::run;
+use crate::term::Rows;
 
 const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const ERROR: Style = Style::new().fg(Color::Red);
@@ -48,6 +49,40 @@ pub enum Status {
     NotStarted(String),
 }
 
+/// Where the keys go, and what the screen shows.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Mode {
+    /// The keys of the document view (spec 7.1).
+    Normal,
+    /// The keys go to the run of block i, the selected block (spec 7.2).
+    Input(usize),
+    /// The full-screen view of a block (spec 7.3).
+    Full(Full),
+}
+
+/// The full-screen view of a block. While the block runs, the keys go to
+/// its program.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Full {
+    pub block: usize,
+    /// While the block runs, each row of its screen. After its run, its
+    /// scrollback and its screen.
+    pub rows: Rows,
+    /// After the run, the lines under the view.
+    pub scroll: usize,
+    /// If the program was on the alternate screen when the view opened:
+    /// the mode that the view goes back to when the program leaves it.
+    pub back: Option<Back>,
+}
+
+/// The mode after the full-screen view of a program that leaves the
+/// alternate screen (spec 6.3).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Back {
+    Normal,
+    Input,
+}
+
 /// The state of the screen: the document, its file name, the selection,
 /// and the state and output of the blocks.
 pub struct View {
@@ -55,6 +90,7 @@ pub struct View {
     pub title: String,
     pub selected: Option<usize>,
     pub scroll: usize,
+    pub mode: Mode,
     /// Whether the glyph of a running block shows: it blinks.
     pub blink: bool,
     /// The question that the footer asks, in place of the keys (spec 7.4).
@@ -62,10 +98,12 @@ pub struct View {
     /// The notification that the footer shows, in place of the keys.
     pub notice: Option<String>,
     statuses: Vec<Option<Status>>,
+    /// Whether the program of each block is on the alternate screen.
+    alternates: Vec<bool>,
     /// The width of the sidebar: the labels never change.
     sidebar: u16,
     /// The output under each block: the last rows of its terminal.
-    outputs: Vec<Vec<Line<'static>>>,
+    outputs: Vec<Rows>,
     /// The layout of the document at the last width: each key and each
     /// frame needs it, and 1 MB of tabs in code takes 0.9 s to lay out.
     page: RefCell<Option<Rc<Page>>>,
@@ -85,11 +123,13 @@ impl View {
             title,
             selected,
             scroll: 0,
+            mode: Mode::Normal,
             blink: true,
             question: None,
             notice: None,
             statuses: vec![None; blocks],
-            outputs: vec![Vec::new(); blocks],
+            alternates: vec![false; blocks],
+            outputs: vec![Rows::default(); blocks],
             page: RefCell::default(),
             infos: RefCell::new(vec![None; blocks]),
         }
@@ -102,6 +142,10 @@ impl View {
             frame.render_widget(text, frame.area());
             return;
         }
+        if let Mode::Full(full) = &self.mode {
+            self.draw_full(frame, full);
+            return;
+        }
         let (sidebar, document, footer) = self.areas(frame.area());
         if let Some(sidebar) = sidebar {
             self.draw_sidebar(frame, sidebar);
@@ -112,17 +156,96 @@ impl View {
             let line = self.line(&shown, row, self.selected);
             frame.buffer_mut().set_line(text.x, y, &line, text.width);
         }
+        // In input mode, the cursor of the program shows in its output.
+        if let Mode::Input(i) = self.mode
+            && let Some((line, column)) = self.outputs[i].cursor
+        {
+            let row = shown.block(i).end + line;
+            let x = text_width(&shown.page.prefixes[i]) + GUTTER_WIDTH + usize::from(column);
+            if (scroll..scroll + usize::from(text.height)).contains(&row)
+                && x < usize::from(text.width)
+            {
+                let y = text.y + (row - scroll) as u16;
+                frame.set_cursor_position((text.x + x as u16, y));
+            }
+        }
         frame.render_widget(self.footer(), footer);
+    }
+
+    /// The full-screen view: only the terminal of the block, so that a
+    /// selection copies its text alone (spec 6.4), then the footer.
+    fn draw_full(&self, frame: &mut Frame, full: &Full) {
+        let (area, footer) = split(frame.area());
+        let lines = &full.rows.lines;
+        // After the run, the view ends `scroll` lines above the last line.
+        let height = usize::from(area.height);
+        let first = match self.running(full.block) {
+            true => 0,
+            false => lines.len().saturating_sub(height + full.scroll),
+        };
+        for (y, line) in (area.y..area.bottom()).zip(&lines[first..]) {
+            frame.buffer_mut().set_line(area.x, y, line, area.width);
+        }
+        if let Some((row, column)) = full.rows.cursor
+            && row < height
+            && column < area.width
+        {
+            frame.set_cursor_position((area.x + column, area.y + row as u16));
+        }
+        frame.render_widget(self.footer(), footer);
+    }
+
+    /// Whether block `i` runs.
+    pub fn running(&self, i: usize) -> bool {
+        matches!(self.statuses[i], Some(Status::Running(_)))
+    }
+
+    /// The block whose program the keys go to: in input mode, or in the
+    /// full-screen view of a running block (spec 7.2, 7.3).
+    pub fn input_block(&self) -> Option<usize> {
+        match &self.mode {
+            Mode::Input(i) => Some(*i),
+            Mode::Full(full) if self.running(full.block) => Some(full.block),
+            Mode::Full(_) | Mode::Normal => None,
+        }
+    }
+
+    /// Scrolls the full-screen view after the run by `lines` toward the
+    /// start of the output, between its start and its end.
+    pub fn scroll_full(&mut self, lines: isize, size: Size) {
+        let height = usize::from(split(screen(size)).0.height);
+        if let Mode::Full(full) = &mut self.mode {
+            let last = full.rows.lines.len().saturating_sub(height);
+            full.scroll = full.scroll.saturating_add_signed(lines).min(last);
+        }
     }
 
     /// The mode, then the question, the notification or the keys that
     /// apply now (spec 6.1). Both can quote a directory name (spec 6.5).
     fn footer(&self) -> Line<'static> {
         let reversed = Style::new().add_modifier(Modifier::REVERSED);
-        let (mode, text) = match (&self.question, &self.notice) {
-            (Some(question), _) => (" CONFIRM ", escaped(question, Style::new())),
-            (None, Some(notice)) => (" NORMAL ", escaped(notice, WARNING)),
-            (None, None) => (" NORMAL ", vec![Span::raw("↑↓ move  ↵ run  q quit")]),
+        let (mode, text) = match (&self.question, self.input_block(), &self.mode, &self.notice) {
+            (Some(question), ..) => (" CONFIRM ", escaped(question, Style::new())),
+            (None, Some(i), ..) => {
+                let keys = format!("keys go to {}  ^o leave", self.doc.label(i));
+                (" INPUT ", vec![Span::raw(keys)])
+            }
+            (None, None, Mode::Full(_), Some(notice)) => (" OUTPUT ", escaped(notice, WARNING)),
+            (None, None, Mode::Full(full), None) => {
+                let keys = format!("{}  ↑↓ scroll  o back", self.doc.label(full.block));
+                (" OUTPUT ", vec![Span::raw(keys)])
+            }
+            (None, None, _, Some(notice)) => (" NORMAL ", escaped(notice, WARNING)),
+            (None, None, _, None) => {
+                let status = self.selected.and_then(|i| self.statuses[i].as_ref());
+                let input = match status {
+                    Some(Status::Running(_)) => "  i input  o output",
+                    Some(Status::Ended { .. }) => "  o output",
+                    Some(Status::NotStarted(_)) | None => "",
+                };
+                let keys = format!("↑↓ move  ↵ run{input}  q quit");
+                (" NORMAL ", vec![Span::raw(keys)])
+            }
         };
         let spans = [vec![Span::styled(mode, reversed), Span::raw("  ")], text];
         Line::from(spans.concat())
@@ -132,8 +255,7 @@ impl View {
     /// view and of the footer. The sidebar and the document view share the
     /// border between them.
     fn areas(&self, screen: Rect) -> (Option<Rect>, Rect, Rect) {
-        let [main, footer] =
-            Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(screen);
+        let (main, footer) = split(screen);
         if main.width < SIDEBAR_SCREEN_WIDTH {
             return (None, main, footer);
         }
@@ -175,12 +297,13 @@ impl View {
         for (i, info) in infos.iter_mut().enumerate() {
             // The first info row takes the list marker of the item.
             info.get_or_insert_with(|| {
-                let rows = info_rows(&self.doc, i, self.statuses[i].as_ref(), page.widths[i]);
+                let status = self.statuses[i].as_ref();
+                let rows = info_rows(&self.doc, i, status, self.alternates[i], page.widths[i]);
                 prefixed(&page.firsts[i], &page.prefixes[i], rows).collect()
             });
         }
         let infos = infos.iter().map(|info| info.as_ref().map_or(0, Vec::len));
-        let outputs = self.outputs.iter().map(Vec::len);
+        let outputs = self.outputs.iter().map(|output| output.lines.len());
         Shown::new(page, infos.collect(), outputs.collect())
     }
 
@@ -207,7 +330,7 @@ impl View {
             Row::Output(block, i) => {
                 let mut spans = page.prefixes[block].clone();
                 spans.push(Span::raw(" ".repeat(GUTTER_WIDTH)));
-                spans.extend(self.outputs[block][i].spans.iter().cloned());
+                spans.extend(self.outputs[block].lines[i].spans.iter().cloned());
                 Line::from(spans)
             }
         }
@@ -223,6 +346,22 @@ impl View {
         (lines.collect(), blocks.collect())
     }
 
+    /// Sets whether the program of block `i` is on the alternate screen,
+    /// and returns whether it switched. While it runs there, its info line
+    /// says so (spec 6.3).
+    pub fn set_alternate(&mut self, i: usize, alternate: bool) -> bool {
+        let switched = self.alternates[i] != alternate;
+        if switched {
+            self.alternates[i] = alternate;
+            self.infos.get_mut()[i] = None;
+        }
+        switched
+    }
+
+    pub fn alternate(&self, i: usize) -> bool {
+        self.alternates[i]
+    }
+
     /// Sets the state of block `i`.
     pub fn set_status(&mut self, i: usize, status: Status) {
         if self.statuses[i].as_ref() != Some(&status) {
@@ -231,18 +370,21 @@ impl View {
         }
     }
 
-    /// The size of the PTY of block `i` on a screen of `size`: the columns
-    /// of its code, by the height of the screen without the footer (spec
-    /// 6.3).
+    /// The size of the PTY of block `i` on a screen of `size`: the screen
+    /// without the footer in its full-screen view, else the columns of its
+    /// code by that height (spec 6.3, 7.3).
     pub fn pty_size(&self, i: usize, size: Size) -> (u16, u16) {
-        let (shown, _, _) = self.shown(screen(size));
-        let columns = shown.page.widths[i];
-        (columns as u16, size.height.saturating_sub(1).max(1))
+        let area = split(screen(size)).0;
+        let columns = match &self.mode {
+            Mode::Full(full) if full.block == i => area.width,
+            _ => self.shown(screen(size)).0.page.widths[i] as u16,
+        };
+        (columns, area.height.max(1))
     }
 
     #[cfg(test)]
     pub fn output(&self, i: usize) -> &[Line<'static>] {
-        &self.outputs[i]
+        &self.outputs[i].lines
     }
 
     pub fn status(&self, i: usize) -> Option<&Status> {
@@ -252,15 +394,27 @@ impl View {
     /// Sets the output under block `i`. If the block is selected, and its
     /// output grows past the bottom of the view, the view scrolls to keep
     /// its last row visible (spec 6.3).
-    pub fn set_output(&mut self, i: usize, lines: Vec<Line<'static>>, size: Size) {
-        let grew = lines.len() > self.outputs[i].len();
-        self.outputs[i] = lines;
+    pub fn set_output(&mut self, i: usize, rows: Rows, size: Size) {
+        let grew = rows.lines.len() > self.outputs[i].lines.len();
+        self.outputs[i] = rows;
         if !grew || self.selected != Some(i) || too_small(size) {
             return;
         }
         let (shown, text, scroll) = self.shown(screen(size));
-        let end = shown.block(i).end + shown.outputs[i];
+        let end = shown.output_end(i);
         self.scroll = scroll.max(end.saturating_sub(usize::from(text.height)));
+    }
+
+    /// Scrolls as little as possible to show the last row of the output of
+    /// block `i`, where a running program shows its cursor.
+    pub fn show_output_end(&mut self, i: usize, size: Size) {
+        if too_small(size) {
+            return;
+        }
+        let (shown, text, scroll) = self.shown(screen(size));
+        let end = shown.output_end(i);
+        let height = usize::from(text.height);
+        self.scroll = scroll.clamp(end.saturating_sub(height), end - 1);
     }
 
     fn document_block(&self) -> Block<'static> {
@@ -405,6 +559,13 @@ fn screen(size: Size) -> Rect {
     Rect::from((Position::ORIGIN, size))
 }
 
+/// The area above the footer, and the footer.
+fn split(screen: Rect) -> (Rect, Rect) {
+    let [main, footer] =
+        Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(screen);
+    (main, footer)
+}
+
 /// The rows of the document view: the lines of the page, with the info
 /// rows of each block above its code, and its output under it.
 struct Shown {
@@ -456,6 +617,11 @@ impl Shown {
     /// The largest scroll: the last row at the bottom of the view.
     fn max_scroll(&self, height: usize) -> usize {
         self.len().saturating_sub(height)
+    }
+
+    /// The row after the output of block `i`.
+    fn output_end(&self, i: usize) -> usize {
+        self.block(i).end + self.outputs[i]
     }
 
     /// The rows of the info line and the code of block `i`.
@@ -665,12 +831,16 @@ fn info_rows(
     doc: &Document,
     i: usize,
     status: Option<&Status>,
+    alternate: bool,
     width: usize,
 ) -> Vec<Line<'static>> {
     let mut info = vec![Span::styled(doc.label(i), BOLD)];
     if let Some(status) = status {
         info.push(Span::raw("  "));
         info.extend(status_spans(status));
+    }
+    if alternate && matches!(status, Some(Status::Running(_))) {
+        info.push(Span::raw("  full-screen program, press o"));
     }
     if let Some(problem) = doc.blocks[i].problem {
         info.extend([Span::raw("  "), Span::styled(problem, ERROR)]);
@@ -2024,8 +2194,12 @@ pub(crate) mod tests {
         assert_eq!(view.scroll, 12);
     }
 
-    fn output(rows: &[&str]) -> Vec<Line<'static>> {
-        rows.iter().map(|row| Line::from(row.to_string())).collect()
+    fn output(rows: &[&str]) -> Rows {
+        let lines = rows.iter().map(|row| Line::from(row.to_string()));
+        Rows {
+            lines: lines.collect(),
+            ..Rows::default()
+        }
     }
 
     #[test]
@@ -2098,6 +2272,175 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn input_mode_shows_the_cursor_of_the_program_in_its_output() {
+        let steps = "Step.\n\n".repeat(10);
+        let mut view = view(&format!("{steps}```bash [name:login]\nread\n```\n"));
+        view.set_status(0, Status::Running(Duration::ZERO));
+        let rows = Rows {
+            lines: output(&["a", "Password: "]).lines,
+            cursor: Some((1, 10)),
+            alternate: false,
+            ended_on_alternate: false,
+        };
+        view.set_output(0, rows, Size::new(80, 30));
+        let cursor = |view: &View, height| {
+            let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
+            terminal.draw(|frame| view.draw(frame)).unwrap();
+            let backend = terminal.backend();
+            backend
+                .cursor_visible()
+                .then(|| backend.cursor_position().into())
+        };
+        assert_eq!(cursor(&view, 30), None);
+        view.mode = Mode::Input(0);
+        // The text starts at column 14, after the sidebar, a border and a
+        // space, and the output after the gutter. The text starts on row
+        // 1, and the block 20 rows lower, with its info line, its code,
+        // then its output.
+        assert_eq!(cursor(&view, 30), Some((14 + 2 + 10, 1 + 20 + 3)));
+        // No cursor shows out of the view, which shows 21 rows here.
+        assert_eq!(cursor(&view, 24), None);
+        view.scroll = 3;
+        assert_eq!(cursor(&view, 24), Some((26, 21)));
+        view.outputs[0].cursor = None;
+        assert_eq!(cursor(&view, 30), None);
+    }
+
+    #[test]
+    fn input_mode_shows_the_end_of_the_output() {
+        let mut view = steps();
+        // Block 0 ends at row 8, then 10 rows of output, and the view
+        // shows 6 rows.
+        view.set_output(0, output(&["o"; 10]), SMALL);
+        view.scroll = 0;
+        view.show_output_end(0, SMALL);
+        assert_eq!(view.scroll, 12);
+        view.scroll = 20;
+        view.show_output_end(0, SMALL);
+        assert_eq!(view.scroll, 17);
+        view.scroll = 14;
+        view.show_output_end(0, SMALL);
+        assert_eq!(view.scroll, 14);
+    }
+
+    #[test]
+    fn the_footer_shows_the_keys_that_apply_now() {
+        let mut view = view(BLOCKS);
+        let footer = |view: &View| markup(&[view.footer()]);
+        assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  q quit");
+        view.set_status(0, Status::Running(Duration::ZERO));
+        assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  i input  o output  q quit");
+        view.selected = Some(1);
+        assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  q quit");
+        let ended = Status::Ended {
+            status: run::Status::Code(0),
+            took: Duration::ZERO,
+            saved: true,
+        };
+        view.set_status(1, ended);
+        assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  o output  q quit");
+        view.set_status(1, Status::NotStarted("cannot start".into()));
+        assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  q quit");
+        view.selected = Some(0);
+        view.mode = Mode::Input(0);
+        view.notice = Some("already running: i to type, o to view".into());
+        assert_snapshot!(footer(&view), @"«r: INPUT »  keys go to check  ^o leave");
+        view.mode = Mode::Full(Full {
+            block: 0,
+            rows: Rows::default(),
+            scroll: 0,
+            back: None,
+        });
+        assert_snapshot!(footer(&view), @"«r: INPUT »  keys go to check  ^o leave");
+        view.set_status(0, Status::NotStarted("cannot start".into()));
+        assert_snapshot!(footer(&view), @"«r: OUTPUT »  «yellow:already running: i to type, o to view»");
+        view.notice = None;
+        assert_snapshot!(footer(&view), @"«r: OUTPUT »  check  ↑↓ scroll  o back");
+    }
+
+    #[test]
+    fn the_full_screen_view_shows_only_the_terminal_of_the_block() {
+        let mut view = view(BLOCKS);
+        view.set_status(1, Status::Running(Duration::ZERO));
+        let lines = output(&["$ top", "", "x"]).lines;
+        let rows = Rows {
+            lines,
+            cursor: Some((1, 3)),
+            alternate: false,
+            ended_on_alternate: false,
+        };
+        view.mode = Mode::Full(Full {
+            block: 1,
+            rows,
+            scroll: 0,
+            back: None,
+        });
+        assert_snapshot!(screen_with_footer(&view, 40, 8), @"
+        $ top
+
+        x
+
+
+
+
+        «r: INPUT »  keys go to restart  ^o leave
+        ");
+        let mut terminal = Terminal::new(TestBackend::new(40, 8)).unwrap();
+        terminal.draw(|frame| view.draw(frame)).unwrap();
+        assert_eq!(terminal.backend().cursor_position(), Position::new(3, 1));
+    }
+
+    #[test]
+    fn after_the_run_the_full_screen_view_scrolls_from_the_end() {
+        let mut view = view(BLOCKS);
+        let lines: Vec<String> = (1..=20).map(|i| i.to_string()).collect();
+        let lines = lines.iter().map(String::as_str).collect::<Vec<_>>();
+        view.mode = Mode::Full(Full {
+            block: 0,
+            rows: output(&lines),
+            scroll: 0,
+            back: None,
+        });
+        assert_snapshot!(screen(&view, 40, 8), @"
+        14
+        15
+        16
+        17
+        18
+        19
+        20
+        ");
+        let Mode::Full(full) = &mut view.mode else {
+            unreachable!()
+        };
+        full.scroll = 13;
+        assert_snapshot!(screen(&view, 40, 8), @"
+        1
+        2
+        3
+        4
+        5
+        6
+        7
+        ");
+        // A screen too small shows only a message.
+        let small = screen(&view, 39, 8);
+        assert!(small.starts_with("Enlarge the terminal"), "{small}");
+    }
+
+    #[test]
+    fn the_info_line_says_when_a_running_program_is_full_screen() {
+        let mut view = view("```bash [name:edit]\nvim\n```\n");
+        let info = |view: &View| markup(&view.rows(60).0[..1]);
+        view.set_alternate(0, true);
+        assert_snapshot!(info(&view), @"▐ «b:edit»");
+        view.set_status(0, Status::Running(Duration::from_secs(3)));
+        assert_snapshot!(info(&view), @"▐ «b:edit»  «yellow:●» running 0:03  full-screen program, press o");
+        view.set_alternate(0, false);
+        assert_snapshot!(info(&view), @"▐ «b:edit»  «yellow:●» running 0:03");
+    }
+
+    #[test]
     fn the_footer_shows_a_question_or_a_notification_in_place_of_the_keys() {
         let mut view = view(BLOCKS);
         let footer = |view: &View| markup(&[view.footer()]);
@@ -2166,6 +2509,20 @@ pub(crate) mod tests {
         // The text of the view is 65 columns wide, beside the sidebar.
         assert_eq!(view.pty_size(0, Size::new(80, 24)), (61, 23));
         assert_eq!(view.pty_size(1, Size::new(80, 24)), (63, 23));
+    }
+
+    #[test]
+    fn the_pty_of_the_block_of_the_full_screen_view_takes_the_screen() {
+        let mut view = view("- item\n\n  ```bash\n  ls\n  ```\n\n```bash\nls\n```\n");
+        view.mode = Mode::Full(Full {
+            block: 1,
+            rows: Rows::default(),
+            scroll: 0,
+            back: None,
+        });
+        // The screen without the footer; the other blocks keep theirs.
+        assert_eq!(view.pty_size(1, Size::new(80, 24)), (80, 23));
+        assert_eq!(view.pty_size(0, Size::new(80, 24)), (61, 23));
     }
 
     #[test]

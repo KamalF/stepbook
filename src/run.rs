@@ -324,6 +324,8 @@ pub struct Run {
     /// The process of the wrapper, the leader of the process group.
     pid: Pid,
     master: File,
+    /// The bytes for the writer thread of the run.
+    input: Sender<Vec<u8>>,
     /// The state that the run started with.
     start: State,
     script: PathBuf,
@@ -363,6 +365,10 @@ impl Status {
 /// view slows the program, and loses no output.
 const OUTPUT_MESSAGES: usize = 64;
 const READ_SIZE: usize = 32 * 1024;
+
+/// Writes in flight per run. A program that reads no input fills its PTY,
+/// and the writes after these are lost.
+const INPUT_MESSAGES: usize = 256;
 
 /// A variable whose NAME=value takes at least this many bytes goes to the
 /// wrapper in a file: in the environment of exec, one of over 128 KiB
@@ -423,6 +429,10 @@ impl Session {
         let fail = |e: std::io::Error| StartError::Failed(io_message(&e));
         self.workspace.check().map_err(fail)?;
         let (master, slave, tty) = open_pty(columns, rows).map_err(fail)?;
+        // Before the spawn: after it, a failure would leave the wrapper
+        // running out of RUNS.
+        let reader = master.try_clone().map_err(fail)?;
+        let writer = master.try_clone().map_err(fail)?;
         let id = self.next_id;
         self.next_id += 1;
         let script = (self.workspace)
@@ -459,7 +469,6 @@ impl Session {
         let child = (self.spawn(&run_files, small, block, slave))
             .inspect_err(|_| run_files.iter().for_each(|f| _ = std::fs::remove_file(f)))
             .map_err(fail)?;
-        let reader = master.try_clone().map_err(fail)?;
         let (sender, events) = crossbeam_channel::bounded(OUTPUT_MESSAGES);
         let pid = Pid::from_child(&child);
         RUNS.lock()
@@ -467,12 +476,16 @@ impl Session {
             .push(pid);
         let screen = Arc::new(term::Shared::new(columns, rows));
         let feed = screen.clone();
-        std::thread::spawn(move || read_run(reader, child, sender, &feed));
+        let (input, bytes) = crossbeam_channel::bounded(INPUT_MESSAGES);
+        let answers = input.clone();
+        std::thread::spawn(move || read_run(reader, child, sender, answers, &feed));
+        std::thread::spawn(move || write_run(writer, bytes));
         Ok(Run {
             events,
             screen,
             pid,
             master,
+            input,
             start,
             script,
             state_file,
@@ -549,10 +562,10 @@ impl Session {
 }
 
 impl Run {
-    /// Writes to the program, as keys would.
-    #[cfg_attr(not(test), expect(dead_code, reason = "input mode, in milestone 3"))]
-    pub fn write(&self, bytes: &[u8]) -> std::io::Result<()> {
-        (&self.master).write_all(bytes)
+    /// Writes to the program, as keys would, through the writer thread of
+    /// the run. If the program reads no input, the bytes may be lost.
+    pub fn write(&self, bytes: &[u8]) {
+        let _ = self.input.try_send(bytes.to_vec());
     }
 
     /// Sends a signal to the processes of the run: those of the session of
@@ -686,7 +699,15 @@ fn open_pty(columns: u16, rows: u16) -> std::io::Result<(File, OwnedFd, OsString
 /// its state held back. After the exit, the reader takes only the output
 /// that waits in the PTY. On Linux, a read fails with EIO once every
 /// process has closed the PTY.
-fn read_run(reader: File, mut child: Child, sender: Sender<Event>, screen: &term::Shared) {
+/// The answers of the terminal to the queries of the program go to the
+/// writer thread: a program that reads no input must not block the reader.
+fn read_run(
+    reader: File,
+    mut child: Child,
+    sender: Sender<Event>,
+    answers: Sender<Vec<u8>>,
+    screen: &term::Shared,
+) {
     let exit = rustix::process::pidfd_open(Pid::from_child(&child), PidfdFlags::empty()).ok();
     let mut buffer = vec![0; READ_SIZE];
     // The reads after the exit: a job that writes without a pause must
@@ -714,7 +735,10 @@ fn read_run(reader: File, mut child: Child, sender: Sender<Event>, screen: &term
         match (&reader).read(&mut buffer) {
             Ok(0) => break,
             Ok(n) => {
-                screen.process(&buffer[..n]);
+                let answer = screen.process(&buffer[..n]);
+                if !answer.is_empty() {
+                    let _ = answers.try_send(answer);
+                }
                 if sender.send(Event::Output(buffer[..n].to_vec())).is_err() {
                     return;
                 }
@@ -723,6 +747,9 @@ fn read_run(reader: File, mut child: Child, sender: Sender<Event>, screen: &term
             Err(_) => break,
         }
     }
+    // So that the writer thread ends with the run: a background job can
+    // keep the reader for the rest of the session.
+    drop(answers);
     // The PTY can end first: a script that moves its stdio off the PTY goes
     // on with no terminal. The run ends when the wrapper exits. NOWAIT
     // leaves the wrapper a zombie, for wait_for_jobs.
@@ -739,12 +766,24 @@ fn read_run(reader: File, mut child: Child, sender: Sender<Event>, screen: &term
         Some(signal) => Status::Signal(signal),
         None => Status::Code(status.exit_status().unwrap_or(0)),
     };
+    screen.end();
     let _ = sender.send(Event::Exit(status));
     wait_for_jobs(&reader, pid, &mut buffer);
     let _ = child.wait();
     RUNS.lock()
         .unwrap_or_else(PoisonError::into_inner)
         .retain(|&run| run != pid);
+}
+
+/// Writes the input of a run to its PTY, until the run ends. A thread of
+/// its own: a program that reads no input fills the PTY, and a write then
+/// waits until it reads (spec 13).
+fn write_run(master: File, input: Receiver<Vec<u8>>) {
+    for bytes in input {
+        if (&master).write_all(&bytes).is_err() {
+            return;
+        }
+    }
 }
 
 /// How often `wait_for_jobs` checks the session of a run.
@@ -1324,7 +1363,7 @@ mod tests {
         fds.sort();
         assert_eq!(fds, inherited);
         for run in &runs {
-            run.write(b"\n").unwrap();
+            run.write(b"\n");
             wait(run);
         }
     }
@@ -1682,7 +1721,7 @@ mod tests {
             .start("export A=1\necho ready\nsleep 5\n", "check", 80, 24)
             .unwrap();
         wait_for(&run, "ready");
-        run.write(b"\x03").unwrap();
+        run.write(b"\x03");
         let (_, status) = wait(&run);
         assert_eq!((status, status.rc()), (Status::Signal(2), 130));
         assert!(session.finish(&run));
@@ -1708,7 +1747,7 @@ mod tests {
         wait_for(&first, "ready");
         let (_, _, saved) = run(&mut session, "export B=2; unset X\n");
         assert!(saved);
-        first.write(b"\n").unwrap();
+        first.write(b"\n");
         wait(&first);
         assert!(session.finish(&first));
         assert_eq!(var(&session, "A").as_deref(), Some("1"));
@@ -1742,7 +1781,7 @@ mod tests {
         until_session_has(&run, 3);
         run.signal(Signal::KILL);
         wait(&run);
-        assert_eq!(session_of(&run), []);
+        until_session_ends(&run);
     }
 
     #[test]
@@ -1774,7 +1813,7 @@ mod tests {
         until_session_has(&run, 3);
         run.signal(Signal::KILL);
         wait(&run);
-        assert_eq!(session_of(&run), []);
+        until_session_ends(&run);
     }
 
     #[test]
@@ -1820,7 +1859,7 @@ mod tests {
         assert_eq!(status, Status::Code(0));
         assert!(output.ends_with("started\n"), "{output}");
         end_sessions(&[run.pid.as_raw_pid()]);
-        assert_eq!(session_of(&run), []);
+        until_session_ends(&run);
     }
 
     #[test]
@@ -1874,7 +1913,7 @@ mod tests {
         };
         assert_eq!(status, Status::Code(0));
         end_sessions(&[run.pid.as_raw_pid()]);
-        assert_eq!(session_of(&run), []);
+        until_session_ends(&run);
     }
 
     #[test]
@@ -1901,10 +1940,19 @@ mod tests {
             let _ = sender.send(());
         });
         assert!(ended.recv_timeout(WAIT).is_ok());
-        // A process dies a moment after its SIGKILL.
+        until_session_ends(&run);
+    }
+
+    /// Waits until the session of a run has no process left: a process
+    /// dies a moment after its SIGKILL.
+    fn until_session_ends(run: &Run) {
         let deadline = std::time::Instant::now() + WAIT;
-        while !session_of(&run).is_empty() {
-            assert!(std::time::Instant::now() < deadline);
+        while !session_of(run).is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{:?}",
+                session_of(run)
+            );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
@@ -1916,6 +1964,63 @@ mod tests {
             .filter(session)
             .map(|p| p.pid)
             .collect()
+    }
+
+    #[test]
+    fn a_program_gets_the_position_of_its_cursor_from_the_terminal() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "printf 'ab\\e[6n'\nIFS= read -rsd R pos\necho \" at ${pos#*[}\"\n";
+        let (output, status, _) = run(&mut session, code);
+        assert_eq!((&*output, status), ("ab\x1b[6n at 1;3\n", Status::Code(0)));
+    }
+
+    #[test]
+    fn a_write_to_a_program_that_reads_no_input_never_blocks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "stty raw -echo\necho ready\nsleep 30\n";
+        let run = Arc::new(session.start(code, "check", 80, 24).unwrap());
+        wait_for(&run, "ready");
+        let (sent, done) = crossbeam_channel::bounded(1);
+        let writer = run.clone();
+        // A megabyte fills the PTY of a program that reads nothing.
+        std::thread::spawn(move || {
+            writer.write(&vec![b'x'; 1 << 20]);
+            let _ = sent.send(());
+        });
+        assert!(done.recv_timeout(std::time::Duration::from_secs(2)).is_ok());
+        run.signal(Signal::KILL);
+        wait(&run);
+    }
+
+    #[test]
+    fn a_program_that_asks_without_reading_the_answers_never_blocks_its_reader() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        // 30,000 answers fill the PTY of a program that reads nothing.
+        let code = "stty raw -echo\nfor i in $(seq 30000); do printf '\\e[6n'; done\necho done\n";
+        let (output, status, _) = run(&mut session, code);
+        assert_eq!(status, Status::Code(0));
+        assert!(
+            output.ends_with("done\n"),
+            "{:?}",
+            &output[output.len() - 20..]
+        );
+    }
+
+    #[test]
+    fn a_run_that_ends_on_the_alternate_screen_shows_its_main_screen_again() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let run = session.start("echo before\nprintf '\\e[?1049hon-alt'\n", "check", 80, 24);
+        let run = run.unwrap();
+        wait(&run);
+        let rows = run
+            .screen
+            .try_rows(term::Want::Last { cursor: false })
+            .unwrap();
+        assert_eq!(crate::view::tests::markup(&rows.lines), "before");
     }
 
     #[test]

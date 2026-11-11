@@ -128,8 +128,8 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 
 - **Sidebar:** one row per block, with a status glyph and the name. An unnamed block shows `#<n>`, where n is its position among all the blocks of the file, from 1. Its width, with its left border, is the longest name plus 4, between 12 and 30 columns. A longer name ends with `…`. The sidebar scrolls to keep the selected row visible, and it is hidden on terminals under 80 columns.
 - **Document view:** the rendered runbook. The selected block has a highlighted gutter and sidebar row.
-- **Footer:** the mode, then the keys that apply now. A notification or a question (7.4) shows in place of the keys. A notification lasts 3 seconds.
-- **Minimum size:** on a terminal smaller than 40 columns or 8 rows, stepbook shows only `Enlarge the terminal to at least 40 columns and 8 rows.`, and only the keys that quit work. A question (7.4) waits for a screen large enough to show it. Below that size, code under a list marker has no room, and the layout of a crafted file costs too much.
+- **Footer:** the mode, then the keys that apply now: `i input` while the selected block runs, and `o output` once it has run. A notification or a question (7.4) shows in place of the keys. A notification lasts 3 seconds.
+- **Minimum size:** on a terminal smaller than 40 columns or 8 rows, stepbook shows only `Enlarge the terminal to at least 40 columns and 8 rows.`, and only the keys that quit work. A question (7.4) waits for a screen large enough to show it. The PTY of a block keeps its size until the screen is large enough again. Below that size, code under a list marker has no room, and the layout of a crafted file costs too much.
 
 ### 6.2 Block states
 
@@ -155,9 +155,15 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 - Output keeps the colors of the program, 256 colors and RGB included, as in a terminal.
 - Scrollback keeps 5,000 lines per run.
 - If the vt100 screen fails on the output of a run, the output so far is lost, and a row of the output says so. stepbook and the other runs go on.
-- The reader thread of each run feeds its vt100 screen, and the view takes the rows when the screen is free. vt100 can take seconds on crafted output, such as a repeat of a character 65,535 times or a scroll of the whole screen: only the run that prints it waits, and the view and the keys go on.
+- The reader thread of each run feeds its vt100 screen, and the view takes the rows when the screen is free. While the reader holds the screen, it makes the rows that the view asked for, after its next read: during a flood of output, the screen is almost never free. vt100 can take seconds on crafted output, such as a repeat of a character 65,535 times or a scroll of the whole screen: only the run that prints it waits, and the view and the keys go on.
 - A UTF-8 character that is split across two reads of the PTY shows whole (upmd issue K18, see 18).
-- When the selected running block switches to the alternate screen (vim, less, top), stepbook opens the full-screen view in input mode. When the program leaves the alternate screen, stepbook returns to the document view. If the block is not selected, its info line shows `full-screen program, press o`.
+- The terminal of a run answers three queries: its status (`ESC[5n` gets `ESC[0n`), the position of its cursor (`ESC[6n`), and its device attributes (`ESC[c` gets `ESC[?1;2c`, a VT100 with the advanced video option, as tmux answers). Programs such as fzf wait for them. The answers hold only numbers, never text from the program, which could write keys for it. Other queries get no answer, such as those of the colors (OSC 10 and 11): most programs send `ESC[c` after them, and stop waiting at its answer. The writer thread of the run writes the answers (13).
+- While a running program is on the alternate screen (vim, less, top), the info line of its block shows `full-screen program, press o`. `o` or `i` opens the full-screen view, in input mode. The view never opens on its own from the document view: keys typed ahead for the document, such as `↓` then `Enter` to run the next block, would reach the program, and a program that enters the alternate screen for a moment each second would take the keys back each time. Only `i` and `o` make the keys go to a program.
+- In input mode, when the program enters the alternate screen, the full-screen view opens: the keys already go to that program.
+- A view that opened while the program was on the alternate screen closes when the program leaves it, back to input mode if it opened from input mode or with `i`. A view opened while the program was on the main screen stays open.
+- Under the block, the rows from before the switch stay: the alternate screen shows only in the full-screen view.
+- If the run ends while its program is on the alternate screen, stepbook leaves it, as `reset` would: vt100 gives no access to the main screen while the alternate screen shows. The main screen shows under the block again. After the run, the full-screen view shows the scrollback and the main screen, the dim line `[stepbook: the last screen of the full-screen program]`, then the last screen of the program, where a crash may have left its message.
+- When the view closes because the program left the alternate screen, the PTY gets its document size back. A program that leaves the alternate screen for a moment, such as vim for `:!ls`, gets SIGWINCH, and can redraw over what it printed there.
 - When the selected block's output grows past the bottom of the view, the view scrolls to keep its last row visible.
 
 ### 6.4 Copy and paste
@@ -199,9 +205,9 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 | `↓`, `j` / `↑`, `k` | Select the next / previous block, and scroll so that the block and the paragraph above it are visible. If they do not fit, the whole block shows, with the end of the paragraph. A block taller than the view shows from its paragraph, or from its info line. |
 | `Home` / `End` | Select the first / last block. Without blocks, scroll to the top / bottom. |
 | `PageDown` / `PageUp` | Scroll one page. The selection moves to the first block whose info line is in view, else to the first block in view. `PageDown` never moves it to an earlier block, and `PageUp` never to a later one. |
-| `Enter` | Run the selected block (8.1). If `j` or `k` would scroll to show the block, `Enter` only does that scroll: it never runs code that is off the screen, such as after the startup or a resize. `Enter` and the answer to a question act on the screen as drawn: after other events, such as keys typed ahead, they wait for the next frame. |
-| `i` | Enter input mode, if the selected block is running. |
-| `o` | Open the full-screen view of the selected block, if it has run. |
+| `Enter` | Run the selected block (8.1). If `j` or `k` would scroll to show the block, `Enter` only does that scroll: it never runs code that is off the screen, such as after the startup or a resize. `Enter`, `i`, `o` and the answer to a question act on the screen as drawn: after other events, such as keys typed ahead, they wait for the next frame. |
+| `i` | Enter input mode, if the selected block is running. The view scrolls as little as possible to show the last row of its output. |
+| `o` | Open the full-screen view of the selected block, if it has run. `ctrl-o` does not: it leaves that view, and a second `ctrl-o` would send the next keys to the program. |
 | `ctrl-r` | Reload the file now. |
 | `q`, `ctrl-c` | Quit. See 11. |
 
@@ -211,7 +217,11 @@ A paste does nothing in the document view: a line feed in it would run the selec
 
 - All keys go to the program, except `ctrl-o`, which leaves input mode.
 - stepbook leaves input mode when the run ends.
-- A paste from the outer terminal goes to the program. It is wrapped in `ESC[200~ … ESC[201~` if the program turned on bracketed paste mode.
+- When stepbook stops sending the keys to a program on its own, keys do nothing for 1 s, and the footer says so. That is when the run ends in input mode or in its full-screen view, and when the full-screen view closes because the program left the alternate screen (6.3). Keys typed for the program would act on the document: a second `ctrl-c` would quit stepbook and end the session, and `↓` then `Enter` would run another block. An `i` or an `o` that comes less than 1 s after the end of the run pauses the keys too: the keys after it were typed for the program.
+- The footer shows `INPUT` and the name of the block. The cursor shows where the program shows it, in the output under the block, if the view shows that row.
+- On a screen too small for the view (6.1), a key or a paste leaves input mode, and does not reach the program: the screen does not show what it would do.
+- A writer thread per run writes the keys to its PTY. A program that reads no input fills the PTY, and a write then waits until it reads. After 256 writes that wait, stepbook drops the next keys.
+- A paste from the outer terminal goes to the program. It is wrapped in `ESC[200~ … ESC[201~` if the program turned on bracketed paste mode. The text of such a paste loses its ESC characters: an `ESC[201~` in it would end the paste early, and the program would take the rest for keys. If the program did not turn bracketed paste on, a paste with a line feed, or any other control character but a tab, waits for `y` to `Paste 3 lines to <name>? (y/N)` (7.4): each line would run. readline runs a line on ctrl-o too. stepbook keeps bracketed paste on in the outer terminal, which then takes every paste for safe, and gives none of its own warnings.
 - Key encoding follows xterm: application cursor mode, modifiers on arrow keys (`ESC[1;5A`), F1 to F12, Insert, Delete, Home, End, Page Up and Page Down.
 
 ### 7.3 Full-screen view
@@ -219,13 +229,14 @@ A paste does nothing in the document view: a line feed in it would run the selec
 | Key | While running | When done |
 |---|---|---|
 | `ctrl-o` | Back to the document view | Back to the document view |
-| Other keys | Go to the program (input mode) | `↑`/`↓`, `PageUp`/`PageDown` scroll the scrollback. `o`, `q` and `Esc` go back. |
+| Other keys | Go to the program (input mode) | `↑`/`k` and `↓`/`j` scroll the scrollback by a line, `PageUp`/`PageDown` by a page, `Home`/`End` to its start or its end. `o`, `q`, `Esc` and `ctrl-c` go back. |
 
-While the view is open, the PTY takes the full terminal size. It gets its document size back when the view closes.
+- The view shows only the terminal of the block, then the footer, with the mode and the name of the block. While the block runs, the mode is `INPUT`. After the run, it is `OUTPUT`, and the view starts at the end of the output.
+- While the view is open, the PTY of a running block takes the screen without the footer. It gets its document size back when the view closes. After the run, the view does not change the size of the terminal of the block: a resize would cut its lines.
 
 ### 7.4 Confirmation dialogs
 
-A question shows in the footer, in place of the keys, so that it hides no part of the document. `y` confirms. `n`, `Esc` and every other key cancel. If a resize hid the block to re-run, `y` shows it and asks again, as `Enter` does (7.1).
+A question shows in the footer, in place of the keys, so that it hides no part of the document. The question of a paste (7.2) shows in input mode and in the full-screen view too, and the next key answers it. It ends with the run. `y` confirms. `n`, `Esc` and every other key cancel. If a resize hid the block to re-run, `y` shows it and asks again, as `Enter` does (7.1).
 
 ## 8. Running blocks
 
@@ -262,6 +273,12 @@ stepbook checks at startup that `bash` is on the `PATH` and fails if it is not. 
 Before the wrapper exits, it closes its files and waits up to 1 s for its children to end: when the run ends, a process substitution, such as the `tee` of the old logging header (12.3), would lose the end of its output. A background job, which keeps the files open, costs that second. It does so after the script's `EXIT` handler, or at the `exit` of that handler, whatever the options and traps of the script. A failure under `set -e` in the handler ends the shell at once: the wrapper then neither saves the state a second time nor waits.
 
 A background job, such as `kubectl port-forward … &`, outlives its block, as in a terminal, until stepbook ends (11). When the wrapper exits, the kernel sends SIGHUP to the process group in the foreground of the PTY, which holds the jobs of the script. So, after its wait, the wrapper hands the PTY to a process group that has ended: a `bash -m` takes it, then dies of SIGKILL before it can give it back. After its block, a job's output goes nowhere: stepbook reads it and drops it. A block that replaces its shell with `exec`, or that fails under `set -e` in its `EXIT` handler, skips that step: its jobs get SIGHUP. A job that left the session with `setsid` outlives stepbook too.
+
+A run has these limits, which stepbook cannot change:
+
+- Each run has a PTY and a session of its own. By default, sudo keeps its credentials per terminal (`timestamp_type=tty`), so it asks for the password in each block. With `Defaults timestamp_type=global` in sudoers, it asks once.
+- gpg-agent shows the pinentry of an ssh key on the terminal where it started, not on `GPG_TTY`. If that is the terminal of stepbook, the pinentry draws over the view. A graphical pinentry, or `ssh-add` before stepbook, avoids it.
+- In a block, `$0` names the wrapper, and `BASH_SOURCE` the script of the run, both in the workspace. A block that runs `cd "$(dirname "$0")"` moves the session into the workspace, which stepbook deletes when it ends.
 
 ### 8.3 Workspace
 
@@ -354,7 +371,7 @@ Blocks are matched by key between the old and the new file:
   3. It writes their `END` lines to the log and quits.
 - stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide, as ratatui counts them. On a terminal set to draw them wide, such as VTE with that option or `xterm -cjk_width`, the text after such a character shifts, in code too, and a space can vanish.
 - While it runs, stepbook turns the autowrap of the terminal off: a character that the terminal draws wider than ratatui counts must not wrap into the row below and move what is there.
-- On exit, stepbook restores the terminal, autowrap and bracketed paste included, and ends a synchronized update that a failed frame left open. It also deletes the workspace. It does the same on the signals of 4.
+- On exit, stepbook restores the terminal, autowrap, bracketed paste and the cursor included, and ends a synchronized update that a failed frame left open. It also deletes the workspace. It does the same on the signals of 4.
 - Whenever stepbook ends, after a signal, a panic or a terminal error too, it sends SIGHUP to the processes of the runs that have not ended, and to the background jobs of those that have: the processes of the session of each wrapper that it spawned. The close of a PTY reaches only its process group in the foreground. After up to 0.2 s, it sends SIGKILL to those left, then deletes the workspace: a wrapper that outlived stepbook would write its state where the workspace was.
 - A panic hook restores the terminal and deletes the workspace too. Then it ends stepbook, even after a panic in another thread: the main thread would go on drawing on the restored terminal.
 
@@ -403,7 +420,7 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 
 - Rust, one crate, no async runtime, no component framework. The target size is 2,000 to 3,000 lines without tests.
 - Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `rustix` (the PTY, poll, and the signals to the processes of a run), `vt100` without its `std` feature (with it, vte keeps each byte of an OSC that never ends), `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
-- The main thread owns all state, except the vt100 screen of each run, which the reader of the run feeds: the main thread only tries its lock. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events.
+- The main thread owns all state, except the vt100 screen of each run, which the reader of the run feeds: the main thread only tries its lock. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events. One writer per run writes the keys to its PTY: a write to a program that reads no input would block the main thread.
 - Control events (keys, paste, resize, signals, file change) go to their own channel. The loop handles them before pending output, so keys stay responsive while a block prints a lot.
 - After output, the loop reads the events of the next 16 ms before it draws: a program that prints a lot redraws the view at most about 60 times a second, and at least as often, since the frame ends after 16 ms even while output keeps coming.
 - Each run sends its output, then its exit status, through its own bounded channel, so that the end of a run never comes before its output. A slow UI slows the program, and no output is lost.
@@ -470,7 +487,7 @@ v1 comes in five milestones, built in order. Each milestone ends with `cargo mut
 2. **Running blocks.** The workspace (8.3), the wrapper and the PTY (8.2), the output under each block (6.3), the block states (6.2), `Enter` and its dialog (8.1, 7.4), the session state (9), and quit with active runs (11).
    - Done when: the integration tests of 14 pass, except the log tests. In tmux, a block that runs `export` and `cd` changes what the next block sees.
 3. **Input and full-screen view.** Input mode (7.2), the full-screen view (7.3), and the switch to the alternate screen (6.3).
-   - Done when: a `read -s` prompt takes a password in input mode, and `less` opens the full-screen view and closes it on exit. In herdr, a paste reaches the program (manual check).
+   - Done when: a `read -s` prompt takes a password in input mode, and `o` shows `less` in the full-screen view, which closes when less exits. In herdr, a paste reaches the program (manual check).
 4. **Log and reload.** The log (12), the file watcher and the reload (10).
    - Done when: `watch.sh` sees the `END` line of a run, and two concurrent runs write contiguous sections. An edit of the runbook in vim during a run keeps each output and marks the changed blocks.
 5. **Migration.** A README, an install with mise from the GitHub repository, and a first release on crates.io. Then the runbook skill moves to stepbook (15).
@@ -557,3 +574,17 @@ This spec is the source of truth. A change of decision updates it in the same co
 | A background job outlives its block, until stepbook ends (8.2, 11), at Kamal's choice: `kubectl port-forward … &` died with its block, and needed `nohup` or `setsid` | 2026-11-10 |
 | The session directory stays a path, which each run resolves again (9.1), at Kamal's choice: a link that changes between two blocks moves the next block | 2026-11-10 |
 | If `stepbook-<pid>` exists, the workspace takes the first free name of `stepbook-<pid>-<n>` (8.3), at Kamal's choice: after a SIGKILL in a PID namespace, every later start with the same pid failed | 2026-11-11 |
+| Three limits of a run stay, with the workarounds in 8.2: sudo asks for the password in each block, gpg-agent can draw the pinentry of an ssh key on the terminal of stepbook, and `$0` names the wrapper | 2026-11-11 |
+| While the reader of a run holds its screen, it makes the rows that the view asked for (6.3): during a flood, the view took no rows in 120 frames | 2026-11-11 |
+| Input mode (7.2): `i` waits for the frame as `Enter` does, the cursor of the program shows in its output, and a writer thread per run writes the keys (13): a program that read no input would block the main thread | 2026-11-11 |
+| A bracketed paste loses the ESC characters of its text (7.2): an `ESC[201~` in it would end the paste early | 2026-11-11 |
+| The terminal of a run answers DSR 5 and 6 and DA1 (6.3), at Kamal's choice: a program that asked waited for its timeout | 2026-11-11 |
+| The full-screen view keeps the footer, and the scrollback stays at 5,000 lines (7.3, 6.3), at Kamal's choice. After the run, `j`, `k`, `Home` and `End` scroll too, and `ctrl-c` goes back as `q` does | 2026-11-11 |
+| A program on the alternate screen shows only in the full-screen view (6.3): under the block, the rows from before the switch stay. When it leaves, the view goes back to the mode before it, and `i` on such a block opens the view | 2026-11-11 |
+| On a screen too small for the view, the PTY of a block keeps its size (6.1); `ctrl-o` never opens the full-screen view, and a key that waited for the frame does nothing if that view opened meanwhile (7.1): a program that left the alternate screen on a 3-row screen ended stepbook, a crafted file took 10 s to lay out at 16 columns, and a key meant for the document view reached the program | 2026-11-11 |
+| When stepbook stops sending the keys to a program on its own, keys do nothing for 1 s (7.2), at Kamal's choice: a second `ctrl-c` after the end of a run quit stepbook, and keys typed for a full-screen program ran the next block | 2026-11-11 |
+| A view that opens again during the pause of the keys takes them (7.2): a program that toggled the alternate screen kept every key off. When the view closes on its own, the PTY gets its document size back (6.3), at Kamal's choice, though vim then redraws over the output of `:!ls` | 2026-11-11 |
+| A paste with a line feed to a program without bracketed paste asks first (7.2), at Kamal's choice: stepbook keeps bracketed paste on, so the outer terminal took each paste for safe. An `i` or `o` just after the end of a run pauses the keys, and after `ctrl-o` the view opens on its own no more for that run, until `i` or `o` (6.3, 7.2) | 2026-11-11 |
+| A run that ends on the alternate screen leaves it, and the full-screen view after the run shows both screens (6.3), at Kamal's choice: the output before a crashed full-screen program never showed again | 2026-11-11 |
+| The full-screen view of a run that ends on the alternate screen stays open (6.3): stepbook leaves that screen, not the program. Only `ctrl-o`, not a key on a screen too small, keeps the view from opening on its own again | 2026-11-11 |
+| The full-screen view opens only with `o` or `i`, or from input mode (6.3), at Kamal's choice: the automatic open sent keys typed for the document to the program, and a program that entered the alternate screen each second kept the keys off. This replaces the automatic open of 6.3, the guard of a key that waited for its frame, the rule of `ctrl-o` against the reopen, and the keys that a view opened again took during the pause. The done-when of milestone 3 changes with it (16) | 2026-11-11 |
