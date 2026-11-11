@@ -266,7 +266,7 @@ A background job, such as `kubectl port-forward … &`, outlives its block, as i
 
 - The workspace is `$XDG_RUNTIME_DIR/stepbook-<pid>/`, or `<temp dir>/stepbook-<pid>/` if `XDG_RUNTIME_DIR` is not set, not absolute, or not a directory of the user. After `su`, it can still name the directory of the first user. A relative temp dir becomes absolute: a run opens its files after its `cd`.
 - The directory has mode 0700 and its files have mode 0600 (upmd issue S4, see 18).
-- If the directory exists, stepbook fails at startup: in a shared temp dir, another user could have made it.
+- stepbook never takes a directory that exists: in a shared temp dir, another user could have made it. If the name exists, stepbook takes the first free name of `stepbook-<pid>-<n>`, for n from 1 to 99, and fails at startup if none is free. A stepbook killed by SIGKILL leaves its workspace, and in a PID namespace, the next stepbook often gets the same pid.
 - If another user could replace the workspace, stepbook fails at startup. That is the case if the parent directory belongs to a user other than the user and root. It is also the case if other users can write to the parent and it has no sticky bit.
 - While stepbook runs, it keeps a lock (`flock`) on the workspace: systemd-tmpfiles never deletes a locked directory as old. Before each run, stepbook checks that the workspace is still the directory that it made. If it is not, the run fails: another user could have made it again, with a wrapper of their own.
 - stepbook deletes the workspace when it exits, including after a panic or one of the signals of 4. It deletes the files of a run when the run ends.
@@ -551,7 +551,8 @@ This spec is the source of truth. A change of decision updates it in the same co
 | A run that cannot start fails, and "Cannot run" keeps the problems of the file (6.2): `Enter` could not run the block again before a reload | 2026-11-10 |
 | Questions show in the footer (7.4), at Kamal's choice: they hide no part of the document | 2026-11-10 |
 | Program output keeps its colors (6.3), and stepbook blinks the `●` of a running block itself (6.2) | 2026-11-10 |
-| A panic in any thread ends stepbook with exit code 101 (4, 11), and an existing workspace directory is a startup error (8.3) | 2026-11-10 |
+| A panic in any thread ends stepbook with exit code 101 (4, 11) | 2026-11-10 |
 | The output of a run does not show its C1 characters, U+FFFD and invalid bytes (6.5): the vt100 screen drops them, and has no hook to draw them | 2026-11-10 |
 | A background job outlives its block, until stepbook ends (8.2, 11), at Kamal's choice: `kubectl port-forward … &` died with its block, and needed `nohup` or `setsid` | 2026-11-10 |
 | The session directory stays a path, which each run resolves again (9.1), at Kamal's choice: a link that changes between two blocks moves the next block | 2026-11-10 |
+| If `stepbook-<pid>` exists, the workspace takes the first free name of `stepbook-<pid>-<n>` (8.3), at Kamal's choice: after a SIGKILL in a PID namespace, every later start with the same pid failed | 2026-11-11 |

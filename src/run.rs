@@ -2,7 +2,7 @@
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fs::{DirBuilder, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -33,6 +33,9 @@ pub fn find_in_path(name: &str, path: &OsStr) -> Option<PathBuf> {
     Some(std::path::absolute(&found).unwrap_or(found))
 }
 
+/// The number of names that `Workspace::create` tries.
+const NAMES: u32 = 100;
+
 /// The directory of the run files, which only the user can read (spec
 /// 8.3): the scripts can hold secrets. Dropping it deletes it.
 pub struct Workspace {
@@ -44,13 +47,23 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// Creates `stepbook-<pid>` in `parent`. It fails if the directory
-    /// exists: in a shared temp dir, another user could have made it. It
-    /// also fails if another user could replace it in `parent`.
+    /// Creates `stepbook-<pid>` in `parent`, or the first free name of
+    /// `stepbook-<pid>-<n>`: a stepbook killed by SIGKILL leaves its
+    /// workspace, and in a PID namespace, the next stepbook often gets the
+    /// same pid. It never takes a directory that exists: in a shared temp
+    /// dir, another user could have made it. It fails if another user could
+    /// replace the workspace in `parent`.
     pub fn create(parent: &Path) -> std::io::Result<Workspace> {
         check_parent(parent)?;
-        let dir = Workspace::dir_in(parent);
-        DirBuilder::new().mode(0o700).create(&dir)?;
+        let mut n = 0;
+        let dir = loop {
+            let dir = Workspace::dir_in(parent, n);
+            match DirBuilder::new().mode(0o700).create(&dir) {
+                Ok(()) => break dir,
+                Err(e) if e.kind() == ErrorKind::AlreadyExists && n + 1 < NAMES => n += 1,
+                Err(e) => return Err(e),
+            }
+        };
         let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
         let lock = rustix::fs::open(&dir, flags, Mode::empty())
             .inspect_err(|_| _ = std::fs::remove_dir(&dir))?;
@@ -87,9 +100,13 @@ impl Workspace {
         )))
     }
 
-    /// The path of the workspace in `parent`.
-    pub fn dir_in(parent: &Path) -> PathBuf {
-        parent.join(format!("stepbook-{}", std::process::id()))
+    /// The path of the workspace in `parent`, with the suffix `n`.
+    fn dir_in(parent: &Path, n: u32) -> PathBuf {
+        let pid = std::process::id();
+        match n {
+            0 => parent.join(format!("stepbook-{pid}")),
+            n => parent.join(format!("stepbook-{pid}-{n}")),
+        }
     }
 
     pub fn dir(&self) -> &Path {
@@ -756,7 +773,7 @@ mod tests {
     fn only_the_user_can_read_the_workspace() {
         let tmp = tempfile::tempdir().unwrap();
         let workspace = Workspace::create(tmp.path()).unwrap();
-        assert_eq!(workspace.dir(), Workspace::dir_in(tmp.path()));
+        assert_eq!(workspace.dir(), Workspace::dir_in(tmp.path(), 0));
         assert_eq!(mode(workspace.dir()), 0o700);
     }
 
@@ -771,11 +788,20 @@ mod tests {
     }
 
     #[test]
-    fn the_workspace_must_not_exist() {
+    fn the_workspace_takes_the_next_name_that_does_not_exist() {
         let tmp = tempfile::tempdir().unwrap();
-        let dir = Workspace::dir_in(tmp.path());
-        std::os::unix::fs::symlink(tmp.path(), &dir).unwrap();
-        assert!(Workspace::create(tmp.path()).is_err());
+        // A link in place of the first name: never followed.
+        let link = Workspace::dir_in(tmp.path(), 0);
+        std::os::unix::fs::symlink(tmp.path(), &link).unwrap();
+        let workspace = Workspace::create(tmp.path()).unwrap();
+        assert_eq!(workspace.dir(), Workspace::dir_in(tmp.path(), 1));
+        assert!(link.is_symlink());
+        // Until the names run out.
+        for n in 2..NAMES {
+            fs::create_dir(Workspace::dir_in(tmp.path(), n)).unwrap();
+        }
+        let error = Workspace::create(tmp.path()).err().unwrap();
+        assert_eq!(error.kind(), ErrorKind::AlreadyExists);
     }
 
     #[test]
@@ -789,7 +815,7 @@ mod tests {
             tmp.path().display()
         );
         assert_eq!(error.to_string(), expected);
-        assert!(!Workspace::dir_in(tmp.path()).exists());
+        assert!(!Workspace::dir_in(tmp.path(), 0).exists());
         set_mode(0o1777).unwrap();
         assert!(Workspace::create(tmp.path()).is_ok());
     }

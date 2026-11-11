@@ -201,10 +201,9 @@ fn open(args: &Args) -> Result<Exit, String> {
     let runtime_dir = std::env::var_os("XDG_RUNTIME_DIR");
     let parent = run::workspace_parent(runtime_dir, std::env::temp_dir());
     let fail = |e: std::io::Error| {
-        let dir = run::Workspace::dir_in(&parent);
         format!(
-            "cannot create the workspace {}: {}",
-            dir.display(),
+            "cannot create the workspace in {}: {}",
+            parent.display(),
             io_message(&e)
         )
     };
