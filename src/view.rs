@@ -2512,6 +2512,20 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn the_pty_of_the_block_of_the_full_screen_view_takes_the_screen() {
+        let mut view = view("- item\n\n  ```bash\n  ls\n  ```\n\n```bash\nls\n```\n");
+        view.mode = Mode::Full(Full {
+            block: 1,
+            rows: Rows::default(),
+            scroll: 0,
+            back: None,
+        });
+        // The screen without the footer; the other blocks keep theirs.
+        assert_eq!(view.pty_size(1, Size::new(80, 24)), (80, 23));
+        assert_eq!(view.pty_size(0, Size::new(80, 24)), (61, 23));
+    }
+
+    #[test]
     fn reveal_shows_nothing_without_blocks() {
         let mut view = view("Text.\n");
         assert!(!view.reveal(SMALL));

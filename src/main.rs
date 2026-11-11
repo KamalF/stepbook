@@ -1414,13 +1414,14 @@ mod tests {
         read_until(&mut app, SIZE, |app| output(app, 0).contains("Password:"));
         key(&mut app, KeyCode::Char('i'));
         assert_eq!(app.view.mode, view::Mode::Input(0));
-        // The keys of the document view go to the program too.
-        for c in "qj x".chars() {
+        // The keys of the document view go to the program too, o
+        // included: only ctrl-o leaves.
+        for c in "qj ox".chars() {
             key(&mut app, KeyCode::Char(c));
         }
         key(&mut app, KeyCode::Enter);
         read_until(&mut app, SIZE, |app| !running(app));
-        assert_eq!(output(&app, 0), "Password:\ngot qj x");
+        assert_eq!(output(&app, 0), "Password:\ngot qj ox");
         assert_eq!(app.view.mode, view::Mode::Normal);
     }
 
