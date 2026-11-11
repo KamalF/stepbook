@@ -129,7 +129,7 @@ Kamal signed off the plan and these choices on 2026-11-10. The spec records them
 - `cargo mutants`: 654 caught, 18 missed, 72 timeouts and 47 unviable, in 33 minutes. The tests that wait for a run had no time limit, so a mutant that lost an event hung them: they now fail after 10 s. The misses got tests (the file descriptors of a run, a key release with a question open, the end of a row of output, the layout cache, the top of a block under output), or an exclusion with its reason in `.cargo/mutants.toml`.
 - `/simplify`, with 4 cleanup agents: 2 commits. The altitude agent found 2 bugs of the wrapper, fixed: a handler that chained `trap -p EXIT` called the wrapper's handler without end, and under `set -a` the state took `BASH_TRAPSIG` on most exit paths. The efficiency agent measured 7 MB of output 12 times faster once the rows of output are made once per frame, not once per read of the PTY.
 
-- Review loop, with a code reviewer and a security reviewer each round. Accepted findings per round: 6, 4, 5, 4, 1, 5, 3, 4, all fixed, in the commits from 85eb695 to 365d20a. Among them:
+- Review loop, with a code reviewer and a security reviewer each round. Accepted findings per round: 6, 4, 5, 4, 1, 5, 3, 4, 2, 2, 2, 3, 2, 1, 0, all fixed, in the commits from 85eb695 to 49e7b43. Round 15 found no blocker and no should-fix: the loop converged on 2026-11-11. Among the findings:
   - Round 1: crafted output made vt100 panic, which ended stepbook (caught now); no frame during a flood of output; keys typed ahead; POSIX mode broke the wrapper; `set -x` showed the wrapper.
   - Round 2: a run ended only when the PTY closed (now when the wrapper exits); `timeout` escaped the signals of a quit (now the whole session); REP stalled the main thread; a relative `TMPDIR`.
   - Round 3: vt100 moved to the reader thread of each run, so that crafted output slows only its run; jobs that `timeout` or `set -m` moved got no SIGHUP; the logical `PWD`; exported arrays.
@@ -138,12 +138,17 @@ Kamal signed off the plan and these choices on 2026-11-10. The spec records them
   - Round 6: the `tee` of the old logging header lost the end of its output to the kernel's SIGHUP (the wrapper now closes its files and waits up to 1 s); variables of 4 KiB or more go in a file; a bash without `compgen` saves no state.
   - Round 7: the end of the wrapper runs free of the script's options and traps.
   - Round 8: a bare `exit` in the script's handler lost the status of the script; a handler that turned `set -x` on traced each variable; under `set -T`, a `DEBUG` trap made the wrapper call itself without end; the locals of a function reached the session; SIGINT left the workspace behind. With Kamal's answers to two open points: a background job outlives its block, until stepbook ends, and the session directory stays a path.
+  - Round 9: a job whose parent had ended got the kernel's SIGHUP (the wrapper now always hands the PTY off); under `localvar_unset`, the save dropped variables; a bare `exit` in a command substitution of the handler.
+  - Round 10: the hand-off fired an `ERR` trap of the script, so every block ended with rc=1 under `set -e; trap ... ERR`; a job whose main thread had ended counted as a zombie.
+  - Round 11: a subshell lost an EXIT trap equal to the script's handler; stepbook trusted the workspace by its path for the whole session (now locked against systemd-tmpfiles, checked before each run, and its parent checked at startup).
+  - Round 12: the drain's timer could send the state into a workspace that another user made again; stepbook read the state file by its path, where a FIFO blocked it; a workspace left by SIGKILL failed each later start with the same pid. Kamal chose the counter suffix `stepbook-<pid>-<n>`.
+  - Round 13: the check skipped the directories above the workspace; in a user namespace, it refused `/tmp`, owned there by the overflow uid; an `XDG_RUNTIME_DIR` that named a file. Kamal kept the counter names, though another user can squat them (denial of service only).
+  - Round 14: the `GPG_TTY` of a run named the terminal of stepbook, where pinentry drew over the view and took its keys.
 
 ## Next
 
-1. The review loop of milestone 2 goes on from round 9. Its log, with the Decisions, Follow-ups and Nits deferred to give each reviewer, is `~/.cache/stepbook-review/m2-review-loop-log.md`. Kamal chose to run the loop until it converges.
-2. Then `cargo mutants` again, the check in tmux and Kamal's checklist. Then the merge into `main`.
-3. The look and feel review, before milestone 3.
+1. `cargo mutants` again, since the code changed after the first run, then the check in tmux and Kamal's checklist. Then the merge into `main`. The log of the review loop, with its Decisions, Follow-ups and Nits deferred, is `~/.cache/stepbook-review/m2-review-loop-log.md`.
+2. The look and feel review, before milestone 3.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
 
@@ -151,7 +156,8 @@ Kamal pushes later: the repository has no remote yet (see the first open point).
 
 - Before the first push, Kamal creates `KamalF/stepbook` on GitHub and adds the remote. The sandbox cannot write `.git/config`.
 - Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
-- Look and feel review, between milestones 2 and 3, once blocks show their output and state (Kamal, 2026-11-10). From the first screenshot: prose lines of about 200 characters on a wide terminal (a maximum text width of about 100 columns?); the selection in terminal cyan, which Kamal's theme draws green; the contrast between a block that runs and other code. From the review of milestone 2: output rows have no mark of their own, so output can draw a fake info line and gutter in the column of a nested block.
+- Look and feel review, between milestones 2 and 3, once blocks show their output and state (Kamal, 2026-11-10). From the first screenshot: prose lines of about 200 characters on a wide terminal (a maximum text width of about 100 columns?); the selection in terminal cyan, which Kamal's theme draws green; the contrast between a block that runs and other code. From the review of milestone 2: output rows have no mark of their own, so output can draw a fake info line and gutter in the column of a nested block. A question or a notice is cut at the right edge of the footer: at 45 columns, "1 block running. Stop it and quit?" loses its "(y/N)". During a flood of output, the rows under the block can stay old for a second or more.
+- Follow-ups of the review loop of milestone 2, for milestone 3: a run's terminal answers no query (DSR, DA, OSC 10/11), so programs that ask wait for their timeout; sudo asks for the password in each block, since each run has its own PTY; vt100 keeps 5,000 lines of scrollback at full width, about 29 MB per block at 180 columns; in a block, `$0` and `BASH_SOURCE` name files of the workspace; gpg-agent's ssh support shows pinentry on its startup tty, which can be stepbook's terminal.
 - Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal). Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
 - Before milestone 4 writes the log: the default log of a FILE named `x.log` is the runbook itself. Spec 4 needs a rule.
 - Claude drives stepbook in tmux from the sandbox with `scripts/tui.sh` and one steps file per check: it starts tmux, sends the keys and captures the pane. The sandbox stops the tmux server when a command ends. Checked on 2026-11-09.
