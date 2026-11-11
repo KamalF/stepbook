@@ -52,7 +52,8 @@ stepbook [--log PATH | --no-log] FILE
 | `-h`, `--help` / `-V`, `--version` | Prints help or the version. |
 
 - The first run starts in the current directory of the stepbook process.
-- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, not a regular file, larger than 1 MB or nested too deep, `bash` not found, stdout not a terminal, terminal setup failed) or terminal error during the session, such as a failed read of the keys. Exit code 2: invalid arguments.
+- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, not a regular file, larger than 1 MB or nested too deep, `bash` not found, current directory unreadable, stdout not a terminal, workspace or terminal setup failed) or terminal error during the session, such as a failed read of the keys. Exit code 2: invalid arguments. Exit code 101: a panic, which is a bug.
+- On SIGTERM, SIGHUP, SIGINT or SIGQUIT, stepbook cleans up (11), then dies of the signal. In raw mode, `ctrl-c` and `ctrl-\` are keys: SIGINT and SIGQUIT come only from `kill`.
 
 ## 5. Document
 
@@ -127,8 +128,8 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 
 - **Sidebar:** one row per block, with a status glyph and the name. An unnamed block shows `#<n>`, where n is its position among all the blocks of the file, from 1. Its width, with its left border, is the longest name plus 4, between 12 and 30 columns. A longer name ends with `…`. The sidebar scrolls to keep the selected row visible, and it is hidden on terminals under 80 columns.
 - **Document view:** the rendered runbook. The selected block has a highlighted gutter and sidebar row.
-- **Footer:** the mode, the keys that apply now, and notifications. A notification lasts 3 seconds.
-- **Minimum size:** on a terminal smaller than 40 columns or 8 rows, stepbook shows only `Enlarge the terminal to at least 40 columns and 8 rows.`, and only the keys that quit work. Below that size, code under a list marker has no room, and the layout of a crafted file costs too much.
+- **Footer:** the mode, then the keys that apply now. A notification or a question (7.4) shows in place of the keys. A notification lasts 3 seconds.
+- **Minimum size:** on a terminal smaller than 40 columns or 8 rows, stepbook shows only `Enlarge the terminal to at least 40 columns and 8 rows.`, and only the keys that quit work. A question (7.4) waits for a screen large enough to show it. Below that size, code under a list marker has no room, and the layout of a crafted file costs too much.
 
 ### 6.2 Block states
 
@@ -137,16 +138,24 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 | Not run | ` ` | name |
 | Running | `●` (blinking) | `running m:ss` |
 | Succeeded | `✔` | `rc=0 m:ss` |
-| Failed | `✘` | `rc=N m:ss`; for a signal, `rc=130 SIGINT` |
+| Failed | `✘` | `rc=N m:ss`; for a signal, `rc=130 SIGINT m:ss`; for a run that could not start, the reason, such as `cannot start: directory /x no longer exists` |
 | Changed | `~` plus the last result | `changed since run`, then the last result |
-| Cannot run | `!` | the reason: duplicate name, cannot start, and so on |
+| Cannot run | `!` | the problem of the file, such as `duplicate name` |
+
+- The info line shows the glyph and the state after the name, such as `restart  ✔ rc=0 0:02`, then the problem and the warnings. A run that saved no state adds `state not saved` (9.2).
+- stepbook blinks the `●` of the sidebar itself, every 0.5 s: terminals differ on the blink attribute. The time of a running block shows to the second.
+- A run that cannot start fails, so that `Enter` can run the block again. Only a reload ends "Cannot run".
 
 ### 6.3 Output under a block
 
 - Each block that has run shows its output under the code. The output stays until the block runs again. Reloads do not clear it.
 - stepbook shows the last 15 rows of the block's terminal, scrollback included. Trailing empty rows are trimmed, except the cursor row while the block runs.
-- PTY size: the document text width minus the gutter, by the terminal height minus 1. It follows terminal resizes.
+- The output takes the column of the code, after the prefixes of the block, with no gutter: code rows always have one.
+- PTY size: the columns of the block's code, which are the text width of the document view without the prefixes and the gutter of the block, by the terminal height minus 1. It follows terminal resizes.
+- Output keeps the colors of the program, 256 colors and RGB included, as in a terminal.
 - Scrollback keeps 5,000 lines per run.
+- If the vt100 screen fails on the output of a run, the output so far is lost, and a row of the output says so. stepbook and the other runs go on.
+- The reader thread of each run feeds its vt100 screen, and the view takes the rows when the screen is free. vt100 can take seconds on crafted output, such as a repeat of a character 65,535 times or a scroll of the whole screen: only the run that prints it waits, and the view and the keys go on.
 - A UTF-8 character that is split across two reads of the PTY shows whole (upmd issue K18, see 18).
 - When the selected running block switches to the alternate screen (vim, less, top), stepbook opens the full-screen view in input mode. When the program leaves the alternate screen, stepbook returns to the document view. If the block is not selected, its info line shows `full-screen program, press o`.
 - When the selected block's output grows past the bottom of the view, the view scrolls to keep its last row visible.
@@ -178,6 +187,7 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 - If the code of a block holds a character that code escapes, other than a tab or a line feed, its info line shows the warning `hidden characters in code`. The block can still run.
 - The view and the run use the same code text, so what runs is what the view shows.
 - Program output reaches the terminal only through the vt100 screen. See 6.4.
+- In the output of a run, the vt100 screen drops the C1 characters, U+FFFD and the bytes that are not valid UTF-8: they do not show. A program cannot send a control character through it.
 - Each frame clears the screen and draws every cell, in a synchronized update (mode 2026) that does not flicker. ratatui alone sends only the cells that changed, so a row that a terminal drew shifted would stay shifted, and a line of code could later take that row.
 
 ## 7. Keys
@@ -189,11 +199,13 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 | `↓`, `j` / `↑`, `k` | Select the next / previous block, and scroll so that the block and the paragraph above it are visible. If they do not fit, the whole block shows, with the end of the paragraph. A block taller than the view shows from its paragraph, or from its info line. |
 | `Home` / `End` | Select the first / last block. Without blocks, scroll to the top / bottom. |
 | `PageDown` / `PageUp` | Scroll one page. The selection moves to the first block whose info line is in view, else to the first block in view. `PageDown` never moves it to an earlier block, and `PageUp` never to a later one. |
-| `Enter` | Run the selected block. See 8.1. |
+| `Enter` | Run the selected block (8.1). If `j` or `k` would scroll to show the block, `Enter` only does that scroll: it never runs code that is off the screen, such as after the startup or a resize. `Enter` and the answer to a question act on the screen as drawn: after other events, such as keys typed ahead, they wait for the next frame. |
 | `i` | Enter input mode, if the selected block is running. |
 | `o` | Open the full-screen view of the selected block, if it has run. |
 | `ctrl-r` | Reload the file now. |
 | `q`, `ctrl-c` | Quit. See 11. |
+
+A paste does nothing in the document view: a line feed in it would run the selected block.
 
 ### 7.2 Input mode
 
@@ -213,7 +225,7 @@ While the view is open, the PTY takes the full terminal size. It gets its docume
 
 ### 7.4 Confirmation dialogs
 
-`y` confirms. `n`, `Esc` and every other key cancel.
+A question shows in the footer, in place of the keys, so that it hides no part of the document. `y` confirms. `n`, `Esc` and every other key cancel. If a resize hid the block to re-run, `y` shows it and asks again, as `Enter` does (7.1).
 
 ## 8. Running blocks
 
@@ -226,7 +238,7 @@ While the view is open, the PTY takes the full terminal size. It gets its docume
 | Not run | Starts a run. |
 | Running | Shows `already running: i to type, o to view`. Never starts a second run of the same block (upmd issue K5, see 18). |
 | Succeeded, failed or changed | Asks `Re-run <name>? (y/N)`. On `y`, clears the block's output and starts a run. |
-| Cannot run | Shows the reason. |
+| Cannot run | Shows the reason, such as `cannot run: duplicate name`. |
 
 Several blocks can run at the same time. Each one runs in its own PTY.
 
@@ -234,22 +246,31 @@ Several blocks can run at the same time. Each one runs in its own PTY.
 
 1. stepbook checks that the session directory exists. If it does not, the run fails with `cannot start: directory <dir> no longer exists`. The session directory then resets to the directory that stepbook started in, and the footer says so. stepbook never falls back to `$HOME` (upmd issue S6, see 18).
 2. stepbook writes the block code to `<workspace>/run-<id>.sh`.
-3. It spawns `bash --noprofile --norc <workspace>/wrapper.sh <run files>` in a new PTY, in the session directory.
+3. It spawns `bash --noprofile --norc <workspace>/wrapper.sh <run files>` in a new PTY, in the session directory. `bash` is the absolute path found on the `PATH` at startup: a relative one would name another file in each directory. A session variable whose `NAME=value` takes 4 KiB or more goes to the wrapper in a file, which it exports: in the environment of `exec`, one value over 128 KiB would fail the start of every run, and no block could unset it.
 4. The child gets exactly the session variables, plus:
    - `TERM=xterm-256color`
+   - `GPG_TTY`, if the session has it: the path of the run's PTY. In the session, it names the terminal of stepbook, where gpg-agent would draw its pinentry over the view and read the keys of stepbook.
+   - `PWD`: the session directory, so that bash keeps the path that the last `cd` gave through a link, as a terminal does
    - `STEPBOOK_FILE`: the absolute path of the runbook
    - `STEPBOOK_LOG`: the absolute path of the log, or empty
    - `STEPBOOK_BLOCK`: the block name
 5. The wrapper sources the block script in its own shell, so `export`, `cd` and shell options work as in a terminal.
-6. The run ends when the process exits and its output has been read. Its exit code is the shell's exit code. A shell killed by signal N reports 128+N.
+6. The run ends when the wrapper exits, once stepbook has read the output that waits in the PTY. A background job, which can keep the PTY open, does not hold the block in "running", nor its state. The exit code of the run is the shell's exit code. A shell killed by signal N reports 128+N.
 
 stepbook checks at startup that `bash` is on the `PATH` and fails if it is not. There is no timeout on runs.
 
+Before the wrapper exits, it closes its files and waits up to 1 s for its children to end: when the run ends, a process substitution, such as the `tee` of the old logging header (12.3), would lose the end of its output. A background job, which keeps the files open, costs that second. It does so after the script's `EXIT` handler, or at the `exit` of that handler, whatever the options and traps of the script. A failure under `set -e` in the handler ends the shell at once: the wrapper then neither saves the state a second time nor waits.
+
+A background job, such as `kubectl port-forward … &`, outlives its block, as in a terminal, until stepbook ends (11). When the wrapper exits, the kernel sends SIGHUP to the process group in the foreground of the PTY, which holds the jobs of the script. So, after its wait, the wrapper hands the PTY to a process group that has ended: a `bash -m` takes it, then dies of SIGKILL before it can give it back. After its block, a job's output goes nowhere: stepbook reads it and drops it. A block that replaces its shell with `exec`, or that fails under `set -e` in its `EXIT` handler, skips that step: its jobs get SIGHUP. A job that left the session with `setsid` outlives stepbook too.
+
 ### 8.3 Workspace
 
-- The workspace is `$XDG_RUNTIME_DIR/stepbook-<pid>/`, or `<temp dir>/stepbook-<pid>/` if `XDG_RUNTIME_DIR` is not set.
+- The workspace is `$XDG_RUNTIME_DIR/stepbook-<pid>/`, or `<temp dir>/stepbook-<pid>/` if `XDG_RUNTIME_DIR` is not set, not absolute, or not a directory of the user. After `su`, it can still name the directory of the first user. A relative temp dir becomes absolute: a run opens its files after its `cd`.
 - The directory has mode 0700 and its files have mode 0600 (upmd issue S4, see 18).
-- stepbook deletes the workspace when it exits, including after a panic or a SIGTERM or SIGHUP.
+- stepbook never takes a directory that exists: in a shared temp dir, another user could have made it. If the name exists, stepbook takes the first free name of `stepbook-<pid>-<n>`, for n from 1 to 99, and fails at startup if none is free. A stepbook killed by SIGKILL leaves its workspace, and in a PID namespace, the next stepbook often gets the same pid.
+- The path of the workspace has no link: stepbook resolves the parent first. If another user could replace the workspace, stepbook fails at startup. That is the case if the parent, or a directory above it, belongs to a user other than the user and root. It is also the case if other users can write to one of these directories and it has no sticky bit. In a user namespace that does not map root, such as a bwrap sandbox, root shows as the overflow uid (65534 by default). Outside the initial user namespace, stepbook trusts that uid as root. Each user that the namespace does not map shows as that uid too, so stepbook trusts them as well.
+- While stepbook runs, it keeps a lock (`flock`) on the workspace: systemd-tmpfiles never deletes a locked directory as old. Before each run, stepbook checks that the workspace is still the directory that it made. If it is not, the run fails: another user could have made it again, with a wrapper of their own.
+- stepbook deletes the workspace when it exits, including after a panic or one of the signals of 4. It deletes the files of a run when the run ends.
 
 ## 9. Session state
 
@@ -257,15 +278,22 @@ stepbook checks at startup that `bash` is on the `PATH` and fails if it is not. 
 
 The session state is a map of exported variables and one working directory.
 
-- At startup, it is stepbook's own environment and current directory.
+- At startup, it is stepbook's own environment and current directory. The directory is `$PWD` if it names the current directory, so that a path through a link stays as the user typed it.
+- The directory is a path, which each run resolves again: if a link on it changes between two blocks, the next block runs in the new target.
 - These variables are excluded: `_`, `SHLVL`, `PWD`, `OLDPWD`, and all `STEPBOOK_*`.
 
 ### 9.2 Capture
 
 When the block script ends, the wrapper writes the state file `<workspace>/run-<id>.state`:
 
-- the working directory, then each exported variable as `NAME=value`;
+- the working directory, then each exported variable as `NAME=value`, then an empty entry. An exported array is not saved: bash puts no array in the environment;
 - each entry ends with a NUL byte, so values can hold newlines, quotes and any other byte.
+
+The wrapper writes the state only into the file that stepbook made for it: after stepbook ends, its workspace is gone, and a directory of the same name can be another user's. A block can also delete the workspace, and another user can then make it again. So, when it exits, the wrapper opens a file of the workspace only if the workspace is still a directory of the user and not a link. stepbook reads the state file through the workspace that it keeps open, never through its path. It does not follow a link there, and a FIFO there gives no state instead of blocking stepbook.
+
+The wrapper needs `compgen`, which a bash built without programmable completion lacks: such a bash saves no state, since a state with no variable would remove them all from the session.
+
+Without the empty entry, the file is partial, and stepbook ignores it: the wrapper was killed while it wrote it, and the missing variables would count as unset.
 
 stepbook splits the file on NUL bytes. It never parses shell syntax, which removes upmd issues K11 and S3 by design (see 18).
 
@@ -276,17 +304,24 @@ The wrapper saves the state in all these cases:
 | Runs to its last line, whatever the exit code | Yes |
 | Calls `exit N` | Yes |
 | Stops because of `set -e` | Yes |
-| Installs its own `EXIT` trap | Yes. The wrapper runs its handler and the script's handler. |
+| Installs its own `EXIT` trap | Yes. The wrapper runs the script's handler, then its own. `trap -p EXIT` shows the script's handler, so that a handler can chain it. |
 | Stops on `ctrl-c` (SIGINT), SIGTERM or SIGHUP | Yes |
 | Killed with SIGKILL, or replaces itself with `exec` | No. The info line shows `state not saved`. |
+| Installs its own `EXIT` trap in POSIX mode (`set -o posix`, `POSIXLY_CORRECT`) | No: bash runs its builtin `trap`, which replaces the wrapper's handler. The block still runs. |
+
+The state holds the global value of each variable. After an `exit` in a function, or a signal, bash runs the `EXIT` trap in that function, where its locals hide the global variables. The wrapper reads past them: a `local KUBECONFIG` never reaches the next block.
+
+The wrapper keeps the script's `EXIT` handler apart with a shell function named `trap`. bash resets the `ERR`, `DEBUG` and `RETURN` traps in a function, and puts them back at its return. So in a block, `trap - ERR` (or `DEBUG`, `RETURN`) removes nothing, `trap -p ERR` shows nothing, and a `RETURN` trap set in a function also runs when `trap` returns. Setting an `ERR` or `DEBUG` trap works. Under `set -T` or `shopt -s extdebug`, a `DEBUG` trap also runs on the lines of the function `trap`.
+
+The script's `EXIT` handler runs with `set -x`, `set -v` and `set -T` off, as the wrapper does: their trace, or a `DEBUG` trap, would show the wrapper and the values of the variables. `exit` with no status in the handler keeps the status from before the trap, as in bash.
 
 ### 9.3 Applying the state
 
 When a run ends, stepbook compares the captured state with the state the run started with, and applies only the difference to the session:
 
 - Variables that the block set or changed are updated.
-- Variables that the block unset are removed, so `unset` works (upmd issue K12, see 18).
-- The working directory changes only if the block changed it.
+- Variables that the block unset are removed, so `unset` works (upmd issue K12, see 18). A variable whose name is not a bash identifier, such as `a-b`, is never removed: bash passes it on to its children, but a block cannot change it, and the wrapper does not see it.
+- The working directory changes only if the block changed it, to an absolute path.
 - The state applies whatever the exit code, as in a terminal.
 
 Two blocks that run at the same time do not overwrite each other's unrelated changes. If both change the same variable, the block that ends last wins.
@@ -312,14 +347,16 @@ Blocks are matched by key between the old and the new file:
 
 ## 11. Quit
 
-- If no run is active, `q` and `ctrl-c` quit at once.
-- If runs are active, stepbook asks `N blocks running. Stop them and quit? (y/N)`. On `y`:
-  1. It closes each PTY, which sends SIGHUP.
-  2. It waits up to 2 seconds, then sends SIGKILL to processes still alive.
+- If no run is active, `q` and `ctrl-c` quit at once. The background jobs of the blocks that have ended do not count: they end with stepbook.
+- If runs are active, stepbook asks `N blocks running. Stop them and quit? (y/N)`, or `1 block running. Stop it and quit? (y/N)`. On `y`:
+  1. It sends SIGHUP to the processes of each run, as the close of its PTY would: those of the session of its wrapper. `timeout` and `set -m` give a child a process group of its own, in the same session. A process that left the session with `setsid` does not get it. The footer says `stopping the blocks that run`, and keys do nothing.
+  2. It waits up to 2 seconds, then sends SIGKILL to the processes of the runs still alive.
   3. It writes their `END` lines to the log and quits.
 - stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide, as ratatui counts them. On a terminal set to draw them wide, such as VTE with that option or `xterm -cjk_width`, the text after such a character shifts, in code too, and a space can vanish.
 - While it runs, stepbook turns the autowrap of the terminal off: a character that the terminal draws wider than ratatui counts must not wrap into the row below and move what is there.
-- On exit, stepbook restores the terminal, autowrap included, and ends a synchronized update that a failed frame left open. It also deletes the workspace. A panic hook restores the terminal too.
+- On exit, stepbook restores the terminal, autowrap and bracketed paste included, and ends a synchronized update that a failed frame left open. It also deletes the workspace. It does the same on the signals of 4.
+- Whenever stepbook ends, after a signal, a panic or a terminal error too, it sends SIGHUP to the processes of the runs that have not ended, and to the background jobs of those that have: the processes of the session of each wrapper that it spawned. The close of a PTY reaches only its process group in the foreground. After up to 0.2 s, it sends SIGKILL to those left, then deletes the workspace: a wrapper that outlived stepbook would write its state where the workspace was.
+- A panic hook restores the terminal and deletes the workspace too. Then it ends stepbook, even after a panic in another thread: the main thread would go on drawing on the restored terminal.
 
 ## 12. Log
 
@@ -365,11 +402,12 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 | `watch.rs` | File watcher. |
 
 - Rust, one crate, no async runtime, no component framework. The target size is 2,000 to 3,000 lines without tests.
-- Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `portable-pty`, `vt100`, `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
-- The main thread owns all state. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events.
-- Control events (keys, paste, resize, process exit, file change) go to their own channel. The loop handles them before pending output, so keys stay responsive while a block prints a lot.
-- Output goes through a bounded channel per run. A slow UI slows the program, and no output is lost.
-- Every message from a run carries its run ID. Messages from a run that is no longer current for its block are dropped (upmd issue K5, see 18).
+- Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `rustix` (the PTY, poll, and the signals to the processes of a run), `vt100` without its `std` feature (with it, vte keeps each byte of an OSC that never ends), `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
+- The main thread owns all state, except the vt100 screen of each run, which the reader of the run feeds: the main thread only tries its lock. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events.
+- Control events (keys, paste, resize, signals, file change) go to their own channel. The loop handles them before pending output, so keys stay responsive while a block prints a lot.
+- After output, the loop reads the events of the next 16 ms before it draws: a program that prints a lot redraws the view at most about 60 times a second, and at least as often, since the frame ends after 16 ms even while output keeps coming.
+- Each run sends its output, then its exit status, through its own bounded channel, so that the end of a run never comes before its output. A slow UI slows the program, and no output is lost.
+- The channel of a run goes away with the run, so that a message from an old run never reaches a new run of the same block (upmd issue K5, see 18).
 
 ## 14. Tests and tooling
 
@@ -508,3 +546,14 @@ This spec is the source of truth. A change of decision updates it in the same co
 | stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide (11), at Kamal's choice: escaping them in code would flag the `→` and `·` of real runbooks. The space after the `│` of a quote has its style again | 2026-11-10 |
 | Code escapes U+1D159, which fonts draw as a blank, as it does U+2800 (6.5): `true<U+1D159>#; curl x | sh` looked like a comment, and ran curl | 2026-11-10 |
 | U+0000 (NUL) in FILE becomes U+FFFD (5.1): bash drops NUL bytes, so `r<U+0000>m` showed as `r^@m` and would run as `rm` | 2026-11-10 |
+| `rustix` replaces `portable-pty` (13), at Kamal's choice: portable-pty reports a death by signal only as the text of `strsignal`, and its kill reaches only the shell. stepbook opens the PTY with its own code | 2026-11-10 |
+| `Enter` on a block that is off the screen only scrolls to it (7.1), at Kamal's choice: after the startup or a resize, `Enter` could run code that the view did not show | 2026-11-10 |
+| A paste does nothing in the document view (7.1): a line feed in it would run the selected block | 2026-11-10 |
+| A run that cannot start fails, and "Cannot run" keeps the problems of the file (6.2): `Enter` could not run the block again before a reload | 2026-11-10 |
+| Questions show in the footer (7.4), at Kamal's choice: they hide no part of the document | 2026-11-10 |
+| Program output keeps its colors (6.3), and stepbook blinks the `●` of a running block itself (6.2) | 2026-11-10 |
+| A panic in any thread ends stepbook with exit code 101 (4, 11) | 2026-11-10 |
+| The output of a run does not show its C1 characters, U+FFFD and invalid bytes (6.5): the vt100 screen drops them, and has no hook to draw them | 2026-11-10 |
+| A background job outlives its block, until stepbook ends (8.2, 11), at Kamal's choice: `kubectl port-forward … &` died with its block, and needed `nohup` or `setsid` | 2026-11-10 |
+| The session directory stays a path, which each run resolves again (9.1), at Kamal's choice: a link that changes between two blocks moves the next block | 2026-11-10 |
+| If `stepbook-<pid>` exists, the workspace takes the first free name of `stepbook-<pid>-<n>` (8.3), at Kamal's choice: after a SIGKILL in a PID namespace, every later start with the same pid failed | 2026-11-11 |

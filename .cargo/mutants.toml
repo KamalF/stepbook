@@ -34,4 +34,32 @@ exclude_re = [
     # One more pending space shows only before a word of width 0, which the
     # buffer drops: the row is spaces either way.
     "replace < with <= in wrap",
+    # The end of the runs when stepbook ends: a test would end the runs of
+    # the other tests, all children of the test process. The check in tmux
+    # covers it.
+    "replace end_runs with \\(\\)",
+    "in end_runs$",
+    # These two widen the processes to signal to each process of the user:
+    # SIGKILL would end cargo-mutants, and outside a sandbox the desktop
+    # session too. On 2026-11-11, in the sandbox, they killed two runs.
+    "run.rs:\\d+:68: replace && with \\|\\| in end_sessions",
+    "replace == with != in session_processes",
+    # The thread that reads the keys: the check in tmux covers it.
+    "replace read_terminal with \\(\\)",
+    "in read_terminal$",
+    # The size of a read of the PTY: a smaller buffer gives the same output.
+    "run.rs:\\d+:\\d+: replace \\* with \\+$",
+    # The flags of the PTY are distinct bits: ^ gives the same value as |.
+    "replace \\| with \\^ in open_pty",
+    # A read of the PTY never fails with EINTR: signal-hook and crossterm
+    # install their handlers with SA_RESTART.
+    "replace match guard e.kind\\(\\) == std::io::ErrorKind::Interrupted with false in read_run",
+    # The flags of waitid, and the halves of a size, are distinct bits: ^
+    # gives the same value as |.
+    "replace \\| with \\^ in read_run",
+    "replace \\| with \\^ in Shared::resize",
+    # Two instants are never equal: <= gives the same wait as <.
+    "replace < with <= in end_sessions",
+    # With as many rows as asked, the scrollback adds none.
+    "term.rs:\\d+:\\d+: replace < with <= in last_rows$",
 ]
