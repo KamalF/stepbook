@@ -1780,7 +1780,7 @@ mod tests {
         until_session_has(&run, 3);
         run.signal(Signal::KILL);
         wait(&run);
-        assert_eq!(session_of(&run), []);
+        until_session_ends(&run);
     }
 
     #[test]
@@ -1812,7 +1812,7 @@ mod tests {
         until_session_has(&run, 3);
         run.signal(Signal::KILL);
         wait(&run);
-        assert_eq!(session_of(&run), []);
+        until_session_ends(&run);
     }
 
     #[test]
@@ -1858,7 +1858,7 @@ mod tests {
         assert_eq!(status, Status::Code(0));
         assert!(output.ends_with("started\n"), "{output}");
         end_sessions(&[run.pid.as_raw_pid()]);
-        assert_eq!(session_of(&run), []);
+        until_session_ends(&run);
     }
 
     #[test]
@@ -1912,7 +1912,7 @@ mod tests {
         };
         assert_eq!(status, Status::Code(0));
         end_sessions(&[run.pid.as_raw_pid()]);
-        assert_eq!(session_of(&run), []);
+        until_session_ends(&run);
     }
 
     #[test]
@@ -1939,10 +1939,19 @@ mod tests {
             let _ = sender.send(());
         });
         assert!(ended.recv_timeout(WAIT).is_ok());
-        // A process dies a moment after its SIGKILL.
+        until_session_ends(&run);
+    }
+
+    /// Waits until the session of a run has no process left: a process
+    /// dies a moment after its SIGKILL.
+    fn until_session_ends(run: &Run) {
         let deadline = std::time::Instant::now() + WAIT;
-        while !session_of(&run).is_empty() {
-            assert!(std::time::Instant::now() < deadline);
+        while !session_of(run).is_empty() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{:?}",
+                session_of(run)
+            );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
     }
