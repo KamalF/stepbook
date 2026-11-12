@@ -757,7 +757,12 @@ impl App {
                         // As Enter, y runs no code off the screen (spec 7.1):
                         // after a resize, it shows the block and asks again.
                         Question::Rerun(i) if yes => match self.view.reveal(size) {
-                            true => self.start(i, size),
+                            // A reload can give the block a problem, such as
+                            // a duplicate name, after the question.
+                            true => match self.view.doc.blocks[i].problem {
+                                Some(problem) => self.notify(format!("cannot run: {problem}")),
+                                None => self.start(i, size),
+                            },
                             false => self.ask(Question::Rerun(i)),
                         },
                         Question::Quit if yes => self.stop_runs(),
@@ -2709,6 +2714,23 @@ echo \"got $x\"
         app.reload(SIZE);
         assert_eq!(app.view.question.as_deref(), Some("Paste 2 lines to #2?"));
         read_until(&mut app, SIZE, |app| !running(app));
+    }
+
+    #[test]
+    fn y_runs_no_block_that_a_reload_gave_a_problem() {
+        let tmp = tempfile::tempdir().unwrap();
+        let block = fence("x", "true");
+        let mut app = app_on_file(&block, tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        enter(&mut app, SIZE);
+        assert_eq!(app.question, Some(Question::Rerun(0)));
+        std::fs::write(app.session.file(), [block.as_str(), &block].concat()).unwrap();
+        app.reload(SIZE);
+        key(&mut app, KeyCode::Char('y'));
+        assert!(!running(&app));
+        let notice = app.view.notice.as_deref();
+        assert_eq!(notice, Some("cannot run: duplicate name"));
     }
 
     #[test]
