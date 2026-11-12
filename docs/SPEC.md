@@ -47,12 +47,12 @@ stepbook [--log PATH | --no-log] FILE
 | Option | Effect |
 |---|---|
 | `FILE` | The Markdown runbook: a regular file of at most 1 MB, whose lines nest at most 1,000 levels. A level is a quote or list marker at the start of a line, or 2 columns of the whitespace at the start of the line, around the markers, with a tab as 4 columns. Required. |
-| `--log PATH`, `--log=PATH` | Log file. An empty PATH is an invalid argument. The default is `FILE` with its extension replaced by `.log`. |
+| `--log PATH`, `--log=PATH` | Log file. An empty PATH is an invalid argument. The default is `FILE` with its extension replaced by `.log`. If the log would be the runbook itself, such as for a FILE named `notes.log`, or a PATH that names FILE, through a link too, stepbook does not start: each run would append to the runbook. |
 | `--no-log` | Writes no log. |
 | `-h`, `--help` / `-V`, `--version` | Prints help or the version. |
 
 - The first run starts in the current directory of the stepbook process.
-- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, not a regular file, larger than 1 MB or nested too deep, `bash` not found, current directory unreadable, stdout not a terminal, workspace or terminal setup failed) or terminal error during the session, such as a failed read of the keys. Exit code 2: invalid arguments. Exit code 101: a panic, which is a bug.
+- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, not a regular file, larger than 1 MB or nested too deep, a log that would be the runbook itself, `bash` not found, current directory unreadable, stdout not a terminal, workspace or terminal setup failed) or terminal error during the session, such as a failed read of the keys. Exit code 2: invalid arguments. Exit code 101: a panic, which is a bug.
 - On SIGTERM, SIGHUP, SIGINT or SIGQUIT, stepbook cleans up (11), then dies of the signal. In raw mode, `ctrl-c` and `ctrl-\` are keys: SIGINT and SIGQUIT come only from `kill`.
 
 ## 5. Document
@@ -354,7 +354,7 @@ Two blocks that run at the same time do not overwrite each other's unrelated cha
 
 ## 10. Reload
 
-stepbook re-reads the file when it changes on disk. It watches the parent directory, because editors often replace the file with a rename, and waits 300 ms after the last change. `ctrl-r` re-reads the file at once.
+stepbook re-reads the file when it changes on disk. It watches the parent directory with inotify, because editors often replace the file with a rename, and waits 300 ms after the last change. inotify is Linux only: elsewhere, only `ctrl-r` reloads. `ctrl-r` re-reads the file at once.
 
 Blocks are matched by key between the old and the new file:
 
@@ -428,7 +428,7 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 | `watch.rs` | File watcher. |
 
 - Rust, one crate, no async runtime, no component framework. The target size is 2,000 to 3,000 lines without tests.
-- Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `rustix` (the PTY, poll, and the signals to the processes of a run), `vt100` without its `std` feature (with it, vte keeps each byte of an OSC that never ends), `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
+- Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `rustix` (the PTY, poll, inotify, and the signals to the processes of a run), `vt100` without its `std` feature (with it, vte keeps each byte of an OSC that never ends), `syntect` (bash syntax only), `vte` (the escape sequences in the log, at the version that vt100 uses), `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
 - The main thread owns all state, except the vt100 screen of each run, which the reader of the run feeds: the main thread only tries its lock. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events. One writer per run writes the keys to its PTY: a write to a program that reads no input would block the main thread.
 - Control events (keys, paste, resize, signals, file change) go to their own channel. The loop handles them before pending output, so keys stay responsive while a block prints a lot.
 - After output, the loop reads the events of the next 16 ms before it draws: a program that prints a lot redraws the view at most about 60 times a second, and at least as often, since the frame ends after 16 ms even while output keeps coming.
@@ -607,3 +607,6 @@ This spec is the source of truth. A change of decision updates it in the same co
 | Output rows have a dashed `╎`, not `▕` (6.3), at Kamal's choice: in Ghostty, `▕` stood 5 pixels from the `│` of a quote, in the same dim color, so output could pass for the code of a block in a quote | 2026-11-12 |
 | The selected block stays where it is on the screen when the output of a block above it grows or shrinks (6.3): the output of a running block pushed the selected block out of the view | 2026-11-12 |
 | `j`, `k`, `Home` and `End` scroll to show the output of the block too, and so `Enter` first does that scroll (7.1), at Kamal's choice: after a run of the block above, the output of the last block stayed under the bottom of the view, and only `o` showed it | 2026-11-12 |
+| stepbook does not start if the log would be the runbook itself (4), at Kamal's choice: for a FILE named `notes.log`, the default log was the runbook, and each run would append to it | 2026-11-12 |
+| The watcher of the reload uses inotify through rustix, not the `notify` crate (10, 13), at Kamal's choice: no new crate, and Linux is the target of v1 | 2026-11-12 |
+| The log removes escape sequences with `vte`, a direct dependency at the version that vt100 uses (12.1, 13), at Kamal's choice: it is in the build already, and it parses UTF-8 split across reads | 2026-11-12 |

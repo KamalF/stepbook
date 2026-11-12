@@ -19,7 +19,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 | 1 | Document view | Done, merged into `main` on 2026-11-10 |
 | 2 | Running blocks | Done, merged into `main` on 2026-11-11 |
 | 3 | Input and full-screen view | Done, merged into `main` on 2026-11-11 |
-| 4 | Log and reload | — |
+| 4 | Log and reload | Planned, on `m4-log-reload` |
 | 5 | Migration | — |
 
 Kamal signed off the build order and the new dependencies on 2026-11-09.
@@ -284,10 +284,30 @@ What tmux cannot show, in herdr: open the same runbook, and check that the dashe
 
 Kamal checked it on 2026-11-12: it looks fine.
 
+## Milestone 4: log and reload
+
+Kamal's choices on 2026-11-12: stepbook does not start if the log would be the runbook itself (spec 4); the watcher uses inotify through rustix, not the `notify` crate; the log removes escape sequences with `vte`, a direct dependency at the version of vt100.
+
+The plan, one commit per line, on the branch `m4-log-reload`:
+
+1. `docs`: this plan, and Kamal's choices (spec 4, 10, 13).
+2. `feat`: stepbook does not start if the log would be the runbook itself (4).
+3. `feat`: the cleaning of the output for the log: escape sequences removed with `vte`, CRLF as LF, a carriage return alone drops the partial line, U+FFFD for bytes that are not UTF-8, and a character split across two reads whole (12.1).
+4. `feat`: the log: one section per run, with its `START` and `END` lines, in a file created with mode 0600, and the output as it arrives; one marker line for output on the alternate screen (12.1). A thread of its own writes the log: a slow disk must not block the main thread (13).
+5. `feat`: one run writes to the log at a time: a run that starts meanwhile keeps its output in memory, then writes its section with its real start time (12.2).
+6. `feat`: a block whose first line starts with the `exec > >(tee -a ` header of old runbooks writes no section (12.3).
+7. `feat`: block keys, and the matching of the blocks of two versions of the file (3, 10).
+8. `feat`: `ctrl-r` reloads the file: outputs, results and the selection follow the matching; changed blocks show `changed since run`, and removed blocks that run stay until their run ends; the footer gives a summary (10).
+9. `feat`: the watcher: inotify on the parent directory, and a reload 300 ms after the last change (10).
+
+Done when (spec 16): `watch.sh` sees the `END` line of a run, and two concurrent runs write contiguous sections. An edit of the runbook in vim during a run keeps each output and marks the changed blocks.
+
+Kamal signed off the plan on 2026-11-12.
+
 ## Next
 
 1. Kamal pushes `main`.
-2. Milestone 4, log and reload: Claude plans it for Kamal's sign-off. The open point on the default log of a FILE named `x.log` comes first.
+2. Milestone 4: Claude builds it.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
 
@@ -297,6 +317,5 @@ Kamal pushes later: the repository has no remote yet (see the first open point).
 - Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
 - Follow-ups of the review loop of milestone 3: the input channel of a run holds up to 256 writes, pastes included, while a program reads no input; the full-screen view of an ended block makes the spans of its whole scrollback when it opens, 380 ms with crafted output that changes color on each cell at 180 columns; the answer to DSR 6 ignores origin mode, which vt100 does not expose.
 - Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal). Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
-- Before milestone 4 writes the log: the default log of a FILE named `x.log` is the runbook itself. Spec 4 needs a rule.
 - `the_output_of_a_process_substitution_ends_before_the_run` fails its 900 ms bound under heavy load, such as two test suites at once: the reader of the run parses 20,000 lines of output in a debug build, and tee waits on the PTY. It did so before the last changes of milestone 2 too (checked on c7e5ca9, 2026-11-11). A single suite passes.
 - Claude drives stepbook in tmux from the sandbox with `scripts/tui.sh` and one steps file per check: it starts tmux, sends the keys and captures the pane. The sandbox stops the tmux server when a command ends. Checked on 2026-11-09.
