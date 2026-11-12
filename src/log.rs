@@ -77,6 +77,10 @@ pub fn open(path: &Path) -> std::io::Result<File> {
     if meta.uid() != rustix::process::geteuid().as_raw() {
         return Err(std::io::Error::other("it belongs to another user"));
     }
+    // A hard link: the output would also land in a file of another name.
+    if meta.nlink() != 1 {
+        return Err(std::io::Error::other("it has other links"));
+    }
     Ok(file)
 }
 
@@ -720,6 +724,13 @@ b3
         assert!(!target.exists());
         std::fs::write(&target, "key\n").unwrap();
         assert_eq!(error(&link), "it is a link");
+        // A hard link to another file of the user.
+        let other = tmp.path().join("bashrc");
+        std::fs::write(&other, "alias\n").unwrap();
+        let hard = tmp.path().join("hard.log");
+        std::fs::hard_link(&other, &hard).unwrap();
+        assert_eq!(error(&hard), "it has other links");
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "alias\n");
         // A FIFO fails at once, with no reader.
         let fifo = tmp.path().join("fifo.log");
         let mode = rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR;

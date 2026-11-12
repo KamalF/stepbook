@@ -391,7 +391,7 @@ Blocks are matched by key between the old and the new file. Among blocks with th
 
 ### 12.1 Format
 
-stepbook appends to the log file, which it creates with mode 0600. It opens the log at startup: if it cannot, it does not start. The log must be a regular file of the user, and not a link, a dangling one included: a runbook from someone else can come with a `run.log` that links to `~/.ssh/authorized_keys` or `~/.bashrc`, and each run would append its output there. In a directory that other users can write, one of them could also make the log first, as their own file or as a FIFO, and read the output. A FIFO fails at once, with or without a reader. Each run writes one section:
+stepbook appends to the log file, which it creates with mode 0600. It opens the log at startup: if it cannot, it does not start. The log must be a regular file of the user, with no other hard link, and not a symbolic link, a dangling one included: a runbook from someone else can come with a `run.log` that links to `~/.ssh/authorized_keys` or `~/.bashrc`, and each run would append its output there. In a directory that other users can write, one of them could also make the log first, as their own file or as a FIFO, and read the output. A FIFO fails at once, with or without a reader. Each run writes one section:
 
 ```text
 === START restart 13:03:07Z
@@ -626,7 +626,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | A notification shows in input mode and in the full-screen view too, in place of the keys (6.1): the footer of those modes hid the one notification of a failed write to the log | 2026-11-12 |
 | The channel to the thread of the log holds 64 messages; while it is full, the main thread reads no output of the runs that write to the log (13): an unbounded channel let output pile up in memory on a slow disk, and a bounded send would block the main thread | 2026-11-12 |
 | At the end, stepbook waits up to 1 s for the end of the runs that it stopped, then up to 1 s for the log to write them (11): each section ends with its `END` line, and a log that blocks cannot keep stepbook from its end | 2026-11-12 |
-| The log must be a regular file of the user, and not a link (12.1): the default log of a runbook from someone else could link to `~/.ssh/authorized_keys`, and each run would append its output there | 2026-11-12 |
+| The log must be a regular file of the user, with no other hard link, and not a symbolic link (12.1): the default log of a runbook from someone else could link to `~/.ssh/authorized_keys`, and each run would append its output there | 2026-11-12 |
 | A line of output that starts with `=== START `, `=== END ` or `=== CONTINUE ` gets a space first in the log (12.1): a program could print an `END` line that `watch.sh` took for the end of a run | 2026-11-12 |
 | After a reload that moves the selection to another block, or that changes the code of the selected block, keys pause for 1 s in the document view (10): an `Enter` typed as another writer saved the file ran a block that the user had not seen | 2026-11-12 |
 | The key of an unnamed block is its code, not a hash of it (3): it is exact, and needs no hash function | 2026-11-12 |
