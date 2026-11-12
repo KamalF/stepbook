@@ -403,7 +403,7 @@ stepbook appends to the log file, which it creates with mode 0600. It opens the 
 - If a write to the log fails, the footer says so once, and stepbook goes on.
 - The `=== START <name>` and `=== END <name> rc=<N>` lines keep the runbook skill's format. `watch.sh` matches `^=== END <name> rc=` and keeps working.
 - An unnamed block uses `#<n>` as its name.
-- Output is written a line at a time, as each line ends, with ANSI escape sequences removed and CRLF turned into LF: until it ends, a carriage return can still drop the line. At the end of the run, a last line without a line feed is written with one. Control characters other than tab and line feed are dropped, C1 characters included.
+- Output is written a line at a time, as each line ends, with ANSI escape sequences removed and CRLF turned into LF: until it ends, a carriage return can still drop the line. At the end of the run, a last line without a line feed is written with one. The rest of a line longer than 1 MiB goes on the next line, so that output with no line feed, such as `base64 -w0`, cannot fill the memory. Control characters other than tab and line feed are dropped, C1 characters included.
 - A UTF-8 character that is split across two reads is written whole (upmd issue K18, see 18). Bytes that are not valid UTF-8 are written as U+FFFD.
 - A carriage return without a line feed discards the current partial line, as a terminal does. A progress bar therefore logs only its last state.
 - Output on the alternate screen is not logged. The line `[full-screen program output not logged]` marks it once per run. The log reads the switches as vt100 does, so that it leaves out the output that the view shows as full-screen: modes 47 and 1049 enter and leave that screen, and a reset (`ESC c`) leaves it.
@@ -619,6 +619,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The times of the log are in UTC, marked `Z` (12.1), at Kamal's choice: the standard library has no time zones, and libc or a time crate would be one more dependency | 2026-11-12 |
 | stepbook opens the log at startup, and does not start if it cannot; a write that fails later shows in the footer once (12.1) | 2026-11-12 |
 | A run that ends while another writes to the log writes its whole section at once, and the other section goes on after a `=== CONTINUE <name>` line (12.2), at Kamal's choice: a block that never ends held the log, and `watch.sh` waited for the `END` line of each block run after it | 2026-11-12 |
+| The log splits a line longer than 1 MiB (12.1): output with no line feed, such as `base64 -w0`, stayed in memory whole until the end of the run | 2026-11-12 |
 | The key of an unnamed block is its code, not a hash of it (3): it is exact, and needs no hash function | 2026-11-12 |
 | A block that a reload removes while it runs stays at the end of the document too, not only in the sidebar (10): `i` and the output under the block need a place in the document view | 2026-11-12 |
 | A changed block shows `~` in the sidebar, and keeps the mark while its code differs from the code of its last run (6.2, 10) | 2026-11-12 |

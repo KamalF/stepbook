@@ -12,6 +12,11 @@ use crossbeam_channel::Sender;
 /// The line that stands for the output of a run on the alternate screen.
 const FULL_SCREEN: &str = "[full-screen program output not logged]\n";
 
+/// The longest line of the log, in bytes: output with no line feed, such
+/// as `base64 -w0`, must not fill the memory. The rest of a longer line
+/// goes on the next line.
+const MAX_LINE: usize = 1024 * 1024;
+
 /// Messages in flight to the thread of the log. While they all wait, the
 /// main thread reads no output of the runs that write to the log: a slow
 /// disk slows their programs, as a slow view does, and the output in
@@ -193,6 +198,13 @@ struct Lines {
 }
 
 impl Lines {
+    fn end_line(&mut self) {
+        self.carriage_return = false;
+        self.done.push_str(&self.line);
+        self.done.push('\n');
+        self.line.clear();
+    }
+
     /// Ends the line that has not ended, unless a carriage return dropped
     /// it.
     fn flush(&mut self) {
@@ -215,6 +227,9 @@ impl vte::Perform for Lines {
             self.line.clear();
         }
         self.line.push(c);
+        if self.line.len() >= MAX_LINE {
+            self.end_line();
+        }
     }
 
     fn execute(&mut self, byte: u8) {
@@ -222,12 +237,7 @@ impl vte::Perform for Lines {
             return;
         }
         match byte {
-            b'\n' => {
-                self.carriage_return = false;
-                self.done.push_str(&self.line);
-                self.done.push('\n');
-                self.line.clear();
-            }
+            b'\n' => self.end_line(),
             b'\r' => self.carriage_return = true,
             b'\t' => self.print('\t'),
             // Other control characters move the cursor or ring the bell:
@@ -328,6 +338,13 @@ mod tests {
         assert_eq!(cleaner.finish(), "");
         // A line that a carriage return dropped does not come back.
         assert_eq!(clean(&[b"working...\r"]), "");
+    }
+
+    #[test]
+    fn a_line_longer_than_the_limit_goes_on_the_next_line() {
+        let long = "a".repeat(MAX_LINE + 10);
+        let expected = format!("{}\n{}\n", &long[..MAX_LINE], &long[MAX_LINE..]);
+        assert_eq!(clean(&[long.as_bytes()]), expected);
     }
 
     #[test]
