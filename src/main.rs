@@ -1139,11 +1139,16 @@ impl App {
         let mut doc = doc::parse(&self.text);
         let mut matches = doc::match_blocks(&old.blocks, &doc.blocks);
         let mut moves = doc::moves(&matches, old.blocks.len());
-        let new = matches.iter().filter(|m| m.is_none()).count();
+        // The summary compares with the file before, which had no block
+        // that a reload removed while it ran.
+        let in_file = |i: usize| old.blocks[i].problem != Some(doc::REMOVED);
+        let new = matches.iter().filter(|m| !m.is_some_and(in_file)).count();
         let changed = (matches.iter().zip(&doc.blocks))
-            .filter(|(m, block)| m.is_some_and(|i| old.blocks[i].code != block.code))
+            .filter(|(m, block)| m.is_some_and(|i| in_file(i) && old.blocks[i].code != block.code))
             .count();
-        let removed = moves.iter().filter(|m| m.is_none()).count();
+        let removed = (moves.iter().enumerate())
+            .filter(|&(i, m)| m.is_none() && in_file(i))
+            .count();
         for (i, moved) in moves.iter_mut().enumerate() {
             if moved.is_none() && self.view.running(i) {
                 doc.keep_removed(old, i);
@@ -1942,11 +1947,7 @@ mod tests {
     #[test]
     fn a_block_that_a_reload_removes_stays_until_its_run_ends() {
         let tmp = tempfile::tempdir().unwrap();
-        let first = [
-            fence("first", "true"),
-            fence("long", "sleep 0.5; echo done"),
-        ]
-        .concat();
+        let first = [fence("first", "true"), fence("long", "sleep 1; echo done")].concat();
         let mut app = app_on_file(&first, tmp.path());
         key(&mut app, KeyCode::Char('j'));
         enter(&mut app, SIZE);
@@ -1960,9 +1961,17 @@ mod tests {
         // The removed block keeps its own code.
         let (lines, blocks) = app.view.rows(60);
         let code = lines[blocks[0].clone()].iter().map(Line::to_string);
-        assert!(code.into_iter().any(|line| line.contains("sleep 0.5")));
-        std::fs::write(&app.path, first.replace("first", "again")).unwrap();
+        assert!(code.into_iter().any(|line| line.contains("sleep 1")));
+        // The summary compares with the file before: the block counts as
+        // removed once, and its key back is a new block, with its run.
+        std::fs::write(&app.path, "Other text.\n").unwrap();
         app.handle(&ctrl('r'), SIZE);
+        assert_eq!(app.view.notice.as_deref(), Some("reloaded: no change"));
+        let again = first.replace("first", "again");
+        std::fs::write(&app.path, again.replace("echo done", "echo DONE")).unwrap();
+        app.handle(&ctrl('r'), SIZE);
+        assert_eq!(app.view.notice.as_deref(), Some("reloaded: 2 new"));
+        assert!(running(&app) && app.view.changed(1));
         std::fs::write(&app.path, "Text.\n").unwrap();
         app.handle(&ctrl('r'), SIZE);
         assert_eq!(app.view.notice.as_deref(), Some("reloaded: 2 removed"));
