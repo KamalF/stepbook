@@ -237,6 +237,29 @@ The plan, one commit per line, on the branch `look-and-feel`:
 
 Done when: each runbook in `~/dev/claude/runbooks/` opens with no panic, the tmux check shows each change, and Kamal checks the look in herdr in Ghostty.
 
+### After the 8 commits
+
+- Two notes on the background: the 30% and 50% of the prototype became fixed steps of 12 and 20 on each RGB value, which give the same colors on `#282828` and stay light on a light theme. On a background whose values are all under 20, the shades go lighter.
+- `cargo mutants` on the diff: 84 mutants, 75 caught, 4 missed, 5 unviable. The first run tested nothing: `the_output_of_a_process_substitution_ends_before_the_run` failed the baseline under load, so the runs of this branch skip it (it covers run.rs, which the branch does not change). The misses got a test of an answer that comes late, and a simpler search for the answer to DA1.
+- `/simplify`, with 4 cleanup agents: 1 commit. The output gutter takes the selection style from the gutter closure, doc.rs dims other code where it makes its spans, a plain function makes the shades, and the footer adds the `(y/N)` in the arm of the question.
+- Review loop, with a code reviewer and a security reviewer each round. Accepted findings per round: 3, 2, 0. It converged on 2026-11-12.
+  - Round 1: the startup query read 256 bytes at a time, and could take the start of a bracketed paste: crossterm then read the rest of the paste as keys, and a line feed in it ran the selected block. The query now reads a byte at a time, never past the answer to DA1, and drops a paste that starts before the answers to its end. The spec also said "code that cannot run" for other code blocks, which also covers a block with a duplicate name, and claimed that output rows have their mark alone in the column of the gutter: a block in a quote has its `│` there.
+  - Round 2: the query gave up on a paste after a pause of 0.5 s, and could stop inside the start of a paste. It now waits up to 5 s for each byte of a paste, or of the start of one. No test caught a broken test of the end of DA1.
+  - Round 3: no defect. Test gaps and a test that could fail under load, fixed.
+  - Deferred: a paste of 1 MB at the instant of startup takes about 3 s to drop; a pause of more than 5 s within such a paste still splits it (spec 5.3); on a terminal that keeps the ESC of a paste, a crafted paste can set a wrong shade; in dim code, the escape of a hidden grapheme stays bright yellow.
+  - The log of the loop, with its Decisions and Nits deferred, is `~/.cache/stepbook-review/lf/review-loop-log.md`.
+- `cargo mutants` after the loop, on the diff of the branch: 91 mutants, 85 caught, 6 unviable, none missed, in 8 minutes.
+- The check in tmux on 2026-11-12: tmux answers OSC 11 with `#1c1c1c`, and blocks get `#101010` and `#080808`; the output of a block keeps the background of the terminal, with the `▕` mark; a `toml` block is dim; at 45 columns, the question to quit ends with `… (y/N)`; each of the 94 runbooks of `~/dev/claude/runbooks/` opens, and `q` gives exit code 0.
+
+### Kamal's manual checklist of the look and feel
+
+What tmux cannot show, in herdr in Ghostty: open `/tmp/claude-1000/-home-kamal-dev-github-stepbook/d8ee867b-d1ca-4e8c-a4c1-7b6fe0fdf2fa/scratchpad/demo.md` with `stepbook --no-log`, run its blocks, and check:
+
+1. Blocks are `#1c1c1c` and the selected block `#141414`, from the column after the `▐`; the output and the `toml` block keep the background.
+2. The selection is blue; the `toml` block is dim; output rows have the thin `▕`.
+3. On a wide pane, prose stops at 100 columns, and code and output take the full width.
+4. In a pane of about 45 columns, `q` while `logs` runs shows `(y/N)`.
+
 ## Next
 
 1. Kamal pushes `main`.
