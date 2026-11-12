@@ -5,7 +5,7 @@ use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::thread::JoinHandle;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 use crossbeam_channel::Sender;
 
@@ -76,6 +76,20 @@ pub fn spawn(
         }
     });
     (sender, thread)
+}
+
+/// Waits up to `wait` for the end of the thread of the log, and returns
+/// whether it ended. A write that blocks, on a FIFO or a hung mount, must
+/// not keep stepbook from its end (spec 11).
+pub fn wait(thread: &JoinHandle<()>, wait: Duration) -> bool {
+    let deadline = Instant::now() + wait;
+    while !thread.is_finished() {
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    true
 }
 
 /// The sections of the runs, as the log holds them (spec 12.1). One run
@@ -651,6 +665,18 @@ b3
         open(&new).unwrap();
         let mode = std::fs::metadata(&new).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn the_wait_for_the_thread_of_the_log_ends_in_time() {
+        let start = Instant::now();
+        let thread = std::thread::spawn(|| std::thread::sleep(Duration::from_millis(100)));
+        assert!(wait(&thread, Duration::from_secs(10)));
+        assert!(start.elapsed() >= Duration::from_millis(100));
+        let start = Instant::now();
+        let thread = std::thread::spawn(|| std::thread::sleep(Duration::from_secs(10)));
+        assert!(!wait(&thread, Duration::from_millis(100)));
+        assert!(start.elapsed() < Duration::from_secs(5));
     }
 
     proptest! {

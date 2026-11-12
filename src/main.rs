@@ -278,7 +278,7 @@ fn open(args: &Args) -> Result<Exit, String> {
     app.drain_runs(&control, LOG_WAIT);
     drop(app.log.take());
     if let Some(thread) = thread {
-        let _ = thread.join();
+        log::wait(&thread, LOG_WAIT);
     }
     result.map_err(|e| format!("terminal error: {}", io_message(&e)))
 }
