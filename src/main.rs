@@ -525,8 +525,8 @@ struct Ran {
     run: Option<run::Run>,
     started: Instant,
     ended: Option<Instant>,
-    /// The run in the messages to the log.
-    log_id: u64,
+    /// The run in the messages to the log, unless it writes no section.
+    log_id: Option<u64>,
 }
 
 /// The state that the event loop owns.
@@ -1006,12 +1006,18 @@ impl App {
                 let started = Instant::now();
                 let run = Some(run);
                 self.runs_started += 1;
-                let log_id = self.runs_started;
-                self.log(log::Message::Start {
-                    id: log_id,
-                    name: label,
-                    time: SystemTime::now(),
-                });
+                // The header of old runbooks writes the section itself (spec
+                // 12.3).
+                let header = block.code.starts_with("exec > >(tee -a ");
+                let log_id = (!header).then_some(self.runs_started);
+                if let Some(id) = log_id {
+                    let time = SystemTime::now();
+                    self.log(log::Message::Start {
+                        id,
+                        name: label,
+                        time,
+                    });
+                }
                 self.ran.insert(
                     i,
                     Ran {
@@ -1045,7 +1051,11 @@ impl App {
         let ran = self.ran.get_mut(&i).expect("a message comes from a run");
         let id = ran.log_id;
         match event {
-            run::Event::Output(bytes) => self.log(log::Message::Output { id, bytes }),
+            run::Event::Output(bytes) => {
+                if let Some(id) = id {
+                    self.log(log::Message::Output { id, bytes });
+                }
+            }
             run::Event::Exit(status) => {
                 let run = ran.run.take().expect("a run sends its exit status once");
                 ran.ended = Some(Instant::now());
@@ -1054,9 +1064,10 @@ impl App {
                     self.question = None;
                     self.view.question = None;
                 }
-                let rc = status.rc();
-                let time = SystemTime::now();
-                self.log(log::Message::End { id, rc, time });
+                if let Some(id) = id {
+                    let (rc, time) = (status.rc(), SystemTime::now());
+                    self.log(log::Message::End { id, rc, time });
+                }
                 let ran = self.ran.get_mut(&i).expect("the run ended just now");
                 let saved = self.session.finish(&run);
                 let input = self.view.input_block() == Some(i);
@@ -1724,6 +1735,24 @@ mod tests {
             "=== END long rc=0",
         ];
         assert_eq!(lines.collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    fn a_block_with_the_header_of_old_runbooks_writes_no_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("run.log");
+        let old = "```bash [name:old]\nexec > >(tee -a /dev/null) 2>&1\necho old\n```\n\n";
+        let new = "```bash [name:new]\necho new\n```\n";
+        let mut app = app(&format!("{old}{new}"), tmp.path());
+        let thread = with_log(&mut app, &path);
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        key(&mut app, KeyCode::Char('j'));
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        let lines = log_lines(&mut app, thread, &path);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[0].starts_with("=== START new "), "{lines:?}");
     }
 
     #[test]
