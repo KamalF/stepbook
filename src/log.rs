@@ -296,10 +296,10 @@ impl vte::Perform for Lines {
         if std::mem::take(&mut self.carriage_return) {
             self.line.clear();
         }
-        self.line.push(c);
         if self.line.len() >= MAX_LINE {
             self.end_line();
         }
+        self.line.push(c);
     }
 
     fn execute(&mut self, byte: u8) {
@@ -415,6 +415,9 @@ mod tests {
         let long = "a".repeat(MAX_LINE + 10);
         let expected = format!("{}\n{}\n", &long[..MAX_LINE], &long[MAX_LINE..]);
         assert_eq!(clean(&[long.as_bytes()]), expected);
+        // A line of the limit stays whole.
+        let line = format!("{}\n", &long[..MAX_LINE]);
+        assert!(clean(&[line.as_bytes()]) == line);
     }
 
     #[test]

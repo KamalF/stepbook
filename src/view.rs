@@ -126,7 +126,7 @@ pub struct View {
     alternates: Vec<bool>,
     /// Whether the code of each block changed since its run (spec 10).
     changed: Vec<bool>,
-    /// The width of the sidebar: the labels never change.
+    /// The width of the sidebar, which only a reload changes.
     sidebar: u16,
     /// The output under each block: the last rows of its terminal.
     outputs: Vec<Rows>,
