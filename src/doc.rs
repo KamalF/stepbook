@@ -66,7 +66,36 @@ pub struct Document {
     pub blocks: Vec<Block>,
 }
 
+/// The problem of a block that a reload removed while it ran (spec 10).
+pub const REMOVED: &str = "removed";
+
 impl Document {
+    /// Appends block `i` of `old`, which a reload removed while it runs:
+    /// it stays at the end of the document, marked removed, until its run
+    /// ends (spec 10).
+    pub fn keep_removed(&mut self, old: &Document, i: usize) {
+        let lines = old.items.iter().find_map(|item| match &item.kind {
+            Kind::Code {
+                lines,
+                block: Some(block),
+            } if *block == i => Some(lines.clone()),
+            _ => None,
+        });
+        let block = &old.blocks[i];
+        self.blocks.push(Block {
+            name: block.name.clone(),
+            code: block.code.clone(),
+            warnings: block.warnings.clone(),
+            problem: Some(REMOVED),
+        });
+        let block = Some(self.blocks.len() - 1);
+        let lines = lines.unwrap_or_default();
+        for kind in [Kind::Blank, Kind::Code { lines, block }] {
+            let (first, rest) = (Vec::new(), Vec::new());
+            self.items.push(Item { first, rest, kind });
+        }
+    }
+
     /// The name of block `i`, or `#<n>` for the n-th block if it has no name.
     pub fn label(&self, i: usize) -> String {
         match &self.blocks[i].name {
@@ -78,10 +107,6 @@ impl Document {
 
 /// What identifies a block across reloads (spec 3): its name, or its code
 /// if it has no name.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the reload of the next commit uses it")
-)]
 #[derive(PartialEq, Eq, Hash)]
 enum Key<'a> {
     Name(&'a str),
@@ -89,10 +114,6 @@ enum Key<'a> {
 }
 
 impl Block {
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "the reload of the next commit uses it")
-    )]
     fn key(&self) -> Key<'_> {
         match &self.name {
             Some(name) => Key::Name(name),
@@ -104,10 +125,6 @@ impl Block {
 /// The block of `old` that each block of `new` matches, by key: the n-th
 /// block with a key matches the n-th block of `old` with that key (spec
 /// 10). A block of `old` that no block matches was removed.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "the reload of the next commit uses it")
-)]
 pub fn match_blocks(old: &[Block], new: &[Block]) -> Vec<Option<usize>> {
     let mut keys: HashMap<Key, VecDeque<usize>> = HashMap::new();
     for (i, block) in old.iter().enumerate() {

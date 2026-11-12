@@ -235,7 +235,8 @@ fn open(args: &Args) -> Result<Exit, String> {
     let file = dir.join(&args.file);
     let log_path = args.log.as_ref().map(|log| dir.join(log));
     let state = run::State::new(dir, std::env::vars_os());
-    let session = run::Session::new(workspace, bash, state, file, log_path).map_err(fail)?;
+    let session = run::Session::new(workspace, bash, state, file.clone(), log_path);
+    let session = session.map_err(fail)?;
     let mut terminal = set_up_terminal(session.workspace())
         .map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
     let background = terminal_input()
@@ -245,6 +246,8 @@ fn open(args: &Args) -> Result<Exit, String> {
     let mut view = view::View::new(doc, title.to_string_lossy().into_owned());
     view.background = background;
     let mut app = App::new(view, session, crossbeam_channel::tick(TICK));
+    app.path = file;
+    app.text = text;
     let failed = sender.clone();
     let log = log.map(|file| {
         let (log, thread) = log::spawn(file, move |error| {
@@ -527,6 +530,8 @@ struct Ran {
     ended: Option<Instant>,
     /// The run in the messages to the log, unless it writes no section.
     log_id: Option<u64>,
+    /// The code that ran: a reload marks the block if its code changed.
+    code: String,
 }
 
 /// The state that the event loop owns.
@@ -554,6 +559,12 @@ struct App {
     log: Option<Sender<log::Message>>,
     /// The runs that started, which give each run its ID in the log.
     runs_started: u64,
+    /// The runbook, and its text when stepbook last read it (spec 10).
+    path: PathBuf,
+    text: String,
+    /// The run of a block that a reload removed has ended: the block goes
+    /// at the next frame.
+    reapply: bool,
 }
 
 /// A question in the footer (spec 7.4).
@@ -612,6 +623,9 @@ impl App {
             stopping: None,
             log: None,
             runs_started: 0,
+            path: PathBuf::new(),
+            text: String::new(),
+            reapply: false,
         }
     }
 
@@ -775,6 +789,7 @@ impl App {
                     (false, false) => self.notify("not running: ↵ runs it".into()),
                 }
             }
+            Action::Reload => self.reload(size),
             Action::Output => {
                 let i = self.view.selected?;
                 if !self.ran.contains_key(&i) {
@@ -1026,6 +1041,7 @@ impl App {
                         started,
                         ended: None,
                         log_id,
+                        code: block.code.clone(),
                     },
                 );
                 view::Status::Running(Duration::ZERO)
@@ -1041,6 +1057,7 @@ impl App {
             }
         };
         self.view.set_status(i, status);
+        self.view.set_changed(i, false);
         let _ = self.view.set_alternate(i, false);
         self.view.set_output(i, term::Rows::default(), size);
     }
@@ -1069,6 +1086,8 @@ impl App {
                     self.log(log::Message::End { id, rc, time });
                 }
                 let ran = self.ran.get_mut(&i).expect("the run ended just now");
+                // A reload removed the block, which stayed while it ran.
+                self.reapply |= self.view.doc.blocks[i].problem == Some(doc::REMOVED);
                 let saved = self.session.finish(&run);
                 let input = self.view.input_block() == Some(i);
                 let took = ran.started.elapsed();
@@ -1089,6 +1108,86 @@ impl App {
             }
         }
         self.changed.insert(i);
+    }
+
+    /// Reads the runbook again, and applies it (spec 10).
+    fn reload(&mut self, size: Size) {
+        match read_runbook(&self.path) {
+            Ok(text) => {
+                self.text = text;
+                self.apply(size, true);
+            }
+            Err(message) => self.notify(format!("no reload: {message}")),
+        }
+    }
+
+    /// Takes the blocks of `self.text`. Each block keeps the output and the
+    /// result of the block that it matches. A block that the text removed
+    /// stays at the end while it runs. If `report`, the footer gives a
+    /// summary (spec 10).
+    fn apply(&mut self, size: Size, report: bool) {
+        let old = &self.view.doc;
+        let mut doc = doc::parse(&self.text);
+        let mut matches = doc::match_blocks(&old.blocks, &doc.blocks);
+        let kept: BTreeSet<usize> = matches.iter().flatten().copied().collect();
+        let removed: Vec<usize> = (0..old.blocks.len())
+            .filter(|i| !kept.contains(i))
+            .collect();
+        for &i in &removed {
+            if self.view.running(i) {
+                doc.keep_removed(old, i);
+                matches.push(Some(i));
+            }
+        }
+        let changed_code = |(j, m): (usize, &Option<usize>)| {
+            m.is_some_and(|i| old.blocks[i].code != doc.blocks[j].code)
+        };
+        let new = matches.iter().filter(|m| m.is_none()).count();
+        let changed = matches
+            .iter()
+            .enumerate()
+            .filter(|&m| changed_code(m))
+            .count();
+        let mut ran = BTreeMap::new();
+        for (j, m) in matches.iter().enumerate() {
+            if let Some(run) = m.and_then(|i| self.ran.remove(&i)) {
+                ran.insert(j, run);
+            }
+        }
+        self.ran = ran;
+        self.changed = self.ran.keys().copied().collect();
+        let since_run = (0..doc.blocks.len()).map(|j| {
+            let ran = self.ran.get(&j);
+            ran.is_some_and(|ran| ran.code != doc.blocks[j].code)
+        });
+        let since_run = since_run.collect();
+        let new_index = |i: usize| matches.iter().position(|&m| m == Some(i));
+        match &mut self.question {
+            Some(Question::Rerun(i) | Question::Paste(i, _)) => match new_index(*i) {
+                Some(j) => *i = j,
+                None => {
+                    self.question = None;
+                    self.view.question = None;
+                }
+            },
+            Some(Question::Quit) | None => {}
+        }
+        self.view.reload(doc, &matches, since_run);
+        self.resize(size);
+        if report {
+            let counts = [
+                (new, "new"),
+                (changed, "changed"),
+                (removed.len(), "removed"),
+            ];
+            let parts: Vec<String> = (counts.iter().filter(|(n, _)| *n > 0))
+                .map(|(n, what)| format!("{n} {what}"))
+                .collect();
+            self.notify(match parts.is_empty() {
+                true => "reloaded: no change".into(),
+                false => format!("reloaded: {}", parts.join(", ")),
+            });
+        }
     }
 
     /// Sends a message to the thread of the log, if there is a log.
@@ -1117,6 +1216,9 @@ impl App {
     /// its reader holds gives its rows at a later frame: the reader sends an
     /// event after it.
     fn refresh(&mut self, size: Size) {
+        if std::mem::take(&mut self.reapply) {
+            self.apply(size, false);
+        }
         // The blocks whose terminal the reader held: their rows wait for a
         // later frame, as do those that the full-screen view hides.
         let mut later = BTreeSet::new();
@@ -1327,6 +1429,8 @@ enum Action {
     /// Open the full-screen view of the selected block, if it has run
     /// (spec 7.3).
     Output,
+    /// Read the runbook again (spec 10).
+    Reload,
 }
 
 /// On a screen too small for the view, only the keys that quit work. A
@@ -1353,6 +1457,7 @@ fn action(event: &Event, size: Size) -> Option<Action> {
         // ctrl-o leaves input mode and the full-screen view: twice, it
         // would go back to them, and send the next keys to the program.
         KeyCode::Char('o') if !ctrl => Action::Output,
+        KeyCode::Char('r') if ctrl => Action::Reload,
         _ => return None,
     };
     (action == Action::Quit || !view::too_small(size)).then_some(action)
@@ -1753,6 +1858,93 @@ mod tests {
         let lines = log_lines(&mut app, thread, &path);
         assert_eq!(lines.len(), 3, "{lines:?}");
         assert!(lines[0].starts_with("=== START new "), "{lines:?}");
+    }
+
+    /// An app on the runbook `text`, which is also in the file `run.md`.
+    fn app_on_file(text: &str, tmp: &Path) -> App {
+        let mut app = app(text, tmp);
+        app.path = tmp.join("run.md");
+        std::fs::write(&app.path, text).unwrap();
+        app.text = text.into();
+        app
+    }
+
+    fn fence(name: &str, code: &str) -> String {
+        format!("```bash [name:{name}]\n{code}\n```\n\n")
+    }
+
+    #[test]
+    fn a_reload_keeps_the_output_of_each_block_and_marks_the_changed_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let unnamed = "```bash\necho c\n```\n\n";
+        let first = [fence("a", "echo a"), fence("b", "echo b"), unnamed.into()].concat();
+        let mut app = app_on_file(&first, tmp.path());
+        for _ in 0..3 {
+            enter(&mut app, SIZE);
+            read_until(&mut app, SIZE, |app| !running(app));
+            key(&mut app, KeyCode::Char('j'));
+        }
+        app.view.select_first(SIZE);
+        // b changes its code and moves up, c goes, and a block is new.
+        let second = [
+            fence("b", "echo B"),
+            fence("a", "echo a"),
+            fence("new", "true"),
+        ]
+        .concat();
+        std::fs::write(&app.path, second).unwrap();
+        assert_eq!(app.handle(&ctrl('r'), SIZE), None);
+        assert_eq!(
+            app.view.notice.as_deref(),
+            Some("reloaded: 1 new, 1 changed, 1 removed")
+        );
+        // The selection stays on a.
+        assert_eq!(app.view.selected, Some(1));
+        assert_eq!(app.view.doc.label(1), "a");
+        let text = |i| {
+            app.view
+                .output(i)
+                .iter()
+                .map(Line::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            (text(0), text(1), text(2)),
+            (vec!["b".into()], vec!["a".into()], vec![])
+        );
+        assert!(app.view.changed(0) && !app.view.changed(1));
+        assert!(app.view.status(2).is_none());
+        // A run of b clears its mark, and a reload with no change says so.
+        key(&mut app, KeyCode::Char('k'));
+        enter(&mut app, SIZE);
+        key(&mut app, KeyCode::Char('y'));
+        assert!(!app.view.changed(0));
+        read_until(&mut app, SIZE, |app| !running(app));
+        app.handle(&ctrl('r'), SIZE);
+        assert_eq!(app.view.notice.as_deref(), Some("reloaded: no change"));
+    }
+
+    #[test]
+    fn a_block_that_a_reload_removes_stays_until_its_run_ends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app_on_file(&fence("long", "sleep 0.5; echo done"), tmp.path());
+        enter(&mut app, SIZE);
+        std::fs::write(&app.path, "Text.\n").unwrap();
+        app.handle(&ctrl('r'), SIZE);
+        assert_eq!(app.view.notice.as_deref(), Some("reloaded: 1 removed"));
+        assert_eq!(app.view.doc.blocks.len(), 1);
+        assert_eq!(app.view.doc.blocks[0].problem, Some(doc::REMOVED));
+        assert!(running(&app));
+        assert_eq!(app.view.selected, Some(0));
+        read_until(&mut app, SIZE, |app| !running(app));
+        app.refresh(SIZE);
+        assert_eq!(app.view.doc.blocks.len(), 0);
+        assert_eq!(app.view.selected, None);
+        // A runbook that cannot be read keeps the view as it is.
+        std::fs::remove_file(&app.path).unwrap();
+        app.handle(&ctrl('r'), SIZE);
+        let notice = app.view.notice.as_deref().unwrap();
+        assert!(notice.starts_with("no reload: cannot read "), "{notice}");
     }
 
     #[test]

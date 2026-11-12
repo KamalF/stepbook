@@ -124,6 +124,8 @@ pub struct View {
     statuses: Vec<Option<Status>>,
     /// Whether the program of each block is on the alternate screen.
     alternates: Vec<bool>,
+    /// Whether the code of each block changed since its run (spec 10).
+    changed: Vec<bool>,
     /// The width of the sidebar: the labels never change.
     sidebar: u16,
     /// The output under each block: the last rows of its terminal.
@@ -154,6 +156,7 @@ impl View {
             background: None,
             statuses: vec![None; blocks],
             alternates: vec![false; blocks],
+            changed: vec![false; blocks],
             outputs: vec![Rows::default(); blocks],
             page: RefCell::default(),
             infos: RefCell::new(vec![None; blocks]),
@@ -347,7 +350,8 @@ impl View {
             // The first info row takes the list marker of the item.
             info.get_or_insert_with(|| {
                 let status = self.statuses[i].as_ref();
-                let rows = info_rows(&self.doc, i, status, self.alternates[i], page.widths[i]);
+                let (alternate, changed) = (self.alternates[i], self.changed[i]);
+                let rows = info_rows(&self.doc, i, status, alternate, changed, page.widths[i]);
                 prefixed(&page.firsts[i], &page.prefixes[i], rows).collect()
             });
         }
@@ -412,6 +416,57 @@ impl View {
         self.alternates[i]
     }
 
+    /// Sets whether the code of block `i` changed since its run.
+    pub fn set_changed(&mut self, i: usize, changed: bool) {
+        if self.changed[i] != changed {
+            self.changed[i] = changed;
+            self.infos.get_mut()[i] = None;
+        }
+    }
+
+    /// Takes the document of a reload (spec 10). For each block of `doc`,
+    /// `matches` gives the block that it was, if any, and `changed`
+    /// whether its code changed since its run. The state of each block
+    /// follows it, and the selection stays on its block, or moves to the
+    /// next block if a reload removed it.
+    pub fn reload(&mut self, doc: Document, matches: &[Option<usize>], changed: Vec<bool>) {
+        fn moved<T: Default>(old: &mut [T], matches: &[Option<usize>]) -> Vec<T> {
+            let take = |i: &Option<usize>| i.map(|i| std::mem::take(&mut old[i]));
+            matches
+                .iter()
+                .map(take)
+                .map(Option::unwrap_or_default)
+                .collect()
+        }
+        let new = |old: usize| matches.iter().position(|&m| m == Some(old));
+        self.selected = match self.selected {
+            // Its block, else the next block still there, else the last.
+            Some(s) => (s..self.doc.blocks.len())
+                .find_map(new)
+                .or(matches.len().checked_sub(1)),
+            None => (!matches.is_empty()).then_some(0),
+        };
+        self.mode = match &self.mode {
+            Mode::Input(i) => new(*i).map_or(Mode::Normal, Mode::Input),
+            Mode::Full(full) => match new(full.block) {
+                Some(block) => Mode::Full(Full {
+                    block,
+                    ..full.clone()
+                }),
+                None => Mode::Normal,
+            },
+            Mode::Normal => Mode::Normal,
+        };
+        self.statuses = moved(&mut self.statuses, matches);
+        self.alternates = moved(&mut self.alternates, matches);
+        self.outputs = moved(&mut self.outputs, matches);
+        self.changed = changed;
+        self.sidebar = sidebar_width(&doc);
+        *self.infos.get_mut() = vec![None; doc.blocks.len()];
+        *self.page.get_mut() = None;
+        self.doc = doc;
+    }
+
     /// Sets the state of block `i`.
     pub fn set_status(&mut self, i: usize, status: Status) {
         if self.statuses[i].as_ref() != Some(&status) {
@@ -430,6 +485,11 @@ impl View {
             _ => self.shown(screen(size)).0.page.widths[i] as u16,
         };
         (columns, area.height.max(1))
+    }
+
+    #[cfg(test)]
+    pub fn changed(&self, i: usize) -> bool {
+        self.changed[i]
     }
 
     #[cfg(test)]
@@ -524,9 +584,12 @@ impl View {
             } else {
                 (Span::raw(" "), Style::new())
             };
+            // A block that a reload removed shows that it still runs.
             let glyph = match (self.doc.blocks[i].problem, &self.statuses[i]) {
+                (_, Some(Status::Running(_))) if !self.blink => Span::raw(" "),
+                (_, Some(status @ Status::Running(_))) => status_glyph(status),
                 (Some(_), _) => Span::styled("!", ERROR),
-                (None, Some(Status::Running(_))) if !self.blink => Span::raw(" "),
+                (None, Some(_)) if self.changed[i] => Span::styled("~", WARNING),
                 (None, Some(status)) => status_glyph(status),
                 (None, None) => Span::raw(" "),
             };
@@ -922,9 +985,13 @@ fn info_rows(
     i: usize,
     status: Option<&Status>,
     alternate: bool,
+    changed: bool,
     width: usize,
 ) -> Vec<Line<'static>> {
     let mut info = vec![Span::styled(doc.label(i), BOLD)];
+    if changed {
+        info.extend([Span::raw("  "), Span::styled("changed since run", WARNING)]);
+    }
     if let Some(status) = status {
         info.push(Span::raw("  "));
         info.extend(status_spans(status));
@@ -2086,6 +2153,27 @@ pub(crate) mod tests {
         │           │ ▐ «blue:echo»                                                           │
         └───────────┴──────────────────────────────────────────────────────────────────┘
         «r: NORMAL »  ↑↓ move  ↵ run  q quit
+        ");
+    }
+
+    #[test]
+    fn a_block_whose_code_changed_since_its_run_says_so() {
+        let mut view = view("```bash [name:deploy]\nls\n```\n");
+        let ended = Status::Ended {
+            status: run::Status::Code(0),
+            took: Duration::from_secs(2),
+            saved: true,
+        };
+        view.set_status(0, ended);
+        view.set_changed(0, true);
+        assert_snapshot!(screen(&view, 80, 8), @"
+        ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
+        │«blue,b:▶»«yellow:~» «blue,b:deploy»  │ «blue,b:▐ »«b:deploy»  «yellow:changed since run»  «green:✔» rc=0 0:02                         │
+        │           │ «blue,b:▐ »«blue:ls»                                                             │
+        │           │                                                                  │
+        │           │                                                                  │
+        │           │                                                                  │
+        └───────────┴──────────────────────────────────────────────────────────────────┘
         ");
     }
 

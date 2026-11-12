@@ -148,7 +148,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 | Running | `●` (blinking) | `running m:ss` |
 | Succeeded | `✔` | `rc=0 m:ss` |
 | Failed | `✘` | `rc=N m:ss`; for a signal, `rc=130 SIGINT m:ss`; for a run that could not start, the reason, such as `cannot start: directory /x no longer exists` |
-| Changed | `~` plus the last result | `changed since run`, then the last result |
+| Changed | `~` | `changed since run`, then the last result |
 | Cannot run | `!` | the problem of the file, such as `duplicate name` |
 
 - The info line shows the glyph and the state after the name, such as `restart  ✔ rc=0 0:02`, then the problem and the warnings. A run that saved no state adds `state not saved` (9.2).
@@ -361,14 +361,15 @@ Blocks are matched by key between the old and the new file. Among blocks with th
 | After the reload | Result |
 |---|---|
 | Same key, same code | Keeps its output and state. |
-| Same name, changed code | Keeps its last output and result, marked `changed since run`. |
+| Same name, changed code | Keeps its last output and result, marked `changed since run` while its code differs from the code of its last run. A run clears the mark. |
 | New key | Not run. |
 | Key removed, block not running | Removed from the view. Its output stays in the log. |
-| Key removed, block running | The run continues. The block stays in the sidebar, marked `removed`, until the run ends. `i` and `o` still work on it. |
+| Key removed, block running | The run continues. The block stays at the end of the document and of the sidebar, marked `removed`, until the run ends, then goes. `i` and `o` still work on it, and `Enter` says `cannot run: removed`. |
 
 - Session state is never touched by a reload.
 - The selection stays on the same block, or moves to the next block if that block was removed.
-- The footer shows a summary, for example `reloaded: 2 new, 1 changed`.
+- The footer shows a summary, such as `reloaded: 2 new, 1 changed, 1 removed`, with the counts that are not zero, or `reloaded: no change`. "Changed" counts the blocks whose code differs from the file before.
+- If stepbook cannot read the file, the footer says `no reload: ` and why, and the view stays as it is.
 - Parse problems never stop a reload. They appear as warnings on the info lines.
 
 ## 11. Quit
@@ -618,3 +619,5 @@ This spec is the source of truth. A change of decision updates it in the same co
 | stepbook opens the log at startup, and does not start if it cannot; a write that fails later shows in the footer once (12.1) | 2026-11-12 |
 | A run that ends while another writes to the log writes its whole section at once, and the other section goes on after a `=== CONTINUE <name>` line (12.2), at Kamal's choice: a block that never ends held the log, and `watch.sh` waited for the `END` line of each block run after it | 2026-11-12 |
 | The key of an unnamed block is its code, not a hash of it (3): it is exact, and needs no hash function | 2026-11-12 |
+| A block that a reload removes while it runs stays at the end of the document too, not only in the sidebar (10): `i` and the output under the block need a place in the document view | 2026-11-12 |
+| A changed block shows `~` in the sidebar, and keeps the mark while its code differs from the code of its last run (6.2, 10) | 2026-11-12 |
