@@ -260,10 +260,32 @@ What tmux cannot show, in herdr in Ghostty: open `~/dev/claude/runbooks/2026-11-
 3. On a wide pane, prose stops at 100 columns, and code and output take the full width.
 4. In a pane of about 45 columns, `q` while `logs` runs shows `(y/N)`.
 
+Kamal ran it on 2026-11-12. The look is good, with three changes, on the branch `look-and-feel-2`:
+
+- In Ghostty, the `▕` of output rows stood 5 pixels from the `│` of a quote, in the same dim color: the output of a block could pass for the code of a block in a quote. Kamal chose a dashed `╎`. The demo runbook got a block in a quote, and a block whose output imitates it.
+- Bug: while `logs` printed, a block selected under it moved down, and out of the view. The view now keeps the rows under an output in place when that output is above the top of the screen, or above the selected block while the selected block is on the screen (6.3).
+- Bug: after a run of the last block, then of the block above it, `j` onto the last block did not show its output, and only `o` did. `j`, `k`, `Home` and `End` now show the whole block, then as much of its output as fits, then the end of its paragraph (7.1).
+
+### After the fixes of the look and feel
+
+- `/simplify`, with 4 cleanup agents: `set_output` built the rows of the whole document on each call; it now builds them only when the row count of an output changes.
+- Review loop, with a code reviewer each round. Accepted findings per round: 1, 4, 1, 1, 1, 0. It converged on 2026-11-12. All the findings were edges of the rule that keeps the view in place, and none was in the two behaviours that Kamal asked for:
+  - Round 1: the view moved when output grew under the screen, with the selected block off the screen after Page Up onto prose.
+  - Round 2 (a blocker): a block that fit in the view, but not with its output, showed from its paragraph, with lines of its code cut off, and Enter ran it. 54 blocks of the runbooks were in this case at 80x24. Also the mirror of round 1, after Page Down, and a test of output that grows on the screen.
+  - Round 3: on a document shorter than the view, the kept scroll went past its end, and took effect later.
+  - Rounds 4 and 5: the stored scroll stayed too large after output at the end shrank; a test of the stop at the end.
+  - Round 6: no defect. The reviewer also ran a property test of 3,000 random documents and keys, and both bugs in tmux.
+  - Deferred: a 1-row boundary of `scroll_after` has no test, an output that ends at the top of the screen. Rejected: a wrap of the info line of a block above still shifts the selected block by a row (spec 6.3 names only output).
+  - The log of the loop is `~/.cache/stepbook-review/lf/review-loop-log-2.md`.
+- `cargo mutants` on the diff of the branch: 14 mutants after the 3 commits, all caught; 37 after the loop, 34 caught, 2 missed, 1 unviable. One miss got a test, a selected block that starts on the row under the screen. The other is equivalent and excluded: a selected block that ends at the top of the screen is under an output above the top too.
+- The check in tmux on 2026-11-12: `warn`, selected under `logs`, stays on its row while `logs` prints 15 lines; after `imitation` then `quoted`, `j` shows the output of `imitation`.
+
+What tmux cannot show, in herdr: open the same runbook, and check that the dashed `╎` of output rows reads apart from the `│` of the quote, at the end of the runbook.
+
 ## Next
 
 1. Kamal pushes `main`.
-2. Kamal runs the manual checklist of the look and feel.
+2. Kamal checks the dashed mark of output rows in herdr (the end of the look and feel section).
 3. Milestone 4, log and reload.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).

@@ -26,10 +26,9 @@ const SELECTED: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD
 /// would shift the code after it.
 const GUTTER: &str = "▐ ";
 const GUTTER_WIDTH: usize = 2;
-/// The gutter of a row of output, as wide as `GUTTER`. Its mark lines up
-/// with the right edge of "▐", so the bar of a block gets thinner along
-/// its output.
-const OUTPUT_GUTTER: &str = "▕ ";
+/// The gutter of a row of output, as wide as `GUTTER`. A block in a quote
+/// has the solid "│" of the quote in the column of this dashed mark.
+const OUTPUT_GUTTER: &str = "╎ ";
 /// The second column of the gutter on a row that goes on from a wrapped
 /// line of code or info line. Text never reaches the gutter, so it cannot
 /// fake the mark.
@@ -444,16 +443,45 @@ impl View {
 
     /// Sets the output under block `i`. If the block is selected, and its
     /// output grows past the bottom of the view, the view scrolls to keep
-    /// its last row visible (spec 6.3).
+    /// its last row visible. If the output is above the top of the screen,
+    /// or above the selected block while the selected block is on the
+    /// screen, the view scrolls by as many rows as the output grew or
+    /// shrank: the rows under the output stay where they are (spec 6.3).
     pub fn set_output(&mut self, i: usize, rows: Rows, size: Size) {
-        let grew = rows.lines.len() > self.outputs[i].lines.len();
+        let (before, after) = (self.outputs[i].lines.len(), rows.lines.len());
+        if before != after
+            && let Some(scroll) = self.scroll_after(i, before, after, size)
+        {
+            self.scroll = scroll;
+        }
         self.outputs[i] = rows;
-        if !grew || self.selected != Some(i) || too_small(size) {
-            return;
+        if self.selected == Some(i) && after > before && !too_small(size) {
+            let (shown, text, scroll) = self.shown(screen(size));
+            let end = shown.output_end(i);
+            self.scroll = scroll.max(end.saturating_sub(usize::from(text.height)));
+        }
+    }
+
+    /// The scroll after the output of block `i` goes from `before` rows to
+    /// `after` (see `set_output`). It stops at the end of the document: a
+    /// scroll past it would take effect later, when something else makes
+    /// the document longer, such as an info line that wraps, and move the
+    /// view.
+    fn scroll_after(&self, i: usize, before: usize, after: usize, size: Size) -> Option<usize> {
+        if too_small(size) {
+            return None;
         }
         let (shown, text, scroll) = self.shown(screen(size));
-        let end = shown.output_end(i);
-        self.scroll = scroll.max(end.saturating_sub(usize::from(text.height)));
+        let height = usize::from(text.height);
+        let view = scroll..scroll + height;
+        let under = self.selected.filter(|&s| s > i).map(|s| shown.block(s));
+        let on_screen = under.is_some_and(|b| b.start < view.end && b.end > view.start);
+        let kept = match on_screen || shown.output_end(i) <= scroll {
+            true => (scroll + after).saturating_sub(before),
+            false => scroll,
+        };
+        let last = (shown.len() + after).saturating_sub(before + height);
+        Some(kept.min(last))
     }
 
     /// Scrolls as little as possible to show the last row of the output of
@@ -543,17 +571,20 @@ impl View {
         self.reveal(size);
     }
 
-    /// Scrolls to show the selected block as `j` and `k` do, and returns
-    /// whether the view showed it so already. `Enter` runs only such a
-    /// block: after the startup or a resize, the selection can be off the
-    /// screen.
+    /// Scrolls to show the selected block with its output, as `j` and `k`
+    /// do, and returns whether the view showed it so already. `Enter` runs
+    /// only such a block: after the startup or a resize, the selection can
+    /// be off the screen.
     pub fn reveal(&mut self, size: Size) -> bool {
         let Some(i) = self.selected else {
             return false;
         };
         let (shown, text, scroll) = self.shown(screen(size));
         let height = usize::from(text.height);
-        self.scroll = scroll_to(scroll, shown.top(i), &shown.block(i), height);
+        // The whole block first, then as much of its output as fits.
+        let block = shown.block(i);
+        let end = shown.output_end(i).min(block.start + height).max(block.end);
+        self.scroll = scroll_to(scroll, shown.top(i), &(block.start..end), height);
         self.scroll == scroll
     }
 
@@ -2086,7 +2117,7 @@ pub(crate) mod tests {
         │                                      │
         │ ▐«bg=#1c1c1c: »«bg=#1c1c1c,b:#2»«bg=#1c1c1c:                                » │
         │ ▐«bg=#1c1c1c: »«blue,bg=#1c1c1c:ls»«bg=#1c1c1c:                                » │
-        │ «d:▕ »out                                │
+        │ «d:╎ »out                                │
         │                                      │
         │ «d:▐ x»                                  │
         │                                      │
@@ -2319,12 +2350,12 @@ pub(crate) mod tests {
         │                                                          │
         │   «blue,b:▐ »«b:#1»                                                   │
         │   «blue,b:▐ »«blue:ls»                                                   │
-        │   «blue,b:▕ »one                                                  │
-        │   «blue,b:▕ »two                                                  │
+        │   «blue,b:╎ »one                                                  │
+        │   «blue,b:╎ »two                                                  │
         │                                                          │
         │ ▐ «b:#2»                                                     │
         │ ▐ «blue:ls»                                                     │
-        │ «d:▕ »▐ three                                                │
+        │ «d:╎ »▐ three                                                │
         └──────────────────────────────────────────────────────────┘
         ");
     }
@@ -2617,6 +2648,154 @@ pub(crate) mod tests {
         assert_eq!(view.scroll, 0);
         view.set_output(0, output(&["o"; 4]), SMALL);
         assert_eq!(view.scroll, 6);
+    }
+
+    #[test]
+    fn a_block_shows_whole_before_its_output_and_its_paragraph() {
+        let text = "Intro.\n\nWhy.\n\n```bash\na\nb\nc\nd\ne\n```\n\nEnd.\n\n```bash\nls\n```\n";
+        let mut view = view(text);
+        view.set_output(0, output(&["out"]), SMALL);
+        view.select_last(SMALL);
+        view.select_by(-1, SMALL);
+        // The block fills the view: its output and its paragraph do not show.
+        assert_snapshot!(screen(&view, 60, 9), @"
+        ┌ run.md ──────────────────────────────────────────────────┐
+        │ «blue,b:▐ »«b:#1»                                                     │
+        │ «blue,b:▐ »«blue:a»                                                      │
+        │ «blue,b:▐ »«blue:b»                                                      │
+        │ «blue,b:▐ »«blue:c»                                                      │
+        │ «blue,b:▐ »«blue:d»                                                      │
+        │ «blue,b:▐ »«blue:e»                                                      │
+        └──────────────────────────────────────────────────────────┘
+        ");
+        assert!(view.reveal(SMALL));
+    }
+
+    #[test]
+    fn a_block_taller_than_the_view_shows_from_its_paragraph() {
+        let code = "x\n".repeat(8);
+        let mut view = view(&format!("```bash\nls\n```\n\nWhy.\n\n```bash\n{code}```\n"));
+        view.select_by(1, SMALL);
+        assert_snapshot!(screen(&view, 60, 9), @"
+        ┌ run.md ──────────────────────────────────────────────────┐
+        │ Why.                                                     │
+        │                                                          │
+        │ «blue,b:▐ »«b:#2»                                                     │
+        │ «blue,b:▐ »«blue:x»                                                      │
+        │ «blue,b:▐ »«blue:x»                                                      │
+        │ «blue,b:▐ »«blue:x»                                                      │
+        └──────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn moving_to_a_block_shows_its_output() {
+        let mut view = steps();
+        view.set_output(3, output(&["one", "two", "three"]), SMALL);
+        view.select_last(SMALL);
+        assert_snapshot!(screen(&view, 60, 9), @"
+        ┌ run.md ──────────────────────────────────────────────────┐
+        │ «blue,b:▐ »«b:s4»                                                     │
+        │ «blue,b:▐ »«blue:ls»                                                     │
+        │ «blue,b:▐ »«blue:ls»                                                     │
+        │ «blue,b:╎ »one                                                    │
+        │ «blue,b:╎ »two                                                    │
+        │ «blue,b:╎ »three                                                  │
+        └──────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
+    fn the_selected_block_stays_in_place_when_the_output_above_it_changes() {
+        let mut view = steps();
+        view.select_by(2, SMALL);
+        let (_, scroll) = position(&view);
+        view.set_output(0, output(&["o"; 3]), SMALL);
+        assert_eq!(position(&view), (Some(2), scroll + 3));
+        view.set_output(1, output(&["o"; 2]), SMALL);
+        assert_eq!(position(&view), (Some(2), scroll + 5));
+        view.set_output(0, output(&["o"]), SMALL);
+        assert_eq!(position(&view), (Some(2), scroll + 3));
+        // On a taller screen, the output that grows is on the screen too.
+        let tall = Size::new(60, 20);
+        let mut view = steps();
+        view.select_by(1, tall);
+        assert_eq!(position(&view), (Some(1), 0));
+        view.set_output(0, output(&["o"; 3]), tall);
+        assert_eq!(position(&view), (Some(1), 3));
+        // The output of the selected block itself moves nothing above it.
+        let mut view = steps();
+        view.set_output(0, output(&["o"; 3]), tall);
+        assert_eq!(position(&view), (Some(0), 0));
+    }
+
+    #[test]
+    fn a_block_just_under_the_screen_is_not_on_the_screen() {
+        let block = "```bash\nls\n```\n\n";
+        let mut view = view(&format!("{block}One.\n\nTwo.\n\n{block}"));
+        // The text of the view at SMALL is 56 columns wide, and 6 rows high.
+        let (_, blocks) = view.rows(56);
+        view.selected = Some(1);
+        view.scroll = blocks[1].start - 6;
+        // The output of block 0 grows on the screen: the view stays.
+        assert!(blocks[0].end > view.scroll);
+        let scroll = view.scroll;
+        view.set_output(0, output(&["o"; 3]), SMALL);
+        assert_eq!(view.scroll, scroll);
+    }
+
+    #[test]
+    fn the_view_keeps_its_place_only_as_far_as_the_document_allows() {
+        // The screen is taller than the document: the selected block moves
+        // down, and output under it later moves nothing.
+        let tall = Size::new(60, 50);
+        let mut kept = steps();
+        kept.select_by(1, tall);
+        kept.set_output(0, output(&["o"; 15]), tall);
+        // The document now ends 3 rows under the bottom of the view.
+        assert_eq!(kept.shown(super::screen(tall)).2, 3);
+        assert_eq!(kept.scroll, 3);
+        kept.set_output(3, output(&["o"; 10]), tall);
+        assert_eq!(kept.shown(super::screen(tall)).2, 3);
+        // Output at the end of the document shrinks, then grows back, under
+        // the selected block: the view moves up with the end, and stays.
+        let prose: String = (1..=20).map(|i| format!("Prose {i}.\n\n")).collect();
+        let block = "```bash\nls\n```\n\n";
+        let mut end = view(&format!("{prose}{block}Then.\n\n{block}"));
+        let size = Size::new(60, 20);
+        end.set_output(1, output(&["o"; 8]), size);
+        end.select_last(size);
+        end.select_by(-1, size);
+        let scroll = end.shown(super::screen(size)).2;
+        end.set_output(1, output(&["o"; 3]), size);
+        assert_eq!(end.shown(super::screen(size)).2, scroll - 5);
+        end.set_output(1, output(&["o"; 8]), size);
+        assert_eq!(end.shown(super::screen(size)).2, scroll - 5);
+    }
+
+    #[test]
+    fn output_off_the_screen_moves_the_view_only_from_above_it() {
+        let prose: String = (1..=20).map(|i| format!("Prose {i}.\n\n")).collect();
+        let block = "```bash\nls\n```\n\n";
+        // The view shows prose, and the selected block is under it. The
+        // output of block 0 grows under the view too: the prose stays.
+        let mut below = view(&format!("{prose}{block}Then.\n\n{block}"));
+        below.selected = Some(1);
+        below.set_output(0, output(&["o"; 3]), SMALL);
+        assert_eq!(below.scroll, 0);
+        // The output of block 0 grows above the view: the prose stays where
+        // it is on the screen.
+        let mut above = view(&format!("{block}{prose}{block}"));
+        above.selected = Some(1);
+        above.scroll = 10;
+        above.set_output(0, output(&["o"; 3]), SMALL);
+        assert_eq!(above.scroll, 13);
+        // Also when the selected block is above that output.
+        let mut after = view(&format!("{block}{block}{prose}"));
+        after.selected = Some(0);
+        after.scroll = 10;
+        after.set_output(1, output(&["o"; 3]), SMALL);
+        assert_eq!(after.scroll, 13);
     }
 
     #[test]
