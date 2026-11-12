@@ -550,17 +550,18 @@ impl View {
         self.reveal(size);
     }
 
-    /// Scrolls to show the selected block as `j` and `k` do, and returns
-    /// whether the view showed it so already. `Enter` runs only such a
-    /// block: after the startup or a resize, the selection can be off the
-    /// screen.
+    /// Scrolls to show the selected block with its output, as `j` and `k`
+    /// do, and returns whether the view showed it so already. `Enter` runs
+    /// only such a block: after the startup or a resize, the selection can
+    /// be off the screen.
     pub fn reveal(&mut self, size: Size) -> bool {
         let Some(i) = self.selected else {
             return false;
         };
         let (shown, text, scroll) = self.shown(screen(size));
         let height = usize::from(text.height);
-        self.scroll = scroll_to(scroll, shown.top(i), &shown.block(i), height);
+        let block = shown.block(i).start..shown.output_end(i);
+        self.scroll = scroll_to(scroll, shown.top(i), &block, height);
         self.scroll == scroll
     }
 
@@ -2624,6 +2625,23 @@ pub(crate) mod tests {
         assert_eq!(view.scroll, 0);
         view.set_output(0, output(&["o"; 4]), SMALL);
         assert_eq!(view.scroll, 6);
+    }
+
+    #[test]
+    fn moving_to_a_block_shows_its_output() {
+        let mut view = steps();
+        view.set_output(3, output(&["one", "two", "three"]), SMALL);
+        view.select_last(SMALL);
+        assert_snapshot!(screen(&view, 60, 9), @"
+        ┌ run.md ──────────────────────────────────────────────────┐
+        │ «blue,b:▐ »«b:s4»                                                     │
+        │ «blue,b:▐ »«blue:ls»                                                     │
+        │ «blue,b:▐ »«blue:ls»                                                     │
+        │ «blue,b:╎ »one                                                    │
+        │ «blue,b:╎ »two                                                    │
+        │ «blue,b:╎ »three                                                  │
+        └──────────────────────────────────────────────────────────┘
+        ");
     }
 
     #[test]

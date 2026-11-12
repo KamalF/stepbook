@@ -211,7 +211,7 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 
 | Key | Action |
 |---|---|
-| `↓`, `j` / `↑`, `k` | Select the next / previous block, and scroll so that the block and the paragraph above it are visible. If they do not fit, the whole block shows, with the end of the paragraph. A block taller than the view shows from its paragraph, or from its info line. |
+| `↓`, `j` / `↑`, `k` | Select the next / previous block, and scroll so that the block, its output and the paragraph above it are visible. If they do not fit, the whole block shows with its output, and with the end of the paragraph. A block taller than the view, with its output, shows from its paragraph, or from its info line. |
 | `Home` / `End` | Select the first / last block. Without blocks, scroll to the top / bottom. |
 | `PageDown` / `PageUp` | Scroll one page. The selection moves to the first block whose info line is in view, else to the first block in view. `PageDown` never moves it to an earlier block, and `PageUp` never to a later one. |
 | `Enter` | Run the selected block (8.1). If `j` or `k` would scroll to show the block, `Enter` only does that scroll: it never runs code that is off the screen, such as after the startup or a resize. `Enter`, `i`, `o` and the answer to a question act on the screen as drawn: after other events, such as keys typed ahead, they wait for the next frame. |
@@ -606,3 +606,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The document view has 1 column of padding on each side (6.1): the rules under H1 and H2 touched the right border. The PTY of a block loses that column | 2026-11-12 |
 | Output rows have a dashed `╎`, not `▕` (6.3), at Kamal's choice: in Ghostty, `▕` stood 5 pixels from the `│` of a quote, in the same dim color, so output could pass for the code of a block in a quote | 2026-11-12 |
 | The selected block stays where it is on the screen when the output of a block above it grows or shrinks (6.3): the output of a running block pushed the selected block out of the view | 2026-11-12 |
+| `j`, `k`, `Home` and `End` scroll to show the output of the block too (7.1), at Kamal's choice: after a run of the block above, the output of the last block stayed under the bottom of the view, and only `o` showed it | 2026-11-12 |
