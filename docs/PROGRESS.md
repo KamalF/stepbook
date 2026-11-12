@@ -19,7 +19,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 | 1 | Document view | Done, merged into `main` on 2026-11-10 |
 | 2 | Running blocks | Done, merged into `main` on 2026-11-11 |
 | 3 | Input and full-screen view | Done, merged into `main` on 2026-11-11 |
-| 4 | Log and reload | Planned, on `m4-log-reload` |
+| 4 | Log and reload | In progress, on `m4-log-reload` |
 | 5 | Migration | — |
 
 Kamal signed off the build order and the new dependencies on 2026-11-09.

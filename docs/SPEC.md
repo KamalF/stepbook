@@ -354,7 +354,7 @@ Two blocks that run at the same time do not overwrite each other's unrelated cha
 
 ## 10. Reload
 
-stepbook re-reads the file when it changes on disk. It watches the parent directory with inotify, because editors often replace the file with a rename, and waits 300 ms after the last change. A change is a write that closes the file, or a rename onto its name. Through a link, stepbook watches the file that the link names, which a write through the link changes. inotify is Linux only: elsewhere, only `ctrl-r` reloads. If stepbook cannot watch the directory, the footer says so at startup, and `ctrl-r` still reloads. `ctrl-r` re-reads the file at once.
+stepbook re-reads the file when it changes on disk. It watches the parent directory with inotify, because editors often replace the file with a rename, and waits 300 ms after the last change. A change is a write that closes the file, or a rename onto its name. Through a link, stepbook watches the file that the link names, which a write through the link changes. inotify is Linux only, as the PTY of a run is (8.2). If stepbook cannot watch the directory, the footer says so at startup, and `ctrl-r` still reloads. `ctrl-r` re-reads the file at once.
 
 Blocks are matched by key between the old and the new file. Among blocks with the same key, such as two unnamed blocks with the same code, the n-th block of the new file matches the n-th block of the old file:
 
