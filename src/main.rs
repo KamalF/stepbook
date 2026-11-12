@@ -1247,8 +1247,9 @@ impl App {
         let same = |(moved, code): (Option<usize>, String)| {
             moved == selected && selected.is_some_and(|t| self.view.doc.blocks[t].code == code)
         };
+        // Keys that go to a program are not for the document.
         let pause =
-            self.view.mode == view::Mode::Normal && selected.is_some() && !before.is_some_and(same);
+            self.view.input_block().is_none() && selected.is_some() && !before.is_some_and(same);
         if pause {
             self.paused_until = Some(Instant::now() + PAUSE);
         }
@@ -2813,6 +2814,19 @@ echo \"got $x\"
         assert!(!running(&app));
         let notice = app.view.notice.as_deref();
         assert_eq!(notice, Some("cannot run: duplicate name"));
+    }
+
+    #[test]
+    fn a_reload_in_the_full_screen_view_after_the_run_pauses_the_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app_on_file(&fence("deploy", "echo safe"), tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        key(&mut app, KeyCode::Char('o'));
+        std::fs::write(app.session.file(), fence("deploy", "echo other")).unwrap();
+        app.reload(SIZE);
+        // `o`, Enter and `y`, typed ahead, would run the new code unseen.
+        assert!(app.paused_until.is_some());
     }
 
     #[test]
