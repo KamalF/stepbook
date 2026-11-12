@@ -370,7 +370,7 @@ Blocks are matched by key between the old and the new file. Among blocks with th
 - The selection stays on the same block, or moves to the next block if that block was removed.
 - A question about a block (7.4) follows the block, and names it by its label after the reload, since a new unnamed block above shifts the `#<n>` labels. If the reload removed the block, the question ends.
 - The footer shows a summary, such as `reloaded: 2 new, 1 changed, 1 removed`, with the counts that are not zero, or `reloaded: no change`. "Changed" counts the blocks whose code differs from the file before. A block that a reload removed while it runs is not in the file before: it counts as removed once, and a block that takes its key back counts as new.
-- If stepbook cannot read the file, the footer says `no reload: ` and why, and the view stays as it is.
+- If stepbook cannot read the file, the footer says `no reload: ` and why, and the view stays as it is. The read never blocks the main thread: a FIFO renamed onto the file, or a lease that another process holds on it, makes the reload fail at once.
 - Parse problems never stop a reload. They appear as warnings on the info lines.
 
 ## 11. Quit

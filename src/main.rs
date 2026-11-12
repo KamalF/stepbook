@@ -10,6 +10,7 @@ use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
@@ -476,15 +477,23 @@ fn restore_terminal() {
 const MAX_FILE: u64 = 1024 * 1024;
 
 /// Reads a runbook, which must be a regular file of at most `MAX_FILE`
-/// bytes: a link to /dev/zero would fill the memory, and a FIFO would
-/// block the open. Its lines must nest at most `doc::MAX_NESTING` levels.
+/// bytes: a link to /dev/zero would fill the memory. The check is on the
+/// file that the open gave, and the open never blocks: a reload reads the
+/// runbook on the main thread, where a FIFO renamed onto its name, or a
+/// lease that another process holds on it, would stop stepbook. Its lines
+/// must nest at most `doc::MAX_NESTING` levels.
 fn read_runbook(path: &Path) -> Result<String, String> {
+    use rustix::fs::OFlags;
     let fail = |reason: String| format!("cannot read {}: {reason}", path.display());
-    let metadata = std::fs::metadata(path).map_err(|e| fail(io_message(&e)))?;
+    let flags = (OFlags::NONBLOCK | OFlags::NOCTTY).bits();
+    let file = (std::fs::OpenOptions::new().read(true))
+        .custom_flags(flags as i32)
+        .open(path)
+        .map_err(|e| fail(io_message(&e)))?;
+    let metadata = file.metadata().map_err(|e| fail(io_message(&e)))?;
     if !metadata.is_file() {
         return Err(fail("not a regular file".into()));
     }
-    let file = std::fs::File::open(path).map_err(|e| fail(io_message(&e)))?;
     let mut bytes = Vec::new();
     (file.take(MAX_FILE + 1).read_to_end(&mut bytes)).map_err(|e| fail(io_message(&e)))?;
     if bytes.len() as u64 > MAX_FILE {
@@ -1818,6 +1827,16 @@ mod tests {
             assert_eq!(action(&key('j'), size), None);
         }
         assert_eq!(action(&key('j'), Size::new(40, 8)), Some(Action::Select(1)));
+    }
+
+    #[test]
+    fn a_runbook_that_is_a_fifo_fails_at_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fifo = tmp.path().join("run.md");
+        let mode = rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR;
+        rustix::fs::mknodat(rustix::fs::CWD, &fifo, rustix::fs::FileType::Fifo, mode, 0).unwrap();
+        let error = read_runbook(&fifo).unwrap_err();
+        assert!(error.ends_with(": not a regular file"), "{error}");
     }
 
     #[test]
