@@ -582,9 +582,13 @@ enum Question {
     Rerun(usize),
     /// Stop the runs and quit.
     Quit,
-    /// Send a paste of several lines to the program of block i, which did
+    /// Send a paste of several lines to the program of a block, which did
     /// not turn on bracketed paste (spec 7.2).
-    Paste(usize, Vec<u8>),
+    Paste {
+        block: usize,
+        bytes: Vec<u8>,
+        lines: usize,
+    },
 }
 
 /// How long stepbook waits, once it stopped the runs, for their end to
@@ -742,15 +746,16 @@ impl App {
                         // after a resize, it shows the block and asks again.
                         Question::Rerun(i) if yes => match self.view.reveal(size) {
                             true => self.start(i, size),
-                            false => self.ask_rerun(i),
+                            false => self.ask(Question::Rerun(i)),
                         },
                         Question::Quit if yes => self.stop_runs(),
-                        Question::Paste(i, bytes) if yes => {
-                            if let Some(run) = self.ran.get(&i).and_then(|ran| ran.run.as_ref()) {
+                        Question::Paste { block, bytes, .. } if yes => {
+                            if let Some(run) = self.ran.get(&block).and_then(|ran| ran.run.as_ref())
+                            {
                                 run.write(&bytes);
                             }
                         }
-                        Question::Rerun(_) | Question::Quit | Question::Paste(..) => {}
+                        Question::Rerun(_) | Question::Quit | Question::Paste { .. } => {}
                     }
                 }
                 _ => self.question = Some(question),
@@ -770,11 +775,7 @@ impl App {
         match action(event, size)? {
             Action::Quit => match self.runs().count() {
                 0 => return Some(Exit::Quit),
-                1 => self.ask(Question::Quit, "1 block running. Stop it and quit?".into()),
-                n => self.ask(
-                    Question::Quit,
-                    format!("{n} blocks running. Stop them and quit?"),
-                ),
+                _ => self.ask(Question::Quit),
             },
             Action::Select(step) => self.view.select_by(step, size),
             Action::First => self.view.select_first(size),
@@ -852,12 +853,11 @@ impl App {
             run.write(&bytes);
             return true;
         }
-        let lines = match lines {
-            1 => "1 line".to_string(),
-            n => format!("{n} lines"),
-        };
-        let text = format!("Paste {lines} to {}?", self.view.doc.label(i));
-        self.ask(Question::Paste(i, bytes), text);
+        self.ask(Question::Paste {
+            block: i,
+            bytes,
+            lines,
+        });
         true
     }
 
@@ -971,18 +971,32 @@ impl App {
             Some(view::Status::Running(_)) => {
                 self.notify("already running: i to type, o to view".into());
             }
-            Some(_) => self.ask_rerun(i),
+            Some(_) => self.ask(Question::Rerun(i)),
         }
     }
 
-    fn ask_rerun(&mut self, i: usize) {
-        let label = self.view.doc.label(i);
-        self.ask(Question::Rerun(i), format!("Re-run {label}?"));
+    /// Asks `question` in the footer (spec 7.4).
+    fn ask(&mut self, question: Question) {
+        self.view.question = Some(self.question_text(&question));
+        self.question = Some(question);
     }
 
-    fn ask(&mut self, question: Question, text: String) {
-        self.view.question = Some(text);
-        self.question = Some(question);
+    /// The text of `question`, with the label that its block has now.
+    fn question_text(&self, question: &Question) -> String {
+        match question {
+            Question::Rerun(i) => format!("Re-run {}?", self.view.doc.label(*i)),
+            Question::Quit => match self.runs().count() {
+                1 => "1 block running. Stop it and quit?".into(),
+                n => format!("{n} blocks running. Stop them and quit?"),
+            },
+            Question::Paste { block, lines, .. } => {
+                let label = self.view.doc.label(*block);
+                match lines {
+                    1 => format!("Paste 1 line to {label}?"),
+                    n => format!("Paste {n} lines to {label}?"),
+                }
+            }
+        }
     }
 
     /// Sends SIGHUP to the runs, as the close of their PTY would, before
@@ -1085,7 +1099,7 @@ impl App {
                 let run = ran.run.take().expect("a run sends its exit status once");
                 ran.ended = Some(Instant::now());
                 // A paste for the program has nowhere to go.
-                if matches!(self.question, Some(Question::Paste(j, _)) if j == i) {
+                if matches!(self.question, Some(Question::Paste { block, .. }) if block == i) {
                     self.question = None;
                     self.view.question = None;
                 }
@@ -1170,7 +1184,7 @@ impl App {
         });
         let since_run = since_run.collect();
         match &mut self.question {
-            Some(Question::Rerun(i) | Question::Paste(i, _)) => match moves[*i] {
+            Some(Question::Rerun(i) | Question::Paste { block: i, .. }) => match moves[*i] {
                 Some(j) => *i = j,
                 None => {
                     self.question = None;
@@ -1180,6 +1194,10 @@ impl App {
             Some(Question::Quit) | None => {}
         }
         self.view.reload(doc, &matches, &moves, since_run);
+        // A reload can change the label of the block of the question.
+        if let Some(question @ (Question::Rerun(_) | Question::Paste { .. })) = &self.question {
+            self.view.question = Some(self.question_text(question));
+        }
         self.resize(size);
         let counts = [(new, "new"), (changed, "changed"), (removed, "removed")];
         let parts: Vec<String> = (counts.iter().filter(|(n, _)| *n > 0))
@@ -2586,6 +2604,34 @@ echo \"got $x\"
         // The terminal draws the tab of the first line as spaces.
         let line = format!("x{}y+z", " ".repeat(7));
         assert!(output(&app, 0).ends_with(&line), "{}", output(&app, 0));
+    }
+
+    #[test]
+    fn a_question_that_a_reload_moves_names_its_block_as_it_is_now() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ran = "```bash\ntrue\n```\n\n";
+        let reads = "```bash\necho ready\nread -t 2\n```\n\n";
+        let mut app = app_on_file(&[ran, reads].concat(), tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        enter(&mut app, SIZE);
+        assert_eq!(app.view.question.as_deref(), Some("Re-run #1?"));
+        // A new unnamed block above shifts the labels of the others.
+        let new = "```bash\necho new\n```\n\n";
+        std::fs::write(&app.path, [new, ran, reads].concat()).unwrap();
+        app.reload(SIZE);
+        assert_eq!(app.view.question.as_deref(), Some("Re-run #2?"));
+        key(&mut app, KeyCode::Char('n'));
+        key(&mut app, KeyCode::Char('j'));
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 2).contains("ready"));
+        key(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.handle(&Event::Paste("1\r2\r".into()), SIZE), None);
+        assert_eq!(app.view.question.as_deref(), Some("Paste 2 lines to #3?"));
+        std::fs::write(&app.path, [ran, reads].concat()).unwrap();
+        app.reload(SIZE);
+        assert_eq!(app.view.question.as_deref(), Some("Paste 2 lines to #2?"));
+        read_until(&mut app, SIZE, |app| !running(app));
     }
 
     #[test]
