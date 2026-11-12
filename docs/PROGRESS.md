@@ -282,11 +282,12 @@ Kamal ran it on 2026-11-12. The look is good, with three changes, on the branch 
 
 What tmux cannot show, in herdr: open the same runbook, and check that the dashed `╎` of output rows reads apart from the `│` of the quote, at the end of the runbook.
 
+Kamal checked it on 2026-11-12: it looks fine.
+
 ## Next
 
 1. Kamal pushes `main`.
-2. Kamal checks the dashed mark of output rows in herdr (the end of the look and feel section).
-3. Milestone 4, log and reload.
+2. Milestone 4, log and reload: Claude plans it for Kamal's sign-off. The open point on the default log of a FILE named `x.log` comes first.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
 
