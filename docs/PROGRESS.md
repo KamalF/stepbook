@@ -316,13 +316,16 @@ The check in tmux on 2026-11-12, with `--log`: `watch.sh` printed the `END` line
 ### After the 9 commits
 
 - `cargo mutants` on the diff of the milestone: 138 mutants, 97 caught, 11 missed, 30 unviable, in 10 minutes. The misses got tests (a plain `r`, a question and the full-screen view that follow their block through a reload, the code that a removed block keeps, and `ESC[?25h`, which the log must not take for the alternate screen) or a simpler watcher; the mutants of the inotify flags are excluded: the bits are distinct.
-- `/simplify`, with 4 cleanup agents, on 2026-11-12: their findings are recorded, not applied yet, in `~/.cache/stepbook-review/lf/m4-simplify-findings.md`, with the overlaps between agents. The pass also found four defects beyond cleanup: after `ESC c` on the alternate screen, the log leaves out the rest of the run, and mode 1047 differs from vt100; the summary of a reload counts again a removed block that still runs; a question that a reload moves to another block keeps its old text, with the old label of an unnamed block; the unbounded channel to the log thread lifts the memory bound of a run.
-- The log of the review loop is `~/.cache/stepbook-review/lf/m4-review-loop-log.md`: its task statement and checks are set, `Simplified: no`, and no round has run yet.
+- `/simplify`, with 4 cleanup agents, on 2026-11-12: their findings are in `~/.cache/stepbook-review/lf/m4-simplify-findings.md`. The triage gave 9 commits, from 4d10a51 to 5828c51:
+  - Four defects, fixed: the log reads the alternate screen as vt100 does (modes 47 and 1049, and `ESC c` leaves it), under a property test that compares the two; the summary of a reload counts a removed block that still runs once; a question that a reload moves names its block by its new label; the channel to the log thread holds 64 messages, and while it is full, the main thread reads no output of the runs that write to the log, so that a slow disk slows their programs.
+  - Two more bounds on memory: a line of the log longer than 1 MiB is split (Claude's choice), and a run that waits for the log writes what it holds past 1 MiB, then goes on after a `=== CONTINUE <name>` line (Kamal's choice: two `tail -f` blocks held the output of the second one for the whole session).
+  - Cleanups: the inverse of the matches of a reload is built once, the writer of the log comes from the order of the run IDs, App drops the state that the session holds, and a reload of the same text does no parse.
+  - Skipped, with the reasons in the log of the review loop: the copies on the hot path of the cleaner, a BufWriter on the log, the parse at the end of a removed block, and three more.
 
 ## Next
 
 1. Kamal pushes `main`.
-2. Milestone 4, in a new session: triage the findings of the simplify pass (fix, or skip with a reason, the four defects first), set `Simplified: yes` in the log of the review loop, then run the review loop with a code reviewer and a security reviewer, `cargo mutants` again, and merge.
+2. Milestone 4: the review loop with a code reviewer and a security reviewer, its log in `~/.cache/stepbook-review/lf/m4-review-loop-log.md`, then `cargo mutants` again, and the merge.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
 
