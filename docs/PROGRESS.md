@@ -313,10 +313,16 @@ Two choices of Claude, recorded in the spec: a block that a reload removes while
 
 The check in tmux on 2026-11-12, with `--log`: `watch.sh` printed the `END` line of a short block at once, while a long block ran, then the `END` of the long block, and exited; the log holds the section of the short block within that of the long block, which goes on after `=== CONTINUE long`; an edit of the runbook with vim during the run kept both outputs, marked the changed block with `~` and `changed since run`, and the footer said `reloaded: 1 changed`.
 
+### After the 9 commits
+
+- `cargo mutants` on the diff of the milestone: 138 mutants, 97 caught, 11 missed, 30 unviable, in 10 minutes. The misses got tests (a plain `r`, a question and the full-screen view that follow their block through a reload, the code that a removed block keeps, and `ESC[?25h`, which the log must not take for the alternate screen) or a simpler watcher; the mutants of the inotify flags are excluded: the bits are distinct.
+- `/simplify`, with 4 cleanup agents, on 2026-11-12: their findings are recorded, not applied yet, in `~/.cache/stepbook-review/lf/m4-simplify-findings.md`, with the overlaps between agents. The pass also found four defects beyond cleanup: after `ESC c` on the alternate screen, the log leaves out the rest of the run, and mode 1047 differs from vt100; the summary of a reload counts again a removed block that still runs; a question that a reload moves to another block keeps its old text, with the old label of an unnamed block; the unbounded channel to the log thread lifts the memory bound of a run.
+- The log of the review loop is `~/.cache/stepbook-review/lf/m4-review-loop-log.md`: its task statement and checks are set, `Simplified: no`, and no round has run yet.
+
 ## Next
 
 1. Kamal pushes `main`.
-2. Milestone 4: Claude builds it.
+2. Milestone 4, in a new session: triage the findings of the simplify pass (fix, or skip with a reason, the four defects first), set `Simplified: yes` in the log of the review loop, then run the review loop with a code reviewer and a security reviewer, `cargo mutants` again, and merge.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
 
@@ -326,5 +332,6 @@ Kamal pushes later: the repository has no remote yet (see the first open point).
 - Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
 - Follow-ups of the review loop of milestone 3: the input channel of a run holds up to 256 writes, pastes included, while a program reads no input; the full-screen view of an ended block makes the spans of its whole scrollback when it opens, 380 ms with crafted output that changes color on each cell at 180 columns; the answer to DSR 6 ignores origin mode, which vt100 does not expose.
 - Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal). Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
+- `run::tests::a_program_gets_the_position_of_its_cursor_from_the_terminal` failed under load too, once, during milestone 4, and passed alone.
 - `the_output_of_a_process_substitution_ends_before_the_run` fails its 900 ms bound under heavy load, such as two test suites at once: the reader of the run parses 20,000 lines of output in a debug build, and tee waits on the PTY. It did so before the last changes of milestone 2 too (checked on c7e5ca9, 2026-11-11). A single suite passes.
 - Claude drives stepbook in tmux from the sandbox with `scripts/tui.sh` and one steps file per check: it starts tmux, sends the keys and captures the pane. The sandbox stops the tmux server when a command ends. Checked on 2026-11-09.
