@@ -401,7 +401,7 @@ stepbook appends to the log file, which it creates with mode 0600. It opens the 
 ```
 
 - The times are in UTC, marked `Z`: the standard library of Rust has no time zones.
-- If a write to the log fails, the footer says so once, and stepbook goes on.
+- If writes to the log fail, the footer says so, at most once every 10 s, and stepbook goes on: a question or another notification can hide one notification, and a disk that stays full must still show.
 - The `=== START <name>` and `=== END <name> rc=<N>` lines keep the runbook skill's format. `watch.sh` matches `^=== END <name> rc=` and keeps working.
 - A line of output that starts as a line of stepbook does, with `=== START `, `=== END ` or `=== CONTINUE `, gets a space first: `watch.sh` must not take a line that a program prints, such as the log of another runbook, for the end of a run.
 - An unnamed block uses `#<n>` as its name.
@@ -619,7 +619,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The log removes escape sequences with `vte`, a direct dependency at the version that vt100 uses (12.1, 13), at Kamal's choice: it is in the build already, and it parses UTF-8 split across reads | 2026-11-12 |
 | The log writes the output a line at a time, as each line ends (12.1): a carriage return can drop a line until it ends | 2026-11-12 |
 | The times of the log are in UTC, marked `Z` (12.1), at Kamal's choice: the standard library has no time zones, and libc or a time crate would be one more dependency | 2026-11-12 |
-| stepbook opens the log at startup, and does not start if it cannot; a write that fails later shows in the footer once (12.1) | 2026-11-12 |
+| stepbook opens the log at startup, and does not start if it cannot; writes that fail later show in the footer at most once every 10 s (12.1): a single notification could hide behind a question, or under the next notification | 2026-11-12 |
 | A run that ends while another writes to the log writes its whole section at once, and the other section goes on after a `=== CONTINUE <name>` line (12.2), at Kamal's choice: a block that never ends held the log, and `watch.sh` waited for the `END` line of each block run after it | 2026-11-12 |
 | The log splits a line longer than 1 MiB (12.1): output with no line feed, such as `base64 -w0`, stayed in memory whole until the end of the run | 2026-11-12 |
 | A run that waits for the log writes what it holds past 1 MiB, and its section goes on after a `=== CONTINUE <name>` line (12.2), at Kamal's choice: with two blocks that never end, such as two `tail -f`, the second one held its output in memory for the whole session | 2026-11-12 |

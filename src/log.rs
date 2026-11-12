@@ -84,21 +84,27 @@ pub fn open(path: &Path) -> std::io::Result<File> {
     Ok(file)
 }
 
-/// Starts the thread that writes the log to `file`, and returns the sender
+/// How often the thread of the log reports writes that fail: a question
+/// or another notification in the footer can hide one report (spec 12.1).
+const REPORT_EVERY: Duration = Duration::from_secs(10);
+
+/// Starts the thread that writes the log to `out`, and returns the sender
 /// of its messages. The thread ends once the sender is dropped, and all the
-/// messages are written. It calls `failed` on the first write that fails.
+/// messages are written. It calls `failed` on a write that fails, at most
+/// once every `REPORT_EVERY`.
 pub fn spawn(
-    file: File,
+    out: impl Write + Send + 'static,
     mut failed: impl FnMut(std::io::Error) + Send + 'static,
 ) -> (Sender<Message>, JoinHandle<()>) {
     let (sender, receiver) = crossbeam_channel::bounded(MESSAGES);
     let thread = std::thread::spawn(move || {
-        let mut sections = Sections::new(file);
-        let mut ok = true;
+        let mut sections = Sections::new(out);
+        let mut reported: Option<Instant> = None;
         for message in receiver {
             if let Err(error) = sections.write(message)
-                && std::mem::take(&mut ok)
+                && reported.is_none_or(|at| at.elapsed() >= REPORT_EVERY)
             {
+                reported = Some(Instant::now());
                 failed(error);
             }
         }
@@ -656,6 +662,36 @@ b3
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
+    }
+
+    #[test]
+    fn writes_that_fail_are_reported_at_most_once_every_ten_seconds() {
+        /// A disk that stays full.
+        struct Full;
+        impl Write for Full {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("disk full"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let (reports, received) = crossbeam_channel::unbounded();
+        let (sender, thread) = spawn(Full, move |error| reports.send(error.to_string()).unwrap());
+        for id in 1..=3 {
+            let name = format!("r{id}");
+            sender
+                .send(Message::Start {
+                    id,
+                    name,
+                    time: time(id),
+                })
+                .unwrap();
+        }
+        drop(sender);
+        thread.join().unwrap();
+        // Three writes fail within 10 s: one report.
+        assert_eq!(received.try_iter().collect::<Vec<_>>(), ["disk full"]);
     }
 
     #[test]
