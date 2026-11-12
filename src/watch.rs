@@ -15,11 +15,14 @@ pub const SETTLE: Duration = Duration::from_millis(300);
 /// Watches the directory of `file`, an absolute path, and calls `changed`
 /// once the file has stayed as it is for `SETTLE` after a change. The
 /// watch is on the directory, because editors often replace a file with a
-/// rename. The thread ends when `changed` returns false.
+/// rename. Through a link, the watch is on the file that it names, which
+/// a write through the link changes. The thread ends when `changed`
+/// returns false.
 pub fn spawn(
     file: &Path,
     mut changed: impl FnMut() -> bool + Send + 'static,
 ) -> std::io::Result<()> {
+    let file = &std::fs::canonicalize(file)?;
     let dir = file.parent().unwrap_or(file);
     let name: OsString = file.file_name().unwrap_or_default().to_owned();
     let fd = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK)?;
@@ -112,6 +115,19 @@ mod tests {
         std::fs::write(&new, "b\n").unwrap();
         assert_eq!(changes.recv_timeout(NONE), Err(RecvTimeoutError::Timeout));
         std::fs::rename(&new, &file).unwrap();
+        assert_eq!(changes.recv_timeout(WAIT), Ok(()));
+    }
+
+    #[test]
+    fn a_write_through_a_link_is_a_change() {
+        let tmp = tempfile::tempdir().unwrap();
+        let target = tmp.path().join("real.md");
+        let link = tmp.path().join("run.md");
+        std::fs::write(&target, "a\n").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let (sender, changes) = crossbeam_channel::unbounded();
+        spawn(&link, move || sender.send(()).is_ok()).unwrap();
+        std::fs::write(&link, "b\n").unwrap();
         assert_eq!(changes.recv_timeout(WAIT), Ok(()));
     }
 
