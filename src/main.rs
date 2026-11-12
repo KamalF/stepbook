@@ -478,10 +478,10 @@ const MAX_FILE: u64 = 1024 * 1024;
 
 /// Reads a runbook, which must be a regular file of at most `MAX_FILE`
 /// bytes: a link to /dev/zero would fill the memory. The check is on the
-/// path, then on the file that the open gave, and the open never blocks: a reload reads the
-/// runbook on the main thread, where a FIFO renamed onto its name, or a
-/// lease that another process holds on it, would stop stepbook. Its lines
-/// must nest at most `doc::MAX_NESTING` levels.
+/// path, then on the file that the open gave, and the open never blocks:
+/// a reload reads the runbook on the main thread, where a FIFO renamed
+/// onto its name, or a lease that another process holds on it, would
+/// stop stepbook. Its lines must nest at most `doc::MAX_NESTING` levels.
 fn read_runbook(path: &Path) -> Result<String, String> {
     use rustix::fs::OFlags;
     let fail = |reason: String| format!("cannot read {}: {reason}", path.display());
@@ -843,6 +843,10 @@ impl App {
                     self.notify("no output: ↵ runs it".into());
                     return None;
                 }
+                // As for `i`: the keys now go to the program.
+                if self.view.running(i) {
+                    self.view.notice = None;
+                }
                 self.open_full(i, size, view::Back::Normal);
                 if self.just_ended(i) {
                     self.pause(i);
@@ -1184,9 +1188,9 @@ impl App {
     }
 
     /// Takes the blocks of `self.text`, and returns the summary of the
-    /// changes for the footer, and whether the keys pause. Each block keeps the output and the result
-    /// of the block that it matches. A block that the text removed stays at
-    /// the end while it runs (spec 10).
+    /// changes for the footer, and whether the keys pause. Each block keeps
+    /// the output and the result of the block that it matches. A block
+    /// that the text removed stays at the end while it runs (spec 10).
     fn apply(&mut self, size: Size) -> (String, bool) {
         let old = &self.view.doc;
         let mut doc = doc::parse(&self.text);
@@ -2278,8 +2282,13 @@ mod tests {
             app.view.notice.as_deref(),
             Some("already running: i to type, o to view")
         );
-        // Input mode clears it: it would hide the keys that leave.
+        // Input mode clears it, as does the full-screen view of the run:
+        // it would hide the keys that leave.
         key(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.view.notice, None);
+        app.handle(&ctrl('o'), SIZE);
+        enter(&mut app, SIZE);
+        key(&mut app, KeyCode::Char('o'));
         assert_eq!(app.view.notice, None);
         app.handle(&ctrl('o'), SIZE);
         key(&mut app, KeyCode::Down);

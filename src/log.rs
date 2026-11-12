@@ -752,7 +752,9 @@ b3
     }
 
     #[test]
-    fn the_log_is_never_a_link_a_fifo_or_a_file_of_another_user() {
+    fn the_log_is_never_a_link_or_a_file_that_is_not_regular() {
+        // The check of the owner needs a file of another user that the
+        // user can write: the tests cannot make one.
         let tmp = tempfile::tempdir().unwrap();
         let error = |path: &Path| open(path).unwrap_err().to_string();
         // A link, to a file or to nothing: the target stays as it was.
@@ -782,7 +784,6 @@ b3
             .unwrap();
         assert_eq!(error(&fifo), "it is not a regular file");
         drop(reader);
-        // /dev/null belongs to root.
         assert_eq!(error(Path::new("/dev/null")), "it is not a regular file");
     }
 
