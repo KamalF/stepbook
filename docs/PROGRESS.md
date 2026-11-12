@@ -19,7 +19,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 | 1 | Document view | Done, merged into `main` on 2026-11-10 |
 | 2 | Running blocks | Done, merged into `main` on 2026-11-11 |
 | 3 | Input and full-screen view | Done, merged into `main` on 2026-11-11 |
-| 4 | Log and reload | In progress, on `m4-log-reload` |
+| 4 | Log and reload | Done, merged into `main` on 2026-11-12 |
 | 5 | Migration | — |
 
 Kamal signed off the build order and the new dependencies on 2026-11-09.
@@ -321,15 +321,49 @@ The check in tmux on 2026-11-12, with `--log`: `watch.sh` printed the `END` line
   - Two more bounds on memory: a line of the log longer than 1 MiB is split (Claude's choice), and a run that waits for the log writes what it holds past 1 MiB, then goes on after a `=== CONTINUE <name>` line (Kamal's choice: two `tail -f` blocks held the output of the second one for the whole session).
   - Cleanups: the inverse of the matches of a reload is built once, the writer of the log comes from the order of the run IDs, App drops the state that the session holds, and a reload of the same text does no parse.
   - Skipped, with the reasons in the log of the review loop: the copies on the hot path of the cleaner, a BufWriter on the log, the parse at the end of a removed block, and three more.
+- Review loop, with a code reviewer and a security reviewer each round, in night mode. Accepted findings per round: 10, 3, 2, 2, 1, 0. Round 6 found no blocker and no should-fix: the loop converged on 2026-11-12. Among the findings:
+  - Round 1 (a blocker): the log followed a link, so a runbook from someone else could come with `run.log -> ~/.ssh/authorized_keys`. The log must now be a regular file of the user, not a link. Also: a failed END write kept the log from later runs; `y` ran a block that a reload gave a problem; a notification hid in input mode; the end waited on a stuck log thread for good; the read of a reload could block on a FIFO or a lease; a program could print an END line for watch.sh; a runbook behind a link never reloaded; an Enter typed as another writer saved the file ran a block that the user had not seen.
+  - Round 2: a log with other hard links; a Re-run question that a code change kept; held text kept on a failed CONTINUE write.
+  - Round 3: the pause after a reload in the full-screen view after a run; `o` kept a stale notification.
+  - Round 4: one report of a full disk could hide behind a question; Decided rows. Rejected: a check of the directory of the log, since whoever can write it can replace the runbook too (spec 12.1 says so).
+  - Round 5: changes of the runbook queued reloads ahead of the keys and the signals; the watcher now merges them.
+  - The log of the loop, with its Decisions and Follow-ups, is `~/.cache/stepbook-review/lf/m4-review-loop-log.md`.
+- The budget script of the review loop reads the cache of claude-statusbar, which has not changed since 2026-10-11: it showed 0% and no reset time. Night mode ran on an hourly resume job in its place, which the end of the loop deleted.
+- `cargo mutants` after the loop, on the diff of the milestone: 231 mutants, 180 caught, 13 missed, 1 timeout and 37 unviable, in 12 minutes. The misses got tests (the select of `App::next` with a full log and a tick, the drain at the end, the time of the pause, the selection after a reload of a runbook that had no block), a simpler question remap, or an exclusion with its reason. A second run on the functions with misses: 52 mutants, 46 caught, 5 unviable, 1 timeout (a hang that the tests catch).
+- The check in tmux on 2026-11-12, with `--log`: `watch.sh` printed the END line of `short` while `long` ran, and exited 0; an edit with `vim -Es` during the run kept both outputs, marked `short` with `~` and `changed since run`, and the footer said `reloaded: 1 changed; keys off for 1 s`; a forged END line got a space first in the log; the log has mode 0600; a log that is a link stopped the start with exit code 1, and its dangling target stayed absent; `q` gave exit code 0. Each of the 95 runbooks of `~/dev/claude/runbooks/` opens with no panic.
+
+### Choices made during the night, for Kamal to confirm
+
+The review loop ran in night mode, and Claude made these choices alone. The spec records each one; any of them can change on a new branch.
+
+1. A notification shows in input mode and in the full-screen view too, in place of the keys; `i`, and `o` on a running block, end a notification of the document view (6.1).
+2. The log must be a regular file of the user, with no other hard link, and not a symbolic link (12.1). `--log /dev/null` now fails: `--no-log` does that job.
+3. A line of output that starts with `=== START `, `=== END ` or `=== CONTINUE ` gets a space first in the log (12.1).
+4. After a reload that moves the selection or changes the code of the selected block, keys pause for 1 s, unless they go to a program (10). A Re-run question ends if the reload changes the code of its block.
+5. Writes to the log that fail show in the footer at most once every 10 s (12.1).
+6. Open, a choice of look: the NORMAL footer does not show `^r reload`, which the example of spec 6.1 shows.
+
+### Kamal's manual checklist of milestone 4
+
+What tmux cannot show, in herdr in Ghostty: open `~/dev/claude/runbooks/2026-11-12-stepbook-log-reload.md` with `stepbook` (with its log), keep a second pane for vim and `tail -f` of the log, and follow its five sections:
+
+1. Two runs in the log: the section of `short` comes whole, then `=== CONTINUE long`.
+2. An edit in vim with your config during a run: both outputs stay, and `~` and `changed since run` read well in your theme.
+3. The pause after a reload of the selected block: `keys off for 1 s`.
+4. A notification in input mode, in place of the keys, for 3 s.
+5. A forged END line gets a space first in the log.
 
 ## Next
 
 1. Kamal pushes `main`.
-2. Milestone 4: the review loop with a code reviewer and a security reviewer, its log in `~/.cache/stepbook-review/lf/m4-review-loop-log.md`, then `cargo mutants` again, and the merge.
+2. Kamal runs the manual checklist of milestone 4, and confirms or changes the choices made during the night (above).
+3. Milestone 5: migration.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
 
 ## Open points
+
+- Follow-ups of the review loop of milestone 4: invisible format characters (U+200B, the bidi controls) reach the log, where a human could take a forged line for an END line; a hung network mount can still block the read of a reload on the main thread; an existing log keeps its mode, such as 0644 from the old tee header; a reload shifts the `#<n>` labels, so two open sections can share a name; a block with the old logging header writes raw output into the same log, and one NUL makes `rg` in watch.sh skip the whole file (`rg -a` would fix it; milestone 5 drops the header).
 
 - Before the first push, Kamal creates `KamalF/stepbook` on GitHub and adds the remote. The sandbox cannot write `.git/config`.
 - Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
