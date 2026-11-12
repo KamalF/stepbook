@@ -224,7 +224,7 @@ fn open(args: &Args) -> Result<Exit, String> {
         .and_then(|input| query_background(input.as_fd(), &mut std::io::stdout(), QUERY_WAIT));
     let title = args.file.file_name().unwrap_or(args.file.as_os_str());
     let mut view = view::View::new(doc, title.to_string_lossy().into_owned());
-    view.shades = background.map(view::Shades::new);
+    view.background = background;
     let mut app = App::new(view, session, crossbeam_channel::tick(TICK));
     std::thread::spawn(move || read_terminal(sender));
     let result = event_loop(&mut terminal, &mut app, &control);
@@ -332,8 +332,7 @@ fn query_background(
 /// Where the answer to DA1 starts in `bytes`, if they hold all of it:
 /// `ESC [ ?`, then digits and semicolons, then `c`.
 fn device_attributes(bytes: &[u8]) -> Option<usize> {
-    let escapes = (0..bytes.len()).filter(|&i| bytes[i] == 0x1b);
-    escapes.into_iter().find(|&i| {
+    (0..bytes.len()).find(|&i| {
         let Some(rest) = bytes[i..].strip_prefix(b"\x1b[?") else {
             return false;
         };
@@ -1218,10 +1217,8 @@ mod tests {
 
     #[test]
     fn the_background_comes_from_the_answer_to_osc_11_before_da1() {
-        let (color, output) = background(
-            b"\x1b]11;rgb:2828/2828/2828\x1b\\\x1b[?62;22c",
-            Duration::from_secs(5),
-        );
+        let answers = [b"\x1b]11;rgb:2828/2828/2828\x1b\\".as_slice(), DA1].concat();
+        let (color, output) = background(&answers, Duration::from_secs(5));
         assert_eq!(color, Some((40, 40, 40)));
         assert_eq!(output, b"\x1b]11;?\x1b\\\x1b[c");
         // Keys typed ahead come before the answers, and are lost.

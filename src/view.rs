@@ -26,9 +26,10 @@ const SELECTED: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD
 /// would shift the code after it.
 const GUTTER: &str = "▐ ";
 const GUTTER_WIDTH: usize = 2;
-/// The first column of the gutter on a row of output. It lines up with the
-/// right edge of "▐", so the bar of a block gets thinner along its output.
-const OUTPUT_MARK: &str = "▕";
+/// The gutter of a row of output, as wide as `GUTTER`. Its mark lines up
+/// with the right edge of "▐", so the bar of a block gets thinner along
+/// its output.
+const OUTPUT_GUTTER: &str = "▕ ";
 /// The second column of the gutter on a row that goes on from a wrapped
 /// line of code or info line. Text never reaches the gutter, so it cannot
 /// fake the mark.
@@ -36,31 +37,21 @@ const WRAP_MARK: &str = "↪";
 /// The sidebar shows on terminals at least this wide.
 const SIDEBAR_SCREEN_WIDTH: u16 = 80;
 
-/// The backgrounds of the blocks that run, from the background color of
-/// the terminal: a little darker, and darker still for the selected block,
-/// so that blocks stand apart from the prose (spec 5.3).
-#[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Shades {
-    pub block: Color,
-    pub selected: Color,
-}
+/// How much darker than the background of the terminal a block that
+/// runs is, on each of red, green and blue, so that blocks stand apart
+/// from the prose; and the selected block (spec 5.3).
+const BLOCK_SHADE: u8 = 12;
+const SELECTED_SHADE: u8 = 20;
 
-impl Shades {
-    pub fn new((red, green, blue): (u8, u8, u8)) -> Shades {
-        // On a background this dark, a darker shade would not show.
-        let lighter = red.max(green).max(blue) < 20;
-        let shade = |step: u8| {
-            let value = |v: u8| match lighter {
-                true => v + step,
-                false => v.saturating_sub(step),
-            };
-            Color::Rgb(value(red), value(green), value(blue))
-        };
-        Shades {
-            block: shade(12),
-            selected: shade(20),
-        }
-    }
+/// The background of `background` darker by `step`, or lighter on a
+/// background so dark that a darker shade would not show.
+fn shade((red, green, blue): (u8, u8, u8), step: u8) -> Color {
+    let lighter = red.max(green).max(blue) < SELECTED_SHADE;
+    let value = |v: u8| match lighter {
+        true => v + step,
+        false => v.saturating_sub(step),
+    };
+    Color::Rgb(value(red), value(green), value(blue))
 }
 
 /// The state of a block that has run, or tried to (spec 6.2).
@@ -128,8 +119,9 @@ pub struct View {
     pub question: Option<String>,
     /// The notification that the footer shows, in place of the keys.
     pub notice: Option<String>,
-    /// The backgrounds of blocks, if the terminal gave its own.
-    pub shades: Option<Shades>,
+    /// The background color of the terminal, as red, green and blue, if
+    /// it gave it: blocks get a shade of it.
+    pub background: Option<(u8, u8, u8)>,
     statuses: Vec<Option<Status>>,
     /// Whether the program of each block is on the alternate screen.
     alternates: Vec<bool>,
@@ -160,7 +152,7 @@ impl View {
             blink: true,
             question: None,
             notice: None,
-            shades: None,
+            background: None,
             statuses: vec![None; blocks],
             alternates: vec![false; blocks],
             outputs: vec![Rows::default(); blocks],
@@ -189,21 +181,20 @@ impl View {
         for (y, row) in (text.y..text.bottom()).zip(scroll..shown.len()) {
             let line = self.line(&shown, row, self.selected);
             frame.buffer_mut().set_line(text.x, y, &line, text.width);
-            let shaded = match shown.row(row) {
-                Row::Info(block, _) | Row::Code(block, _) => Some(block),
-                Row::Output(..) | Row::Page(_) => None,
-            };
-            if let (Some(shades), Some(block)) = (self.shades, shaded) {
-                let shade = match self.selected == Some(block) {
-                    true => shades.selected,
-                    false => shades.block,
+            if let Some(background) = self.background
+                && let Row::Info(block, _) | Row::Code(block, _) = shown.row(row)
+            {
+                let step = match self.selected == Some(block) {
+                    true => SELECTED_SHADE,
+                    false => BLOCK_SHADE,
                 };
                 // From the column after "▐", to the right edge of the text:
                 // the bar is the left edge of the block.
                 let x = text.x + text_width(&shown.page.prefixes[block]) as u16 + 1;
                 let width = text.right().saturating_sub(x);
                 let area = Rect::new(x, y, width, 1);
-                frame.buffer_mut().set_style(area, Style::new().bg(shade));
+                let style = Style::new().bg(shade(background, step));
+                frame.buffer_mut().set_style(area, style);
             }
         }
         // In input mode, the cursor of the program shows in its output.
@@ -276,18 +267,19 @@ impl View {
     /// name (spec 6.5).
     fn footer(&self, width: u16) -> Line<'static> {
         let reversed = Style::new().add_modifier(Modifier::REVERSED);
-        let (mode, text) = match (&self.question, self.input_block(), &self.mode, &self.notice) {
-            (Some(question), ..) => (" CONFIRM ", escaped(question, Style::new())),
+        let state = (&self.question, self.input_block(), &self.mode, &self.notice);
+        let (mode, text, end) = match state {
+            (Some(question), ..) => (" CONFIRM ", escaped(question, Style::new()), " (y/N)"),
             (None, Some(i), ..) => {
                 let keys = format!("keys go to {}  ^o leave", self.doc.label(i));
-                (" INPUT ", vec![Span::raw(keys)])
+                (" INPUT ", vec![Span::raw(keys)], "")
             }
-            (None, None, Mode::Full(_), Some(notice)) => (" OUTPUT ", escaped(notice, WARNING)),
+            (None, None, Mode::Full(_), Some(notice)) => (" OUTPUT ", escaped(notice, WARNING), ""),
             (None, None, Mode::Full(full), None) => {
                 let keys = format!("{}  ↑↓ scroll  o back", self.doc.label(full.block));
-                (" OUTPUT ", vec![Span::raw(keys)])
+                (" OUTPUT ", vec![Span::raw(keys)], "")
             }
-            (None, None, _, Some(notice)) => (" NORMAL ", escaped(notice, WARNING)),
+            (None, None, _, Some(notice)) => (" NORMAL ", escaped(notice, WARNING), ""),
             (None, None, _, None) => {
                 let status = self.selected.and_then(|i| self.statuses[i].as_ref());
                 let input = match status {
@@ -296,12 +288,8 @@ impl View {
                     Some(Status::NotStarted(_)) | None => "",
                 };
                 let keys = format!("↑↓ move  ↵ run{input}  q quit");
-                (" NORMAL ", vec![Span::raw(keys)])
+                (" NORMAL ", vec![Span::raw(keys)], "")
             }
-        };
-        let end = match self.question {
-            Some(_) => " (y/N)",
-            None => "",
         };
         // The mode and the end are ASCII: one column per byte.
         let room = usize::from(width).saturating_sub(mode.len() + 2 + end.len());
@@ -392,13 +380,9 @@ impl View {
             // output cannot pass for the code of a nested block.
             Row::Output(block, i) => {
                 let mut spans = page.prefixes[block].clone();
-                let style = match selected == Some(block) {
-                    true => SELECTED,
-                    false => DIM,
-                };
-                spans.extend([Span::styled(OUTPUT_MARK, style), Span::raw(" ")]);
+                spans.push(Span::styled(OUTPUT_GUTTER, DIM));
                 spans.extend(self.outputs[block].lines[i].spans.iter().cloned());
-                Line::from(spans)
+                gutter(Line::from(spans), block)
             }
         }
     }
@@ -876,14 +860,9 @@ fn code(lines: &[Vec<Span<'static>>], block: Option<usize>, width: usize) -> Vec
     let mut out = Vec::new();
     for line in lines {
         for (row, part) in hard_wrap(line, width).into_iter().enumerate() {
-            let mut text = mark_end_space(part.spans);
-            // Code that cannot run looks inert, as frontmatter does.
-            if block.is_none() {
-                for span in &mut text {
-                    span.style = span.style.patch(DIM);
-                }
-            }
-            out.push(Line::from([gutter(row, style), text].concat()));
+            out.push(Line::from(
+                [gutter(row, style), mark_end_space(part.spans)].concat(),
+            ));
         }
     }
     // An empty code block shows as a gutter, so that it, and the list
@@ -2081,10 +2060,7 @@ pub(crate) mod tests {
 
     #[test]
     fn shades_are_darker_than_the_background_or_lighter_on_a_black_one() {
-        let shades = |rgb| {
-            let shades = Shades::new(rgb);
-            (shades.block, shades.selected)
-        };
+        let shades = |rgb| (shade(rgb, BLOCK_SHADE), shade(rgb, SELECTED_SHADE));
         let rgb = Color::Rgb;
         assert_eq!(shades((40, 40, 40)), (rgb(28, 28, 28), rgb(20, 20, 20)));
         assert_eq!(shades((0, 43, 54)), (rgb(0, 31, 42), rgb(0, 23, 34)));
@@ -2096,7 +2072,7 @@ pub(crate) mod tests {
     fn blocks_take_their_shade_from_the_column_after_the_gutter() {
         let text = "- item\n\n  ```bash\n  ls\n  ```\n\n```bash\nls\n```\n\n```text\nx\n```\n";
         let mut view = view(text);
-        view.shades = Some(Shades::new((40, 40, 40)));
+        view.background = Some((40, 40, 40));
         view.set_output(1, output(&["out"]), SMALL);
         // The selected block is darker. Output and other code keep the
         // background of the terminal.
@@ -2109,7 +2085,7 @@ pub(crate) mod tests {
         │                                      │
         │ ▐«bg=#1c1c1c: »«bg=#1c1c1c,b:#2»«bg=#1c1c1c:                                » │
         │ ▐«bg=#1c1c1c: »«blue,bg=#1c1c1c:ls»«bg=#1c1c1c:                                » │
-        │ «d:▕» out                                │
+        │ «d:▕ »out                                │
         │                                      │
         │ «d:▐ x»                                  │
         │                                      │
@@ -2342,12 +2318,12 @@ pub(crate) mod tests {
         │                                                          │
         │   «blue,b:▐ »«b:#1»                                                   │
         │   «blue,b:▐ »«blue:ls»                                                   │
-        │   «blue,b:▕» one                                                  │
-        │   «blue,b:▕» two                                                  │
+        │   «blue,b:▕ »one                                                  │
+        │   «blue,b:▕ »two                                                  │
         │                                                          │
         │ ▐ «b:#2»                                                     │
         │ ▐ «blue:ls»                                                     │
-        │ «d:▕» ▐ three                                                │
+        │ «d:▕ »▐ three                                                │
         └──────────────────────────────────────────────────────────┘
         ");
     }

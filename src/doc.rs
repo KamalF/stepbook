@@ -340,9 +340,17 @@ impl Builder {
                         }
                         // Split on LF only: str::lines would drop a CR
                         // before an LF, which bash still gets.
-                        _ => (code.split_terminator('\n'))
-                            .map(|l| code_line(&[Span::raw(l)], &mut hidden))
-                            .collect(),
+                        _ => {
+                            // Code that cannot run looks inert, as
+                            // frontmatter does.
+                            let style = match block {
+                                Some(_) => Style::new(),
+                                None => DIM,
+                            };
+                            (code.split_terminator('\n'))
+                                .map(|l| code_line(&[Span::styled(l, style)], &mut hidden))
+                                .collect()
+                        }
                     };
                     // The warning follows what the view shows: a tab
                     // makes spaces that a mark after it can join.
