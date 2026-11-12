@@ -26,10 +26,9 @@ const SELECTED: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD
 /// would shift the code after it.
 const GUTTER: &str = "▐ ";
 const GUTTER_WIDTH: usize = 2;
-/// The gutter of a row of output, as wide as `GUTTER`. Its mark lines up
-/// with the right edge of "▐", so the bar of a block gets thinner along
-/// its output.
-const OUTPUT_GUTTER: &str = "▕ ";
+/// The gutter of a row of output, as wide as `GUTTER`. A block in a quote
+/// has the solid "│" of the quote in the column of this dashed mark.
+const OUTPUT_GUTTER: &str = "╎ ";
 /// The second column of the gutter on a row that goes on from a wrapped
 /// line of code or info line. Text never reaches the gutter, so it cannot
 /// fake the mark.
@@ -2086,7 +2085,7 @@ pub(crate) mod tests {
         │                                      │
         │ ▐«bg=#1c1c1c: »«bg=#1c1c1c,b:#2»«bg=#1c1c1c:                                » │
         │ ▐«bg=#1c1c1c: »«blue,bg=#1c1c1c:ls»«bg=#1c1c1c:                                » │
-        │ «d:▕ »out                                │
+        │ «d:╎ »out                                │
         │                                      │
         │ «d:▐ x»                                  │
         │                                      │
@@ -2319,12 +2318,12 @@ pub(crate) mod tests {
         │                                                          │
         │   «blue,b:▐ »«b:#1»                                                   │
         │   «blue,b:▐ »«blue:ls»                                                   │
-        │   «blue,b:▕ »one                                                  │
-        │   «blue,b:▕ »two                                                  │
+        │   «blue,b:╎ »one                                                  │
+        │   «blue,b:╎ »two                                                  │
         │                                                          │
         │ ▐ «b:#2»                                                     │
         │ ▐ «blue:ls»                                                     │
-        │ «d:▕ »▐ three                                                │
+        │ «d:╎ »▐ three                                                │
         └──────────────────────────────────────────────────────────┘
         ");
     }
