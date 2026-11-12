@@ -808,7 +808,13 @@ impl App {
             Action::Input => {
                 let i = self.view.selected?;
                 match (self.view.running(i), self.just_ended(i)) {
-                    (true, _) => self.enter_input(i, size),
+                    (true, _) => {
+                        // A notification of the document view, such as
+                        // `already running: i to type`, would hide the keys
+                        // that leave input mode.
+                        self.view.notice = None;
+                        self.enter_input(i, size);
+                    }
                     // The run ended as i came: the keys after it were
                     // typed for the program.
                     (false, true) => self.pause(i),
@@ -2214,6 +2220,10 @@ mod tests {
             app.view.notice.as_deref(),
             Some("already running: i to type, o to view")
         );
+        // Input mode clears it: it would hide the keys that leave.
+        key(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.view.notice, None);
+        app.handle(&ctrl('o'), SIZE);
         key(&mut app, KeyCode::Down);
         enter(&mut app, SIZE);
         assert_eq!(

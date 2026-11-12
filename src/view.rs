@@ -270,18 +270,23 @@ impl View {
     fn footer(&self, width: u16) -> Line<'static> {
         let reversed = Style::new().add_modifier(Modifier::REVERSED);
         let state = (&self.question, self.input_block(), &self.mode, &self.notice);
+        let label = match (self.input_block(), &self.mode) {
+            (Some(_), _) => " INPUT ",
+            (None, Mode::Full(_)) => " OUTPUT ",
+            (None, _) => " NORMAL ",
+        };
         let (mode, text, end) = match state {
             (Some(question), ..) => (" CONFIRM ", escaped(question, Style::new()), " (y/N)"),
+            // In every mode: a failed write to the log says so only once.
+            (None, _, _, Some(notice)) => (label, escaped(notice, WARNING), ""),
             (None, Some(i), ..) => {
                 let keys = format!("keys go to {}  ^o leave", self.doc.label(i));
-                (" INPUT ", vec![Span::raw(keys)], "")
+                (label, vec![Span::raw(keys)], "")
             }
-            (None, None, Mode::Full(_), Some(notice)) => (" OUTPUT ", escaped(notice, WARNING), ""),
             (None, None, Mode::Full(full), None) => {
                 let keys = format!("{}  ↑↓ scroll  o back", self.doc.label(full.block));
-                (" OUTPUT ", vec![Span::raw(keys)], "")
+                (label, vec![Span::raw(keys)], "")
             }
-            (None, None, _, Some(notice)) => (" NORMAL ", escaped(notice, WARNING), ""),
             (None, None, _, None) => {
                 let status = self.selected.and_then(|i| self.statuses[i].as_ref());
                 let input = match status {
@@ -290,7 +295,7 @@ impl View {
                     Some(Status::NotStarted(_)) | None => "",
                 };
                 let keys = format!("↑↓ move  ↵ run{input}  q quit");
-                (" NORMAL ", vec![Span::raw(keys)], "")
+                (label, vec![Span::raw(keys)], "")
             }
         };
         // The mode and the end are ASCII: one column per byte.
@@ -2572,17 +2577,22 @@ pub(crate) mod tests {
         assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  q quit");
         view.selected = Some(0);
         view.mode = Mode::Input(0);
-        view.notice = Some("already running: i to type, o to view".into());
         assert_snapshot!(footer(&view), @"«r: INPUT »  keys go to check  ^o leave");
+        // A notification shows in every mode, in place of the keys.
+        view.notice = Some("cannot write the log: No space left on device".into());
+        assert_snapshot!(footer(&view), @"«r: INPUT »  «yellow:cannot write the log: No space left on device»");
         view.mode = Mode::Full(Full {
             block: 0,
             rows: Rows::default(),
             scroll: 0,
             back: None,
         });
+        assert_snapshot!(footer(&view), @"«r: INPUT »  «yellow:cannot write the log: No space left on device»");
+        view.notice = None;
         assert_snapshot!(footer(&view), @"«r: INPUT »  keys go to check  ^o leave");
         view.set_status(0, Status::NotStarted("cannot start".into()));
-        assert_snapshot!(footer(&view), @"«r: OUTPUT »  «yellow:already running: i to type, o to view»");
+        view.notice = Some("reloaded: 1 changed".into());
+        assert_snapshot!(footer(&view), @"«r: OUTPUT »  «yellow:reloaded: 1 changed»");
         view.notice = None;
         assert_snapshot!(footer(&view), @"«r: OUTPUT »  check  ↑↓ scroll  o back");
     }
