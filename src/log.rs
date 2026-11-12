@@ -1,5 +1,5 @@
 //! The log of the runs (spec 12).
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -41,8 +41,9 @@ pub enum Message {
 /// Opens the log at `path` to append to it, and creates it with mode 0600
 /// (spec 12.1).
 pub fn open(path: &Path) -> std::io::Result<File> {
-    let mut options = std::fs::OpenOptions::new();
-    options.append(true).create(true).mode(0o600).open(path)
+    (std::fs::OpenOptions::new().append(true).create(true))
+        .mode(0o600)
+        .open(path)
 }
 
 /// Starts the thread that writes the log to `file`, and returns the sender
@@ -73,11 +74,10 @@ pub fn spawn(
 /// (spec 12.2).
 struct Sections<W> {
     out: W,
+    /// The sections of the runs that have not ended, by ID. The IDs grow in
+    /// the order that the runs start: the first section writes to the log,
+    /// and the others wait, in the order that they started.
     runs: BTreeMap<u64, Section>,
-    /// The run whose section the log holds now.
-    writer: Option<u64>,
-    /// The runs that wait for the log, in the order that they started.
-    waiting: VecDeque<u64>,
     /// The section of another run came after the last line of the writer:
     /// its next line follows a CONTINUE line.
     interrupted: bool,
@@ -95,8 +95,6 @@ impl<W: Write> Sections<W> {
         Sections {
             out,
             runs: BTreeMap::new(),
-            writer: None,
-            waiting: VecDeque::new(),
             interrupted: false,
         }
     }
@@ -110,11 +108,8 @@ impl<W: Write> Sections<W> {
                     cleaner: Cleaner::default(),
                     held: String::new(),
                 };
+                debug_assert!(self.runs.keys().next_back().is_none_or(|&last| last < id));
                 self.runs.insert(id, section);
-                match self.writer {
-                    None => self.writer = Some(id),
-                    Some(_) => self.waiting.push_back(id),
-                }
                 (id, line, false)
             }
             Message::Output { id, bytes } => match self.runs.get_mut(&id) {
@@ -130,17 +125,15 @@ impl<W: Write> Sections<W> {
                 None => return Ok(()),
             },
         };
-        if self.writer != Some(id) {
+        if self.runs.keys().next() != Some(&id) {
             let section = self.runs.get_mut(&id).expect("the run has a section");
             section.held.push_str(&text);
             // Its whole section goes in at once: watch.sh sees its END
             // line without a wait for the run that writes.
             if ended {
-                let held = std::mem::take(&mut section.held);
-                self.runs.remove(&id);
-                self.waiting.retain(|&run| run != id);
+                let section = self.runs.remove(&id).expect("the run has a section");
                 self.interrupted = true;
-                self.out.write_all(held.as_bytes())?;
+                self.out.write_all(section.held.as_bytes())?;
             }
             return Ok(());
         }
@@ -152,18 +145,11 @@ impl<W: Write> Sections<W> {
         self.out.write_all(text.as_bytes())?;
         if ended {
             self.runs.remove(&id);
-            self.writer = None;
-            self.interrupted = false;
             // The run that has waited longest writes what it holds, then
             // goes on as it runs.
-            if let Some(next) = self.waiting.pop_front() {
-                let section = self
-                    .runs
-                    .get_mut(&next)
-                    .expect("a run that waits has a section");
-                self.writer = Some(next);
+            if let Some(next) = self.runs.values_mut().next() {
                 self.out
-                    .write_all(std::mem::take(&mut section.held).as_bytes())?;
+                    .write_all(std::mem::take(&mut next.held).as_bytes())?;
             }
         }
         Ok(())
@@ -204,6 +190,18 @@ struct Lines {
     alternate: bool,
     /// The log has the line that stands for that output.
     marked: bool,
+}
+
+impl Lines {
+    /// Ends the line that has not ended, unless a carriage return dropped
+    /// it.
+    fn flush(&mut self) {
+        if !std::mem::take(&mut self.carriage_return) && !self.line.is_empty() {
+            self.done.push_str(&self.line);
+            self.done.push('\n');
+        }
+        self.line.clear();
+    }
 }
 
 impl vte::Perform for Lines {
@@ -250,11 +248,7 @@ impl vte::Perform for Lines {
         }
         self.alternate = action == 'h';
         if self.alternate && !std::mem::replace(&mut self.marked, true) {
-            if !std::mem::take(&mut self.carriage_return) && !self.line.is_empty() {
-                self.done.push_str(&self.line);
-                self.done.push('\n');
-            }
-            self.line.clear();
+            self.flush();
             self.done.push_str(FULL_SCREEN);
         }
     }
@@ -279,12 +273,8 @@ impl Cleaner {
     /// At the end of the run: the line that has not ended, with a line
     /// feed, so that the line after it starts on a line of its own.
     pub fn finish(&mut self) -> String {
-        let line = std::mem::take(&mut self.lines.line);
-        let dropped = std::mem::take(&mut self.lines.carriage_return);
-        match line.is_empty() || dropped {
-            true => String::new(),
-            false => line + "\n",
-        }
+        self.lines.flush();
+        std::mem::take(&mut self.lines.done)
     }
 }
 
