@@ -1241,10 +1241,12 @@ impl App {
             Some(Question::Rerun(i)) if moves[*i].is_some_and(|j| follows(*i, j)) => {
                 *i = moves[*i].expect("the block moved");
             }
-            Some(Question::Paste { block: i, .. }) if moves[*i].is_some() => {
-                *i = moves[*i].expect("the block moved");
+            // The question of a paste ends with its run, and a block that
+            // runs stays through a reload.
+            Some(Question::Paste { block: i, .. }) => {
+                *i = moves[*i].expect("a block that runs stays");
             }
-            Some(Question::Rerun(_) | Question::Paste { .. }) => {
+            Some(Question::Rerun(_)) => {
                 self.question = None;
                 self.view.question = None;
             }
@@ -2121,6 +2123,14 @@ mod tests {
         app.refresh(SIZE);
         assert_eq!(app.view.doc.blocks.len(), 0);
         assert_eq!(app.view.selected, None);
+        // The first block of a runbook that had none takes the selection.
+        std::fs::write(app.session.file(), fence("new", "true")).unwrap();
+        app.handle(&ctrl('r'), SIZE);
+        assert_eq!(app.view.selected, Some(0));
+        // Enter would run it unseen.
+        let notice = app.view.notice.as_deref();
+        assert_eq!(notice, Some("reloaded: 1 new; keys off for 1 s"));
+        app.paused_until = None;
         // A runbook that cannot be read keeps the view as it is.
         std::fs::remove_file(app.session.file()).unwrap();
         app.handle(&ctrl('r'), SIZE);
@@ -2187,6 +2197,80 @@ mod tests {
         let output = String::from_utf8(thread.join().unwrap()).unwrap();
         let lines: Vec<&str> = output.lines().collect();
         assert_eq!((lines.len(), lines.last()), (100_000, Some(&"100000")));
+    }
+
+    #[test]
+    fn a_full_log_holds_only_the_runs_that_write_to_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The header of old runbooks: the run writes no section.
+        let text = "```bash\nexec > >(tee -a /dev/null) 2>&1\necho old\n```\n";
+        let mut app = app(text, tmp.path());
+        let (log, messages) = crossbeam_channel::bounded(1);
+        app.log = Some(log);
+        let end = |id| log::Message::End {
+            id,
+            rc: 0,
+            time: SystemTime::now(),
+        };
+        app.log(end(98));
+        app.log(end(99));
+        assert_eq!(app.log_queue.len(), 1);
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        assert_eq!(app.log_queue.len(), 1);
+        // With no run left, the loop still sends what waits, once the log
+        // has room.
+        let reader = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            messages.iter().count()
+        });
+        let (_sender, control) = crossbeam_channel::unbounded();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        assert!(app.next(&control, Some(deadline)).is_none());
+        assert!(app.log_queue.is_empty());
+        drop(app.log.take());
+        assert_eq!(reader.join().unwrap(), 2);
+    }
+
+    #[test]
+    fn the_tick_comes_while_a_block_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\nsleep 1\n```\n", tmp.path());
+        app.ticks = crossbeam_channel::tick(Duration::from_millis(10));
+        enter(&mut app, SIZE);
+        let (_sender, control) = crossbeam_channel::unbounded();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let incoming = app.next(&control, Some(deadline));
+        assert!(matches!(incoming, Some(Ok(Incoming::Tick))));
+        app.ticks = crossbeam_channel::never();
+        read_until(&mut app, SIZE, |app| !running(app));
+    }
+
+    #[test]
+    fn the_drain_at_the_end_waits_only_for_the_runs_that_write_to_the_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("run.log");
+        let mut app = app("```bash\ntrue\n```\n\n```bash\nsleep 30\n```\n", tmp.path());
+        let thread = with_log(&mut app, &path);
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        let (_sender, control) = crossbeam_channel::unbounded();
+        let quick = Duration::from_secs(5);
+        // A run that ended.
+        let start = Instant::now();
+        app.drain_runs(&control, Duration::from_secs(10));
+        assert!(start.elapsed() < quick);
+        // A run that goes on, with no log.
+        log_lines(&mut app, thread, &path);
+        key(&mut app, KeyCode::Char('j'));
+        enter(&mut app, SIZE);
+        let start = Instant::now();
+        app.drain_runs(&control, Duration::from_secs(10));
+        assert!(start.elapsed() < quick);
+        for (_, run) in app.runs() {
+            run.signal(Signal::KILL);
+        }
+        read_until(&mut app, SIZE, |app| !running(app));
     }
 
     #[test]
@@ -2869,7 +2953,7 @@ echo \"got $x\"
         std::fs::write(app.session.file(), fence("deploy", "echo other")).unwrap();
         app.reload(SIZE);
         // `o`, Enter and `y`, typed ahead, would run the new code unseen.
-        assert!(app.paused_until.is_some());
+        assert!(app.paused_until.is_some_and(|until| until > Instant::now()));
     }
 
     #[test]

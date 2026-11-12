@@ -5,8 +5,21 @@ gitignore = true
 
 # Mutants that no test should catch. A run then shows only new gaps.
 exclude_re = [
-    # The flags of inotify are distinct bits: ^ gives the same value as |.
+    # The flags of inotify and of open are distinct bits: ^ gives the same
+    # value as |.
     "watch.rs:\\d+:\\d+: replace \\| with \\^ in spawn",
+    "log.rs:\\d+:\\d+: replace \\| with \\^ in open",
+    "main.rs:\\d+:\\d+: replace \\| with \\^ in read_runbook",
+    # The open flags of read_runbook matter only if the file changes
+    # between its stat and its open, which no test can time: the stat
+    # refuses a FIFO first.
+    "main.rs:\\d+:\\d+: replace \\| with & in read_runbook",
+    # A reload of the same text skips only the parse: apply then finds no
+    # change either.
+    "replace match guard text == self.text with false in App::reload",
+    # The tests take the bound of the held text from the constant; spec
+    # 12.2 gives its value.
+    "log.rs:\\d+:\\d+: replace \\* with \\+$",
     # A selected block that ends at the top of the screen is under an
     # output above the top too, which keeps the view in place either way.
     "view.rs:\\d+:75: replace > with >= in View::scroll_after",
