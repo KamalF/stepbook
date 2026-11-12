@@ -423,7 +423,7 @@ impl View {
         title.push(Span::raw(" "));
         Block::bordered()
             .title(Line::from(title))
-            .padding(Padding::left(1))
+            .padding(Padding::horizontal(1))
             .merge_borders(MergeStrategy::Exact)
     }
 
@@ -1971,7 +1971,7 @@ pub(crate) mod tests {
         assert_snapshot!(screen_with_footer(&view(BLOCKS), 80, 16), @"
         ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
         │«cyan,b:▶»«red:!» «cyan,b:check»   │ «b:Restart»                                                          │
-        │   restart │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━»│
+        │   restart │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━» │
         │   #3      │                                                                  │
         │ «red:!» check   │ Why: apply the config.                                           │
         │           │                                                                  │
@@ -1995,7 +1995,7 @@ pub(crate) mod tests {
         assert_snapshot!(screen(&view, 80, 13), @"
         ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
         │ «red:!» check   │ «b:Restart»                                                          │
-        │«cyan,b:▶»  «cyan,b:restart» │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━»│
+        │«cyan,b:▶»  «cyan,b:restart» │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━» │
         │   #3      │                                                                  │
         │ «red:!» check   │ Why: apply the config.                                           │
         │           │                                                                  │
@@ -2014,8 +2014,8 @@ pub(crate) mod tests {
         assert_snapshot!(screen(&view, 60, 8), @"
         ┌ run.md ──────────────────────────────────────────────────┐
         │ «d:│ »• «cyan,b:▐ »«b:#1»                                                 │
-        │ «d:│ »  «cyan,b:▐ »«blue:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx»│
-        │ «d:│ »  «cyan,b:▐»«d:↪»«blue:xxxxxxxxxxxxxxxxxxx»                                │
+        │ «d:│ »  «cyan,b:▐ »«blue:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx» │
+        │ «d:│ »  «cyan,b:▐»«d:↪»«blue:xxxxxxxxxxxxxxxxxxxx»                               │
         │                                                          │
         │                                                          │
         └──────────────────────────────────────────────────────────┘
@@ -2027,7 +2027,7 @@ pub(crate) mod tests {
         assert_snapshot!(screen(&view(BLOCKS), 79, 8), @"
         ┌ run.md ─────────────────────────────────────────────────────────────────────┐
         │ «b:Restart»                                                                     │
-        │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━»│
+        │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━» │
         │                                                                             │
         │ Why: apply the config.                                                      │
         │                                                                             │
@@ -2506,9 +2506,9 @@ pub(crate) mod tests {
     #[test]
     fn the_pty_of_a_block_takes_the_columns_of_its_code() {
         let view = view("- item\n\n  ```bash\n  ls\n  ```\n\n```bash\nls\n```\n");
-        // The text of the view is 65 columns wide, beside the sidebar.
-        assert_eq!(view.pty_size(0, Size::new(80, 24)), (61, 23));
-        assert_eq!(view.pty_size(1, Size::new(80, 24)), (63, 23));
+        // The text of the view is 64 columns wide, beside the sidebar.
+        assert_eq!(view.pty_size(0, Size::new(80, 24)), (60, 23));
+        assert_eq!(view.pty_size(1, Size::new(80, 24)), (62, 23));
     }
 
     #[test]
@@ -2522,7 +2522,7 @@ pub(crate) mod tests {
         });
         // The screen without the footer; the other blocks keep theirs.
         assert_eq!(view.pty_size(1, Size::new(80, 24)), (80, 23));
-        assert_eq!(view.pty_size(0, Size::new(80, 24)), (61, 23));
+        assert_eq!(view.pty_size(0, Size::new(80, 24)), (60, 23));
     }
 
     #[test]
