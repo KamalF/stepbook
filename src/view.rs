@@ -20,18 +20,39 @@ const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const ERROR: Style = Style::new().fg(Color::Red);
 const SUCCESS: Style = Style::new().fg(Color::Green);
 const BLOCK_GUTTER: Style = Style::new();
-const SELECTED: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+const SELECTED: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
 /// "▐" has an East Asian width of N, so every terminal draws it 1 column
 /// wide. "▌" has an ambiguous width: a terminal set to draw it wide
 /// would shift the code after it.
 const GUTTER: &str = "▐ ";
 const GUTTER_WIDTH: usize = 2;
+/// The gutter of a row of output, as wide as `GUTTER`. Its mark lines up
+/// with the right edge of "▐", so the bar of a block gets thinner along
+/// its output.
+const OUTPUT_GUTTER: &str = "▕ ";
 /// The second column of the gutter on a row that goes on from a wrapped
 /// line of code or info line. Text never reaches the gutter, so it cannot
 /// fake the mark.
 const WRAP_MARK: &str = "↪";
 /// The sidebar shows on terminals at least this wide.
 const SIDEBAR_SCREEN_WIDTH: u16 = 80;
+
+/// How much darker than the background of the terminal a block that
+/// runs is, on each of red, green and blue, so that blocks stand apart
+/// from the prose; and the selected block (spec 5.3).
+const BLOCK_SHADE: u8 = 12;
+const SELECTED_SHADE: u8 = 20;
+
+/// The background of `background` darker by `step`, or lighter on a
+/// background so dark that a darker shade would not show.
+fn shade((red, green, blue): (u8, u8, u8), step: u8) -> Color {
+    let lighter = red.max(green).max(blue) < SELECTED_SHADE;
+    let value = |v: u8| match lighter {
+        true => v + step,
+        false => v.saturating_sub(step),
+    };
+    Color::Rgb(value(red), value(green), value(blue))
+}
 
 /// The state of a block that has run, or tried to (spec 6.2).
 #[derive(Clone, Debug, PartialEq)]
@@ -93,10 +114,14 @@ pub struct View {
     pub mode: Mode,
     /// Whether the glyph of a running block shows: it blinks.
     pub blink: bool,
-    /// The question that the footer asks, in place of the keys (spec 7.4).
+    /// The question that the footer asks, in place of the keys, without
+    /// the "(y/N)" that the footer adds (spec 7.4).
     pub question: Option<String>,
     /// The notification that the footer shows, in place of the keys.
     pub notice: Option<String>,
+    /// The background color of the terminal, as red, green and blue, if
+    /// it gave it: blocks get a shade of it.
+    pub background: Option<(u8, u8, u8)>,
     statuses: Vec<Option<Status>>,
     /// Whether the program of each block is on the alternate screen.
     alternates: Vec<bool>,
@@ -127,6 +152,7 @@ impl View {
             blink: true,
             question: None,
             notice: None,
+            background: None,
             statuses: vec![None; blocks],
             alternates: vec![false; blocks],
             outputs: vec![Rows::default(); blocks],
@@ -155,6 +181,21 @@ impl View {
         for (y, row) in (text.y..text.bottom()).zip(scroll..shown.len()) {
             let line = self.line(&shown, row, self.selected);
             frame.buffer_mut().set_line(text.x, y, &line, text.width);
+            if let Some(background) = self.background
+                && let Row::Info(block, _) | Row::Code(block, _) = shown.row(row)
+            {
+                let step = match self.selected == Some(block) {
+                    true => SELECTED_SHADE,
+                    false => BLOCK_SHADE,
+                };
+                // From the column after "▐", to the right edge of the text:
+                // the bar is the left edge of the block.
+                let x = text.x + text_width(&shown.page.prefixes[block]) as u16 + 1;
+                let width = text.right().saturating_sub(x);
+                let area = Rect::new(x, y, width, 1);
+                let style = Style::new().bg(shade(background, step));
+                frame.buffer_mut().set_style(area, style);
+            }
         }
         // In input mode, the cursor of the program shows in its output.
         if let Mode::Input(i) = self.mode
@@ -169,7 +210,7 @@ impl View {
                 frame.set_cursor_position((text.x + x as u16, y));
             }
         }
-        frame.render_widget(self.footer(), footer);
+        frame.render_widget(self.footer(footer.width), footer);
     }
 
     /// The full-screen view: only the terminal of the block, so that a
@@ -192,7 +233,7 @@ impl View {
         {
             frame.set_cursor_position((area.x + column, area.y + row as u16));
         }
-        frame.render_widget(self.footer(), footer);
+        frame.render_widget(self.footer(footer.width), footer);
     }
 
     /// Whether block `i` runs.
@@ -221,21 +262,24 @@ impl View {
     }
 
     /// The mode, then the question, the notification or the keys that
-    /// apply now (spec 6.1). Both can quote a directory name (spec 6.5).
-    fn footer(&self) -> Line<'static> {
+    /// apply now (spec 6.1), cut with "…" to `width` columns. A question
+    /// always keeps its "(y/N)" (spec 7.4). Both can quote a directory
+    /// name (spec 6.5).
+    fn footer(&self, width: u16) -> Line<'static> {
         let reversed = Style::new().add_modifier(Modifier::REVERSED);
-        let (mode, text) = match (&self.question, self.input_block(), &self.mode, &self.notice) {
-            (Some(question), ..) => (" CONFIRM ", escaped(question, Style::new())),
+        let state = (&self.question, self.input_block(), &self.mode, &self.notice);
+        let (mode, text, end) = match state {
+            (Some(question), ..) => (" CONFIRM ", escaped(question, Style::new()), " (y/N)"),
             (None, Some(i), ..) => {
                 let keys = format!("keys go to {}  ^o leave", self.doc.label(i));
-                (" INPUT ", vec![Span::raw(keys)])
+                (" INPUT ", vec![Span::raw(keys)], "")
             }
-            (None, None, Mode::Full(_), Some(notice)) => (" OUTPUT ", escaped(notice, WARNING)),
+            (None, None, Mode::Full(_), Some(notice)) => (" OUTPUT ", escaped(notice, WARNING), ""),
             (None, None, Mode::Full(full), None) => {
                 let keys = format!("{}  ↑↓ scroll  o back", self.doc.label(full.block));
-                (" OUTPUT ", vec![Span::raw(keys)])
+                (" OUTPUT ", vec![Span::raw(keys)], "")
             }
-            (None, None, _, Some(notice)) => (" NORMAL ", escaped(notice, WARNING)),
+            (None, None, _, Some(notice)) => (" NORMAL ", escaped(notice, WARNING), ""),
             (None, None, _, None) => {
                 let status = self.selected.and_then(|i| self.statuses[i].as_ref());
                 let input = match status {
@@ -244,10 +288,16 @@ impl View {
                     Some(Status::NotStarted(_)) | None => "",
                 };
                 let keys = format!("↑↓ move  ↵ run{input}  q quit");
-                (" NORMAL ", vec![Span::raw(keys)])
+                (" NORMAL ", vec![Span::raw(keys)], "")
             }
         };
-        let spans = [vec![Span::styled(mode, reversed), Span::raw("  ")], text];
+        // The mode and the end are ASCII: one column per byte.
+        let room = usize::from(width).saturating_sub(mode.len() + 2 + end.len());
+        let spans = [
+            vec![Span::styled(mode, reversed), Span::raw("  ")],
+            truncate(&text, room),
+            vec![Span::raw(end)],
+        ];
         Line::from(spans.concat())
     }
 
@@ -325,13 +375,14 @@ impl View {
                 let rows = info.as_ref().expect("shown_at makes the info rows");
                 gutter(rows[i].clone(), block)
             }
-            // Output takes the column of the code, and no gutter: code rows
-            // always have one.
+            // Output takes the column of the code, after a mark in the
+            // column of the gutter, where a program cannot write: its
+            // output cannot pass for the code of a nested block.
             Row::Output(block, i) => {
                 let mut spans = page.prefixes[block].clone();
-                spans.push(Span::raw(" ".repeat(GUTTER_WIDTH)));
+                spans.push(Span::styled(OUTPUT_GUTTER, DIM));
                 spans.extend(self.outputs[block].lines[i].spans.iter().cloned());
-                Line::from(spans)
+                gutter(Line::from(spans), block)
             }
         }
     }
@@ -423,7 +474,7 @@ impl View {
         title.push(Span::raw(" "));
         Block::bordered()
             .title(Line::from(title))
-            .padding(Padding::left(1))
+            .padding(Padding::horizontal(1))
             .merge_borders(MergeStrategy::Exact)
     }
 
@@ -702,6 +753,13 @@ pub struct Page {
     pub widths: Vec<usize>,
 }
 
+/// The most columns of a paragraph, a heading or a rule, after the
+/// prefixes of its lists and quotes: on a wide terminal, longer lines of
+/// prose are hard to read. Code, output and tables take the full width: a
+/// program prints to the width of its terminal, and code wraps at any
+/// character.
+const MAX_PROSE: usize = 100;
+
 /// The lines of the document view at `width` columns.
 pub fn layout(doc: &Document, width: usize) -> Page {
     let mut lines = Vec::new();
@@ -717,24 +775,25 @@ pub fn layout(doc: &Document, width: usize) -> Page {
         let (first, rest) = fitted_prefixes(item, width);
         let width = width.saturating_sub(text_width(rest)).max(1);
         let code_width = width.saturating_sub(GUTTER_WIDTH).max(1);
+        let prose_width = width.min(MAX_PROSE);
         let body = match &item.kind {
-            Kind::Text(text) => wrap(text, width),
+            Kind::Text(text) => wrap(text, prose_width),
             Kind::Heading(level, text) => {
-                let mut body = wrap(text, width);
+                let mut body = wrap(text, prose_width);
                 let rule = match level {
                     HeadingLevel::H1 => "━",
                     HeadingLevel::H2 => "─",
                     _ => "",
                 };
                 if !rule.is_empty() {
-                    body.push(Line::from(Span::styled(rule.repeat(width), DIM)));
+                    body.push(Line::from(Span::styled(rule.repeat(prose_width), DIM)));
                 }
                 body
             }
             Kind::Table(aligns, rows) => table(aligns, rows, width),
             Kind::Code { lines, block } => code(lines, *block, code_width),
             Kind::Source(lines) => lines.iter().flat_map(|l| hard_wrap(l, width)).collect(),
-            Kind::Rule => vec![Line::from(Span::styled("─".repeat(width), DIM))],
+            Kind::Rule => vec![Line::from(Span::styled("─".repeat(prose_width), DIM))],
             Kind::Blank => vec![Line::default()],
         };
         match item.kind {
@@ -1573,17 +1632,17 @@ pub(crate) mod tests {
         // pulldown-cmark turns CR LF into LF, but CR CR LF keeps one CR.
         let text = "```\ncd /tmp/x\r\r\nrm -rf *\n```";
         assert_snapshot!(render(text, 40), @"
-        «d:▐ »cd /tmp/x«yellow:^M»
-        «d:▐ »rm -rf *
+        «d:▐ cd /tmp/x»«yellow,d:^M»
+        «d:▐ rm -rf *»
         ");
     }
 
     #[test]
-    fn other_code_blocks_have_a_dim_gutter_and_no_highlighting() {
+    fn other_code_blocks_are_dim_and_not_highlighted() {
         assert_snapshot!(render("```python\nif x: 'a'\n```\n\n    ls '$x'", 40), @"
-        «d:▐ »if x: 'a'
+        «d:▐ if x: 'a'»
 
-        «d:▐ »ls '$x'
+        «d:▐ ls '$x'»
         ");
     }
 
@@ -1641,6 +1700,17 @@ pub(crate) mod tests {
         «d:│ »
         «d:│ ────────»
         ");
+    }
+
+    #[test]
+    fn prose_takes_at_most_100_columns_and_code_the_full_width() {
+        let words = "word ".repeat(30);
+        let code = "x".repeat(140);
+        let text = format!("# Title\n\n{words}\n\n***\n\n> {words}\n\n```bash\n{code}\n```\n");
+        // The words wrap at 99 columns, and the quote adds its "│ ". The
+        // code wraps at 128 columns, after its gutter.
+        let widths = [5, 100, 0, 99, 49, 0, 100, 0, 101, 51, 0, 4, 130, 14];
+        assert_eq!(line_widths(&text, 130), widths);
     }
 
     #[test]
@@ -1783,8 +1853,8 @@ pub(crate) mod tests {
     #[test]
     fn tabs_in_code_expand_to_8_columns() {
         assert_snapshot!(render("```\na\tb\n\tc\n```", 40), @"
-        «d:▐ »a«d:⇥»      b
-        «d:▐ ⇥»       c
+        «d:▐ a⇥      b»
+        «d:▐ ⇥       c»
         ");
     }
 
@@ -1970,13 +2040,13 @@ pub(crate) mod tests {
     fn the_screen_has_a_sidebar_a_document_view_and_a_footer() {
         assert_snapshot!(screen_with_footer(&view(BLOCKS), 80, 16), @"
         ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
-        │«cyan,b:▶»«red:!» «cyan,b:check»   │ «b:Restart»                                                          │
-        │   restart │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━»│
+        │«blue,b:▶»«red:!» «blue,b:check»   │ «b:Restart»                                                          │
+        │   restart │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━» │
         │   #3      │                                                                  │
         │ «red:!» check   │ Why: apply the config.                                           │
         │           │                                                                  │
-        │           │ «cyan,b:▐ »«b:check»  «red:duplicate name»                                          │
-        │           │ «cyan,b:▐ »«blue:ls»                                                             │
+        │           │ «blue,b:▐ »«b:check»  «red:duplicate name»                                          │
+        │           │ «blue,b:▐ »«blue:ls»                                                             │
         │           │                                                                  │
         │           │ ▐ «b:restart»                                                        │
         │           │ ▐ «blue:systemctl» restart api                                          │
@@ -1989,21 +2059,57 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn shades_are_darker_than_the_background_or_lighter_on_a_black_one() {
+        let shades = |rgb| (shade(rgb, BLOCK_SHADE), shade(rgb, SELECTED_SHADE));
+        let rgb = Color::Rgb;
+        assert_eq!(shades((40, 40, 40)), (rgb(28, 28, 28), rgb(20, 20, 20)));
+        assert_eq!(shades((0, 43, 54)), (rgb(0, 31, 42), rgb(0, 23, 34)));
+        assert_eq!(shades((0, 0, 0)), (rgb(12, 12, 12), rgb(20, 20, 20)));
+        assert_eq!(shades((19, 0, 0)), (rgb(31, 12, 12), rgb(39, 20, 20)));
+        assert_eq!(shades((20, 20, 20)), (rgb(8, 8, 8), rgb(0, 0, 0)));
+    }
+
+    #[test]
+    fn blocks_take_their_shade_from_the_column_after_the_gutter() {
+        let text = "- item\n\n  ```bash\n  ls\n  ```\n\n```bash\nls\n```\n\n```text\nx\n```\n";
+        let mut view = view(text);
+        view.background = Some((40, 40, 40));
+        view.set_output(1, output(&["out"]), SMALL);
+        // The selected block is darker. Output and other code keep the
+        // background of the terminal.
+        assert_snapshot!(screen(&view, 40, 14), @"
+        ┌ run.md ──────────────────────────────┐
+        │ • item                               │
+        │                                      │
+        │   «blue,b:▐»«blue,bg=#141414,b: »«bg=#141414,b:#1»«bg=#141414:                              » │
+        │   «blue,b:▐»«blue,bg=#141414,b: »«blue,bg=#141414:ls»«bg=#141414:                              » │
+        │                                      │
+        │ ▐«bg=#1c1c1c: »«bg=#1c1c1c,b:#2»«bg=#1c1c1c:                                » │
+        │ ▐«bg=#1c1c1c: »«blue,bg=#1c1c1c:ls»«bg=#1c1c1c:                                » │
+        │ «d:▕ »out                                │
+        │                                      │
+        │ «d:▐ x»                                  │
+        │                                      │
+        └──────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
     fn the_selected_block_has_a_highlighted_gutter_and_sidebar_row() {
         let mut view = view(BLOCKS);
         view.selected = Some(1);
         assert_snapshot!(screen(&view, 80, 13), @"
         ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
         │ «red:!» check   │ «b:Restart»                                                          │
-        │«cyan,b:▶»  «cyan,b:restart» │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━»│
+        │«blue,b:▶»  «blue,b:restart» │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━» │
         │   #3      │                                                                  │
         │ «red:!» check   │ Why: apply the config.                                           │
         │           │                                                                  │
         │           │ ▐ «b:check»  «red:duplicate name»                                          │
         │           │ ▐ «blue:ls»                                                             │
         │           │                                                                  │
-        │           │ «cyan,b:▐ »«b:restart»                                                        │
-        │           │ «cyan,b:▐ »«blue:systemctl» restart api                                          │
+        │           │ «blue,b:▐ »«b:restart»                                                        │
+        │           │ «blue,b:▐ »«blue:systemctl» restart api                                          │
         └───────────┴──────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -2013,9 +2119,9 @@ pub(crate) mod tests {
         let view = view(&format!("> - ```bash\n>   {}\n>   ```\n", "x".repeat(70)));
         assert_snapshot!(screen(&view, 60, 8), @"
         ┌ run.md ──────────────────────────────────────────────────┐
-        │ «d:│ »• «cyan,b:▐ »«b:#1»                                                 │
-        │ «d:│ »  «cyan,b:▐ »«blue:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx»│
-        │ «d:│ »  «cyan,b:▐»«d:↪»«blue:xxxxxxxxxxxxxxxxxxx»                                │
+        │ «d:│ »• «blue,b:▐ »«b:#1»                                                 │
+        │ «d:│ »  «blue,b:▐ »«blue:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx» │
+        │ «d:│ »  «blue,b:▐»«d:↪»«blue:xxxxxxxxxxxxxxxxxxxx»                               │
         │                                                          │
         │                                                          │
         └──────────────────────────────────────────────────────────┘
@@ -2027,7 +2133,7 @@ pub(crate) mod tests {
         assert_snapshot!(screen(&view(BLOCKS), 79, 8), @"
         ┌ run.md ─────────────────────────────────────────────────────────────────────┐
         │ «b:Restart»                                                                     │
-        │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━»│
+        │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━» │
         │                                                                             │
         │ Why: apply the config.                                                      │
         │                                                                             │
@@ -2049,7 +2155,7 @@ pub(crate) mod tests {
         assert_snapshot!(rows("```bash [name:abcdefghijklmnop]\n```\n"), @"┌ blocks ───────────┬ run.md ──────────────────────────────────────────────────┐");
         assert_snapshot!(screen(&view(&long), 80, 8), @"
         ┌ blocks ─────────────────────┬ run.md ────────────────────────────────────────┐
-        │«cyan,b:▶»  «cyan,b:nnnnnnnnnnnnnnnnnnnnnnnnn…»│ «cyan,b:▐ »«b:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn»     │
+        │«blue,b:▶»  «blue,b:nnnnnnnnnnnnnnnnnnnnnnnnn…»│ «blue,b:▐ »«b:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn»     │
         │                             │                                                │
         │                             │                                                │
         │                             │                                                │
@@ -2068,7 +2174,7 @@ pub(crate) mod tests {
         │   #5      │                                                                  │
         │   #6      │ ▐ «b:#2»                                                             │
         │   #7      │                                                                  │
-        │«cyan,b:▶»  «cyan,b:#8»      │ ▐ «b:#3»                                                             │
+        │«blue,b:▶»  «blue,b:#8»      │ ▐ «b:#3»                                                             │
         └───────────┴──────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -2144,9 +2250,9 @@ pub(crate) mod tests {
         │                                                          │
         │ Why: step 2.                                             │
         │                                                          │
-        │ «cyan,b:▐ »«b:s2»                                                     │
-        │ «cyan,b:▐ »«blue:ls»                                                     │
-        │ «cyan,b:▐ »«blue:ls»                                                     │
+        │ «blue,b:▐ »«b:s2»                                                     │
+        │ «blue,b:▐ »«blue:ls»                                                     │
+        │ «blue,b:▐ »«blue:ls»                                                     │
         └──────────────────────────────────────────────────────────┘
         ");
     }
@@ -2203,7 +2309,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn output_shows_under_its_code_after_the_prefixes_and_without_a_gutter() {
+    fn output_shows_under_its_code_after_the_prefixes_and_a_mark() {
         let mut view = view("- item\n\n  ```bash\n  ls\n  ```\n\n```bash\nls\n```\n");
         view.set_output(0, output(&["one", "two"]), SMALL);
         view.set_output(1, output(&["\u{2590} three"]), SMALL);
@@ -2211,14 +2317,14 @@ pub(crate) mod tests {
         ┌ run.md ──────────────────────────────────────────────────┐
         │ • item                                                   │
         │                                                          │
-        │   «cyan,b:▐ »«b:#1»                                                   │
-        │   «cyan,b:▐ »«blue:ls»                                                   │
-        │     one                                                  │
-        │     two                                                  │
+        │   «blue,b:▐ »«b:#1»                                                   │
+        │   «blue,b:▐ »«blue:ls»                                                   │
+        │   «blue,b:▕ »one                                                  │
+        │   «blue,b:▕ »two                                                  │
         │                                                          │
         │ ▐ «b:#2»                                                     │
         │ ▐ «blue:ls»                                                     │
-        │   ▐ three                                                │
+        │ «d:▕ »▐ three                                                │
         └──────────────────────────────────────────────────────────┘
         ");
     }
@@ -2326,7 +2432,7 @@ pub(crate) mod tests {
     #[test]
     fn the_footer_shows_the_keys_that_apply_now() {
         let mut view = view(BLOCKS);
-        let footer = |view: &View| markup(&[view.footer()]);
+        let footer = |view: &View| markup(&[view.footer(80)]);
         assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  q quit");
         view.set_status(0, Status::Running(Duration::ZERO));
         assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  i input  o output  q quit");
@@ -2443,11 +2549,21 @@ pub(crate) mod tests {
     #[test]
     fn the_footer_shows_a_question_or_a_notification_in_place_of_the_keys() {
         let mut view = view(BLOCKS);
-        let footer = |view: &View| markup(&[view.footer()]);
+        let footer = |view: &View| markup(&[view.footer(80)]);
         view.notice = Some("session directory reset to /a\u{1b}[2Jb".into());
         assert_snapshot!(footer(&view), @"«r: NORMAL »  «yellow:session directory reset to /a^[[2Jb»");
-        view.question = Some("Re-run check? (y/N)".into());
+        view.question = Some("Re-run check?".into());
         assert_snapshot!(footer(&view), @"«r: CONFIRM »  Re-run check? (y/N)");
+    }
+
+    #[test]
+    fn a_narrow_footer_cuts_its_text_and_keeps_the_y_n_of_a_question() {
+        let mut view = view(BLOCKS);
+        view.notice = Some("session directory reset to /a/long/path".into());
+        let footer = |view: &View| markup(&[view.footer(45)]);
+        assert_snapshot!(footer(&view), @"«r: NORMAL »  «yellow:session directory reset to /a/long…»");
+        view.question = Some("1 block running. Stop it and quit?".into());
+        assert_snapshot!(footer(&view), @"«r: CONFIRM »  1 block running. Stop it an… (y/N)");
     }
 
     #[test]
@@ -2506,9 +2622,9 @@ pub(crate) mod tests {
     #[test]
     fn the_pty_of_a_block_takes_the_columns_of_its_code() {
         let view = view("- item\n\n  ```bash\n  ls\n  ```\n\n```bash\nls\n```\n");
-        // The text of the view is 65 columns wide, beside the sidebar.
-        assert_eq!(view.pty_size(0, Size::new(80, 24)), (61, 23));
-        assert_eq!(view.pty_size(1, Size::new(80, 24)), (63, 23));
+        // The text of the view is 64 columns wide, beside the sidebar.
+        assert_eq!(view.pty_size(0, Size::new(80, 24)), (60, 23));
+        assert_eq!(view.pty_size(1, Size::new(80, 24)), (62, 23));
     }
 
     #[test]
@@ -2522,7 +2638,7 @@ pub(crate) mod tests {
         });
         // The screen without the footer; the other blocks keep theirs.
         assert_eq!(view.pty_size(1, Size::new(80, 24)), (80, 23));
-        assert_eq!(view.pty_size(0, Size::new(80, 24)), (61, 23));
+        assert_eq!(view.pty_size(0, Size::new(80, 24)), (60, 23));
     }
 
     #[test]

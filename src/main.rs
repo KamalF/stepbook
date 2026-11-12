@@ -6,6 +6,7 @@ mod view;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal, Read, Write};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -27,6 +28,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::crossterm::{execute, queue};
 use ratatui::layout::Size;
 use ratatui::{DefaultTerminal, Terminal};
+use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::process::Signal;
 use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 
@@ -217,8 +219,12 @@ fn open(args: &Args) -> Result<Exit, String> {
     let session = run::Session::new(workspace, bash, state, file, log).map_err(fail)?;
     let mut terminal = set_up_terminal(session.workspace())
         .map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
+    let background = terminal_input()
+        .ok()
+        .and_then(|input| query_background(input.as_fd(), &mut std::io::stdout(), QUERY_WAIT));
     let title = args.file.file_name().unwrap_or(args.file.as_os_str());
-    let view = view::View::new(doc, title.to_string_lossy().into_owned());
+    let mut view = view::View::new(doc, title.to_string_lossy().into_owned());
+    view.background = background;
     let mut app = App::new(view, session, crossbeam_channel::tick(TICK));
     std::thread::spawn(move || read_terminal(sender));
     let result = event_loop(&mut terminal, &mut app, &control);
@@ -270,6 +276,141 @@ fn set_up_terminal(workspace: &Path) -> std::io::Result<DefaultTerminal> {
         Terminal::new(CrosstermBackend::new(stdout))
     };
     set_up().inspect_err(|_| restore_terminal())
+}
+
+/// The input of the terminal, where crossterm reads the keys: stdin if it
+/// is a terminal, else /dev/tty.
+fn terminal_input() -> std::io::Result<OwnedFd> {
+    let stdin = std::io::stdin();
+    match stdin.is_terminal() {
+        true => stdin.as_fd().try_clone_to_owned(),
+        false => Ok(std::fs::File::open("/dev/tty")?.into()),
+    }
+}
+
+/// How long stepbook waits for the answers of the terminal at startup. A
+/// terminal answers the query of its device attributes at once: the wait
+/// ends there.
+const QUERY_WAIT: Duration = Duration::from_millis(500);
+
+/// The most bytes that stepbook keeps while it waits for the answers. The
+/// bytes of a paste do not count.
+const MAX_ANSWERS: usize = 4096;
+
+const PASTE_START: [u8; 6] = *b"\x1b[200~";
+const PASTE_END: [u8; 6] = *b"\x1b[201~";
+
+/// How long the query waits for the next byte of a paste, or of the start
+/// of one, past the end of its own wait: crossterm would read the rest of
+/// the paste as keys. A terminal that never ends a paste must not hold the
+/// startup forever.
+const PASTE_WAIT: Duration = Duration::from_secs(5);
+
+/// Asks the terminal for its background color (OSC 11), then for its
+/// device attributes (DA1), and returns the color, as red, green and blue
+/// (spec 5.3). A terminal answers in order, and every terminal answers DA1:
+/// one that does not know OSC 11 gives no color, and stepbook waits no
+/// longer. The keys typed before the answers are lost: they would arrive
+/// mixed with them.
+///
+/// It reads a byte at a time, so that it never takes the start of a paste
+/// after the answers. A paste that starts before them, it drops to its
+/// end: crossterm would read the rest of the paste as keys, and a line
+/// feed in it would run the selected block (spec 7.1).
+fn query_background(
+    input: BorrowedFd,
+    output: &mut impl Write,
+    wait: Duration,
+) -> Option<(u8, u8, u8)> {
+    output.write_all(b"\x1b]11;?\x1b\\\x1b[c").ok()?;
+    output.flush().ok()?;
+    let end = Instant::now() + wait;
+    let mut answers = Vec::new();
+    // While a paste goes on, its last bytes.
+    let mut paste: Option<[u8; 6]> = None;
+    loop {
+        let answered = answers.last() == Some(&b'c') && device_attributes(&answers).is_some();
+        let pasting =
+            paste.is_some() || (1..PASTE_START.len()).any(|n| answers.ends_with(&PASTE_START[..n]));
+        if !pasting && (answered || answers.len() >= MAX_ANSWERS) {
+            break;
+        }
+        let left = match pasting {
+            true => PASTE_WAIT,
+            false => end.saturating_duration_since(Instant::now()),
+        };
+        let Some(byte) = read_byte(input, left) else {
+            break;
+        };
+        match &mut paste {
+            Some(window) => {
+                window.rotate_left(1);
+                let [.., last] = window;
+                *last = byte;
+                if *window == PASTE_END {
+                    paste = None;
+                }
+            }
+            None => {
+                answers.push(byte);
+                if answers.ends_with(&PASTE_START) {
+                    paste = Some([0; 6]);
+                }
+            }
+        }
+    }
+    parse_background(&answers)
+}
+
+/// The next byte of `input`, if one comes within `wait`.
+fn read_byte(input: BorrowedFd, wait: Duration) -> Option<u8> {
+    let timeout = Timespec::try_from(wait).unwrap_or_default();
+    let mut fds = [PollFd::new(&input, PollFlags::IN)];
+    loop {
+        match rustix::event::poll(&mut fds, Some(&timeout)) {
+            Ok(0) => return None,
+            Ok(_) => break,
+            Err(rustix::io::Errno::INTR) => {}
+            Err(_) => return None,
+        }
+    }
+    let mut byte = [0];
+    match rustix::io::read(input, &mut byte) {
+        Ok(1) => Some(byte[0]),
+        _ => None,
+    }
+}
+
+/// Where the answer to DA1 starts in `bytes`, if they hold all of it:
+/// `ESC [ ?`, then digits and semicolons, then `c`.
+fn device_attributes(bytes: &[u8]) -> Option<usize> {
+    (0..bytes.len()).find(|&i| {
+        let Some(rest) = bytes[i..].strip_prefix(b"\x1b[?") else {
+            return false;
+        };
+        let end = rest.iter().position(|b| !b.is_ascii_digit() && *b != b';');
+        end.is_some_and(|end| rest[end] == b'c')
+    })
+}
+
+/// The color in the answer to OSC 11 in `bytes`, before the answer to DA1:
+/// `ESC ] 11 ; rgb:R/G/B`, ended by BEL or by `ESC \`, where R, G and B
+/// have 1 to 4 hex digits each.
+fn parse_background(bytes: &[u8]) -> Option<(u8, u8, u8)> {
+    let bytes = &bytes[..device_attributes(bytes).unwrap_or(bytes.len())];
+    let start = bytes.windows(5).position(|w| w == b"\x1b]11;")? + 5;
+    let rest = &bytes[start..];
+    let end = rest.iter().position(|&b| b == 0x07 || b == 0x1b)?;
+    let text = std::str::from_utf8(&rest[..end]).ok()?;
+    let mut values = text.strip_prefix("rgb:")?.split('/').map(|hex| {
+        let ok = (1..=4).contains(&hex.len()) && hex.bytes().all(|b| b.is_ascii_hexdigit());
+        let value = u32::from_str_radix(hex, 16).ok().filter(|_| ok)?;
+        // A value of n digits is a fraction of 16^n - 1.
+        let max = (1u32 << (4 * hex.len())) - 1;
+        u8::try_from((value * 255 + max / 2) / max).ok()
+    });
+    let rgb = (values.next()??, values.next()??, values.next()??);
+    values.next().is_none().then_some(rgb)
 }
 
 /// Ignores errors: after a SIGHUP, the terminal is gone.
@@ -548,13 +689,10 @@ impl App {
         match action(event, size)? {
             Action::Quit => match self.runs().count() {
                 0 => return Some(Exit::Quit),
-                1 => self.ask(
-                    Question::Quit,
-                    "1 block running. Stop it and quit? (y/N)".into(),
-                ),
+                1 => self.ask(Question::Quit, "1 block running. Stop it and quit?".into()),
                 n => self.ask(
                     Question::Quit,
-                    format!("{n} blocks running. Stop them and quit? (y/N)"),
+                    format!("{n} blocks running. Stop them and quit?"),
                 ),
             },
             Action::Select(step) => self.view.select_by(step, size),
@@ -636,7 +774,7 @@ impl App {
             1 => "1 line".to_string(),
             n => format!("{n} lines"),
         };
-        let text = format!("Paste {lines} to {}? (y/N)", self.view.doc.label(i));
+        let text = format!("Paste {lines} to {}?", self.view.doc.label(i));
         self.ask(Question::Paste(i, bytes), text);
         true
     }
@@ -757,7 +895,7 @@ impl App {
 
     fn ask_rerun(&mut self, i: usize) {
         let label = self.view.doc.label(i);
-        self.ask(Question::Rerun(i), format!("Re-run {label}? (y/N)"));
+        self.ask(Question::Rerun(i), format!("Re-run {label}?"));
     }
 
     fn ask(&mut self, question: Question, text: String) {
@@ -1117,6 +1255,154 @@ mod tests {
 
     const SIZE: Size = Size::new(80, 24);
 
+    /// The answer of `query_background` to the bytes that the terminal
+    /// sends, and the bytes that it writes.
+    fn background(answers: &[u8], wait: Duration) -> (Option<(u8, u8, u8)>, Vec<u8>) {
+        let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
+        terminal.write_all(answers).unwrap();
+        let mut output = Vec::new();
+        let color = query_background(input.as_fd(), &mut output, wait);
+        (color, output)
+    }
+
+    const DA1: &[u8] = b"\x1b[?62;22c";
+
+    #[test]
+    fn the_background_comes_from_the_answer_to_osc_11_before_da1() {
+        let answers = [b"\x1b]11;rgb:2828/2828/2828\x1b\\".as_slice(), DA1].concat();
+        let (color, output) = background(&answers, Duration::from_secs(5));
+        assert_eq!(color, Some((40, 40, 40)));
+        assert_eq!(output, b"\x1b]11;?\x1b\\\x1b[c");
+        // Keys typed ahead come before the answers, and are lost. A "c" in
+        // them does not end the wait.
+        let answers = [b"jc\x1b]11;rgb:ff/8c/0\x07".as_slice(), DA1].concat();
+        assert_eq!(
+            background(&answers, Duration::from_secs(5)).0,
+            Some((255, 140, 0))
+        );
+    }
+
+    #[test]
+    fn the_wait_takes_answers_that_come_later() {
+        let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
+        let answer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            terminal.write_all(b"\x1b]11;rgb:0/0/0\x07").unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            terminal.write_all(DA1).unwrap();
+            terminal
+        });
+        let color = query_background(input.as_fd(), &mut Vec::new(), Duration::from_secs(5));
+        assert_eq!(color, Some((0, 0, 0)));
+        answer.join().unwrap();
+    }
+
+    /// The bytes left in `input`.
+    fn rest(input: &std::os::unix::net::UnixStream) -> Vec<u8> {
+        std::iter::from_fn(|| read_byte(input.as_fd(), Duration::from_millis(10))).collect()
+    }
+
+    #[test]
+    fn a_paste_after_the_answers_stays_whole_for_the_keys() {
+        let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
+        let paste = b"\x1b[200~y\ri\x1b[201~";
+        terminal
+            .write_all(&[b"\x1b]11;rgb:0/0/0\x07", DA1, paste].concat())
+            .unwrap();
+        let color = query_background(input.as_fd(), &mut Vec::new(), Duration::from_secs(5));
+        assert_eq!(color, Some((0, 0, 0)));
+        assert_eq!(rest(&input), paste);
+    }
+
+    #[test]
+    fn a_paste_before_the_answers_is_dropped_to_its_end() {
+        let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
+        // Longer than the bound of the answers, which comes after it.
+        let paste = [b"\x1b[200~".as_slice(), &[b'y'; 5000], b"\ri\x1b[201~"].concat();
+        terminal
+            .write_all(&[&paste, b"\x1b]11;rgb:0/0/0\x07".as_slice(), DA1].concat())
+            .unwrap();
+        let color = query_background(input.as_fd(), &mut Vec::new(), Duration::from_secs(5));
+        assert_eq!(color, Some((0, 0, 0)));
+        assert_eq!(rest(&input), b"");
+        // A paste that starts at the bound of the answers.
+        let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
+        let typed = [&[b'x'; MAX_ANSWERS - 6][..], b"\x1b[200~y\ri\x1b[201~"].concat();
+        terminal.write_all(&typed).unwrap();
+        let wait = Duration::from_millis(50);
+        assert_eq!(query_background(input.as_fd(), &mut Vec::new(), wait), None);
+        assert_eq!(rest(&input), b"");
+        // A paste that pauses for longer than the wait, and pastes whose
+        // start comes in two parts across the end of the wait.
+        let pastes: [&[&[u8]]; 3] = [
+            &[b"\x1b[200~y", b"\r", b"i\x1b[201~"],
+            &[b"\x1b[20", b"0~y\ri\x1b[201~"],
+            &[b"\x1b[200", b"~y\ri\x1b[201~"],
+        ];
+        for parts in pastes {
+            let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
+            // The first part comes before the end of the wait, the others
+            // after it.
+            terminal.write_all(parts[0]).unwrap();
+            let later: Vec<Vec<u8>> = parts[1..].iter().map(|part| part.to_vec()).collect();
+            let typing = std::thread::spawn(move || {
+                for part in later {
+                    std::thread::sleep(Duration::from_millis(100));
+                    terminal.write_all(&part).unwrap();
+                }
+                terminal
+            });
+            let wait = Duration::from_millis(50);
+            assert_eq!(query_background(input.as_fd(), &mut Vec::new(), wait), None);
+            let _terminal = typing.join().unwrap();
+            assert_eq!(rest(&input), b"");
+        }
+    }
+
+    #[test]
+    fn without_an_answer_to_osc_11_the_wait_ends_with_da1() {
+        let start = Instant::now();
+        assert_eq!(background(DA1, Duration::from_secs(10)).0, None);
+        assert!(start.elapsed() < Duration::from_secs(5));
+        // A terminal that answers nothing gives no color at the end of the
+        // wait.
+        assert_eq!(background(b"", Duration::from_millis(50)).0, None);
+    }
+
+    #[test]
+    fn the_answer_to_osc_11_has_1_to_4_hex_digits_per_color() {
+        let parse = |answer: &str| parse_background(format!("\x1b]11;{answer}\x07").as_bytes());
+        assert_eq!(parse("rgb:f/8/0"), Some((255, 136, 0)));
+        assert_eq!(parse("rgb:fff/800/000"), Some((255, 128, 0)));
+        assert_eq!(parse("rgb:FFFF/0000/7fff"), Some((255, 0, 127)));
+        for answer in [
+            "rgb:28/28",
+            "rgb:28/28/28/28",
+            "rgb:12345/0/0",
+            "rgb:/0/0",
+            "rgb:+f/0/0",
+            "rgb:zz/0/0",
+            "rgba:28/28/28/ff",
+            "#282828",
+        ] {
+            assert_eq!(parse(answer), None, "{answer}");
+        }
+        // An OSC 11 after the answer to DA1 is not an answer.
+        assert_eq!(
+            parse_background(&[DA1, b"\x1b]11;rgb:0/0/0\x07"].concat()),
+            None
+        );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn any_bytes_parse_without_a_panic(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..64)) {
+            let _ = parse_background(&bytes);
+            let answer = [b"\x1b]11;rgb:".as_slice(), &bytes, b"\x07"].concat();
+            let _ = parse_background(&answer);
+        }
+    }
+
     fn parse(args: &[&str]) -> Result<Command, String> {
         parse_args(args.iter().map(OsString::from))
     }
@@ -1283,7 +1569,7 @@ mod tests {
         enter(&mut app, SIZE);
         read_until(&mut app, SIZE, |app| !running(app));
         enter(&mut app, SIZE);
-        assert_eq!(app.view.question.as_deref(), Some("Re-run count? (y/N)"));
+        assert_eq!(app.view.question.as_deref(), Some("Re-run count?"));
         // A resize is no answer, and every key but y says no.
         assert_eq!(app.handle(&Event::Resize(80, 24), SIZE), None);
         assert!(app.question.is_some());
@@ -1830,14 +2116,11 @@ echo \"got $x\"
         // One line with no line feed goes at once. A control character,
         // such as ctrl-o, which readline takes for Enter, asks first.
         paste(&mut app, "\x0fz");
-        assert_eq!(
-            app.view.question.as_deref(),
-            Some("Paste 1 line to #1? (y/N)")
-        );
+        assert_eq!(app.view.question.as_deref(), Some("Paste 1 line to #1?"));
         key(&mut app, KeyCode::Char('n'));
         paste(&mut app, "x\t");
         paste(&mut app, "1\r2\r");
-        let question = "Paste 2 lines to #1? (y/N)";
+        let question = "Paste 2 lines to #1?";
         assert_eq!(app.view.question.as_deref(), Some(question));
         // The answer waits for the frame that shows the question.
         let y = Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
@@ -1845,7 +2128,7 @@ echo \"got $x\"
         key(&mut app, KeyCode::Char('n'));
         assert_eq!(app.view.mode, view::Mode::Input(0));
         paste(&mut app, "y\r");
-        let question = "Paste 1 line to #1? (y/N)";
+        let question = "Paste 1 line to #1?";
         assert_eq!(app.view.question.as_deref(), Some(question));
         assert_eq!(app.handle(&y, SIZE), None);
         key(&mut app, KeyCode::Char('z'));
@@ -1920,14 +2203,14 @@ echo \"got $x\"
         key(&mut app, KeyCode::Char('q'));
         assert_eq!(
             app.view.question.as_deref(),
-            Some("1 block running. Stop it and quit? (y/N)")
+            Some("1 block running. Stop it and quit?")
         );
         key(&mut app, KeyCode::Char('n'));
         key(&mut app, KeyCode::Down);
         enter(&mut app, SIZE);
         read_until(&mut app, SIZE, |app| output(app, 1).contains("ready"));
         key(&mut app, KeyCode::Char('q'));
-        let question = "2 blocks running. Stop them and quit? (y/N)";
+        let question = "2 blocks running. Stop them and quit?";
         assert_eq!(app.view.question.as_deref(), Some(question));
         key(&mut app, KeyCode::Char('y'));
         assert!(!app.stopped());

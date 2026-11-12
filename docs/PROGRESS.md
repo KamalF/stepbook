@@ -212,10 +212,58 @@ What tmux cannot show, in herdr in Ghostty: open `~/dev/claude/runbooks/2026-11-
 
 Kamal ran the checklist on 2026-11-12: the six checks pass. Section 5 first scrolled the output of `pager`, which is one line: less draws on the alternate screen, and that screen goes away when less exits. Section 5 now runs `seq 200`, and section 6 explains the alternate screen.
 
+## Look and feel review
+
+Kamal chose from the screens of a prototype, drawn in his theme, on 2026-11-12. What bothered him most: blocks that run blend into the rest of the document, and the `▐` bar alone does not set them apart. His choices:
+
+- Blocks that run get a background darker than the background of the terminal, from the column after the `▐` to the right edge of the text. The selected block gets a darker one. The output keeps the background of the terminal. On his Gruvbox Dark (`#282828`), the prototype drew `#1c1c1c` and `#141414`. stepbook asks the terminal for its background color (OSC 11) at startup: herdr answers it.
+- Prose takes at most 100 columns: paragraphs, headings, rules, lists and quotes. Code, output and tables keep the full width of the view.
+- The selection is bold blue, not bold cyan: with bold-is-bright, Gruvbox draws bold cyan as light green, close to the green of `✔`.
+- The code of other code blocks, which never runs, is dim, as their gutter is.
+- Output rows have a dim `▕` in the column of the gutter, in the selection color on the selected block. A program cannot write to that column, so its output can no longer pass for the code of a nested block.
+
+Two fixes need no choice: a question in the footer always shows its `(y/N)`, and the document view gets 1 column of padding at its right, so that the rules under H1 and H2 no longer touch the border.
+
+The plan, one commit per line, on the branch `look-and-feel`:
+
+1. `docs`: this plan.
+2. `fix`: 1 column of padding at the right of the document view.
+3. `feat`: prose takes at most 100 columns (5.3).
+4. `feat`: the selection is bold blue (6.1).
+5. `feat`: the code of other code blocks is dim (5.3).
+6. `feat`: output rows have a mark in the column of the gutter (6.3).
+7. `fix`: a question in the footer always shows its `(y/N)` (7.4).
+8. `feat`: blocks that run get a darker background, from the answer of the terminal to OSC 11 (5.3, 6.1).
+
+Done when: each runbook in `~/dev/claude/runbooks/` opens with no panic, the tmux check shows each change, and Kamal checks the look in herdr in Ghostty.
+
+### After the 8 commits
+
+- Two notes on the background: the 30% and 50% of the prototype became fixed steps of 12 and 20 on each RGB value, which give the same colors on `#282828` and stay light on a light theme. On a background whose values are all under 20, the shades go lighter.
+- `cargo mutants` on the diff: 84 mutants, 75 caught, 4 missed, 5 unviable. The first run tested nothing: `the_output_of_a_process_substitution_ends_before_the_run` failed the baseline under load, so the runs of this branch skip it (it covers run.rs, which the branch does not change). The misses got a test of an answer that comes late, and a simpler search for the answer to DA1.
+- `/simplify`, with 4 cleanup agents: 1 commit. The output gutter takes the selection style from the gutter closure, doc.rs dims other code where it makes its spans, a plain function makes the shades, and the footer adds the `(y/N)` in the arm of the question.
+- Review loop, with a code reviewer and a security reviewer each round. Accepted findings per round: 3, 2, 0. It converged on 2026-11-12.
+  - Round 1: the startup query read 256 bytes at a time, and could take the start of a bracketed paste: crossterm then read the rest of the paste as keys, and a line feed in it ran the selected block. The query now reads a byte at a time, never past the answer to DA1, and drops a paste that starts before the answers to its end. The spec also said "code that cannot run" for other code blocks, which also covers a block with a duplicate name, and claimed that output rows have their mark alone in the column of the gutter: a block in a quote has its `│` there.
+  - Round 2: the query gave up on a paste after a pause of 0.5 s, and could stop inside the start of a paste. It now waits up to 5 s for each byte of a paste, or of the start of one. No test caught a broken test of the end of DA1.
+  - Round 3: no defect. Test gaps and a test that could fail under load, fixed.
+  - Deferred: a paste of 1 MB at the instant of startup takes about 3 s to drop; a pause of more than 5 s within such a paste still splits it (spec 5.3); on a terminal that keeps the ESC of a paste, a crafted paste can set a wrong shade; in dim code, the escape of a hidden grapheme stays bright yellow.
+  - The log of the loop, with its Decisions and Nits deferred, is `~/.cache/stepbook-review/lf/review-loop-log.md`.
+- `cargo mutants` after the loop, on the diff of the branch: 91 mutants, 85 caught, 6 unviable, none missed, in 8 minutes.
+- The check in tmux on 2026-11-12: tmux answers OSC 11 with `#1c1c1c`, and blocks get `#101010` and `#080808`; the output of a block keeps the background of the terminal, with the `▕` mark; a `toml` block is dim; at 45 columns, the question to quit ends with `… (y/N)`; each of the 94 runbooks of `~/dev/claude/runbooks/` opens, and `q` gives exit code 0.
+
+### Kamal's manual checklist of the look and feel
+
+What tmux cannot show, in herdr in Ghostty: open `~/dev/claude/runbooks/2026-11-12-stepbook-look-and-feel.md` with `stepbook --no-log`, run its blocks, and check:
+
+1. Blocks are `#1c1c1c` and the selected block `#141414`, from the column after the `▐`; the output and the `toml` block keep the background.
+2. The selection is blue; the `toml` block is dim; output rows have the thin `▕`.
+3. On a wide pane, prose stops at 100 columns, and code and output take the full width.
+4. In a pane of about 45 columns, `q` while `logs` runs shows `(y/N)`.
+
 ## Next
 
 1. Kamal pushes `main`.
-2. The look and feel review (see the open points).
+2. Kamal runs the manual checklist of the look and feel.
 3. Milestone 4, log and reload.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
@@ -224,7 +272,6 @@ Kamal pushes later: the repository has no remote yet (see the first open point).
 
 - Before the first push, Kamal creates `KamalF/stepbook` on GitHub and adds the remote. The sandbox cannot write `.git/config`.
 - Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
-- Look and feel review, after milestone 3 (Kamal first asked for it between milestones 2 and 3, on 2026-11-10). From the first screenshot: prose lines of about 200 characters on a wide terminal (a maximum text width of about 100 columns?); the selection in terminal cyan, which Kamal's theme draws green; the contrast between a block that runs and other code. From the review of milestone 2: output rows have no mark of their own, so output can draw a fake info line and gutter in the column of a nested block. A question or a notice is cut at the right edge of the footer: at 45 columns, "1 block running. Stop it and quit?" loses its "(y/N)".
 - Follow-ups of the review loop of milestone 3: the input channel of a run holds up to 256 writes, pastes included, while a program reads no input; the full-screen view of an ended block makes the spans of its whole scrollback when it opens, 380 ms with crafted output that changes color on each cell at 180 columns; the answer to DSR 6 ignores origin mode, which vt100 does not expose.
 - Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal). Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
 - Before milestone 4 writes the log: the default log of a FILE named `x.log` is the runbook itself. Spec 4 needs a rule.
