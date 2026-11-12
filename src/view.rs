@@ -26,6 +26,9 @@ const SELECTED: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD
 /// would shift the code after it.
 const GUTTER: &str = "▐ ";
 const GUTTER_WIDTH: usize = 2;
+/// The first column of the gutter on a row of output. It lines up with the
+/// right edge of "▐", so the bar of a block gets thinner along its output.
+const OUTPUT_MARK: &str = "▕";
 /// The second column of the gutter on a row that goes on from a wrapped
 /// line of code or info line. Text never reaches the gutter, so it cannot
 /// fake the mark.
@@ -325,11 +328,16 @@ impl View {
                 let rows = info.as_ref().expect("shown_at makes the info rows");
                 gutter(rows[i].clone(), block)
             }
-            // Output takes the column of the code, and no gutter: code rows
-            // always have one.
+            // Output takes the column of the code, after a mark in the
+            // column of the gutter, where a program cannot write: its
+            // output cannot pass for the code of a nested block.
             Row::Output(block, i) => {
                 let mut spans = page.prefixes[block].clone();
-                spans.push(Span::raw(" ".repeat(GUTTER_WIDTH)));
+                let style = match selected == Some(block) {
+                    true => SELECTED,
+                    false => DIM,
+                };
+                spans.extend([Span::styled(OUTPUT_MARK, style), Span::raw(" ")]);
                 spans.extend(self.outputs[block].lines[i].spans.iter().cloned());
                 Line::from(spans)
             }
@@ -2227,7 +2235,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn output_shows_under_its_code_after_the_prefixes_and_without_a_gutter() {
+    fn output_shows_under_its_code_after_the_prefixes_and_a_mark() {
         let mut view = view("- item\n\n  ```bash\n  ls\n  ```\n\n```bash\nls\n```\n");
         view.set_output(0, output(&["one", "two"]), SMALL);
         view.set_output(1, output(&["\u{2590} three"]), SMALL);
@@ -2237,12 +2245,12 @@ pub(crate) mod tests {
         │                                                          │
         │   «blue,b:▐ »«b:#1»                                                   │
         │   «blue,b:▐ »«blue:ls»                                                   │
-        │     one                                                  │
-        │     two                                                  │
+        │   «blue,b:▕» one                                                  │
+        │   «blue,b:▕» two                                                  │
         │                                                          │
         │ ▐ «b:#2»                                                     │
         │ ▐ «blue:ls»                                                     │
-        │   ▐ three                                                │
+        │ «d:▕» ▐ three                                                │
         └──────────────────────────────────────────────────────────┘
         ");
     }
