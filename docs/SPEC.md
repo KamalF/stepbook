@@ -31,7 +31,7 @@ Copy and paste go through the terminal. See 6.4.
 | Term | Meaning |
 |---|---|
 | Block | A fenced code block whose language token is `bash` or `sh`. |
-| Block key | The block's `name`, or a hash of its code if it has no name. The key identifies the block across reloads. |
+| Block key | The block's `name`, or its code if it has no name. The key identifies the block across reloads. |
 | Run | One execution of a block in its own PTY. Each run has an internal ID that is never reused. |
 | Session state | The exported variables and the working directory that the next run starts with. |
 | Document view | The rendered runbook, with output under each block. |
@@ -356,7 +356,7 @@ Two blocks that run at the same time do not overwrite each other's unrelated cha
 
 stepbook re-reads the file when it changes on disk. It watches the parent directory with inotify, because editors often replace the file with a rename, and waits 300 ms after the last change. inotify is Linux only: elsewhere, only `ctrl-r` reloads. `ctrl-r` re-reads the file at once.
 
-Blocks are matched by key between the old and the new file:
+Blocks are matched by key between the old and the new file. Among blocks with the same key, such as two unnamed blocks with the same code, the n-th block of the new file matches the n-th block of the old file:
 
 | After the reload | Result |
 |---|---|
@@ -617,3 +617,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The times of the log are in UTC, marked `Z` (12.1), at Kamal's choice: the standard library has no time zones, and libc or a time crate would be one more dependency | 2026-11-12 |
 | stepbook opens the log at startup, and does not start if it cannot; a write that fails later shows in the footer once (12.1) | 2026-11-12 |
 | A run that ends while another writes to the log writes its whole section at once, and the other section goes on after a `=== CONTINUE <name>` line (12.2), at Kamal's choice: a block that never ends held the log, and `watch.sh` waited for the `END` line of each block run after it | 2026-11-12 |
+| The key of an unnamed block is its code, not a hash of it (3): it is exact, and needs no hash function | 2026-11-12 |
