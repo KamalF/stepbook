@@ -136,13 +136,16 @@ impl Drop for Workspace {
 /// if it names the current directory, else the physical path. Through a
 /// link, the runs then start in the path that the user typed.
 pub fn start_dir(current: PathBuf, pwd: Option<OsString>) -> PathBuf {
-    let same = |pwd: &PathBuf| {
-        let (Ok(a), Ok(b)) = (std::fs::metadata(pwd), std::fs::metadata(&current)) else {
-            return false;
-        };
-        pwd.is_absolute() && (a.dev(), a.ino()) == (b.dev(), b.ino())
-    };
+    let same = |pwd: &PathBuf| pwd.is_absolute() && same_file(pwd, &current);
     pwd.map(PathBuf::from).filter(same).unwrap_or(current)
+}
+
+/// Whether `a` and `b` name one file, through a link too.
+pub fn same_file(a: &Path, b: &Path) -> bool {
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => (a.dev(), a.ino()) == (b.dev(), b.ino()),
+        _ => false,
+    }
 }
 
 /// Fails if another user could replace the workspace in `parent`, a
@@ -318,6 +321,9 @@ impl std::fmt::Display for StartError {
 /// its output, then the exit status, so that the end of a run never comes
 /// before its output.
 pub struct Run {
+    /// The ID of the run, never reused, which grows in the order that the
+    /// runs start (spec 3).
+    pub id: u64,
     pub events: Receiver<Event>,
     /// The terminal that the reader thread feeds with the output.
     pub screen: Arc<term::Shared>,
@@ -405,6 +411,11 @@ impl Session {
         self.workspace.dir()
     }
 
+    /// The absolute path of the runbook.
+    pub fn file(&self) -> &Path {
+        &self.file
+    }
+
     /// Starts a run of the code of `block` in the session directory, in a
     /// new PTY of `columns` by `rows`. If the session directory no longer
     /// exists, the run does not start, and the session goes back to the
@@ -475,6 +486,7 @@ impl Session {
         std::thread::spawn(move || read_run(reader, child, sender, answers, &feed));
         std::thread::spawn(move || write_run(writer, bytes));
         Ok(Run {
+            id,
             events,
             screen,
             pid,

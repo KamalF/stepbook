@@ -175,8 +175,9 @@ enum Exit {
 
 fn open(args: &Args) -> Result<Exit, String> {
     let text = read_runbook(&args.file)?;
+    // Each run would append to the runbook (spec 4).
     if let Some(log) = &args.log
-        && same_file(&args.file, log)
+        && run::same_file(&args.file, log)
     {
         let log = log.display();
         return Err(format!(
@@ -193,10 +194,13 @@ fn open(args: &Args) -> Result<Exit, String> {
     if !std::io::stdout().is_terminal() {
         return Err("run stepbook in a terminal: its output is not a terminal".into());
     }
+    // The runs get absolute paths (spec 8.2).
+    let file = dir.join(&args.file);
+    let log_path = args.log.as_ref().map(|log| dir.join(log));
     // The log opens before the workspace exists: a startup error leaves
     // nothing to clean up.
-    let log = match &args.log {
-        Some(path) => Some(log::open(&dir.join(path)).map_err(|e| {
+    let log = match &log_path {
+        Some(path) => Some(log::open(path).map_err(|e| {
             let reason = io_message(&e);
             let path = path.display();
             format!("give another --log PATH, or --no-log: cannot open the log {path}: {reason}")
@@ -232,12 +236,8 @@ fn open(args: &Args) -> Result<Exit, String> {
         )
     };
     let workspace = run::Workspace::create(&parent).map_err(fail)?;
-    // The runs get absolute paths (spec 8.2).
-    let file = dir.join(&args.file);
-    let log_path = args.log.as_ref().map(|log| dir.join(log));
     let state = run::State::new(dir, std::env::vars_os());
-    let session = run::Session::new(workspace, bash, state, file.clone(), log_path);
-    let session = session.map_err(fail)?;
+    let session = run::Session::new(workspace, bash, state, file, log_path).map_err(fail)?;
     let mut terminal = set_up_terminal(session.workspace())
         .map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
     let background = terminal_input()
@@ -247,19 +247,20 @@ fn open(args: &Args) -> Result<Exit, String> {
     let mut view = view::View::new(doc, title.to_string_lossy().into_owned());
     view.background = background;
     let mut app = App::new(view, session, crossbeam_channel::tick(TICK));
-    app.path = file;
     app.text = text;
     let failed = sender.clone();
-    let log = log.map(|file| {
-        let (log, thread) = log::spawn(file, move |error| {
-            let text = format!("cannot write the log: {}", io_message(&error));
-            let _ = failed.send(Control::Log(text));
-        });
-        app.log = Some(log);
-        thread
-    });
+    let (log, thread) = log
+        .map(|file| {
+            log::spawn(file, move |error| {
+                let text = format!("cannot write the log: {}", io_message(&error));
+                let _ = failed.send(Control::Log(text));
+            })
+        })
+        .unzip();
+    app.log = log;
     let changes = sender.clone();
-    if let Err(e) = watch::spawn(&app.path, move || changes.send(Control::Changed).is_ok()) {
+    let file = app.session.file();
+    if let Err(e) = watch::spawn(file, move || changes.send(Control::Changed).is_ok()) {
         let reason = io_message(&e);
         app.notify(format!("ctrl-r reloads: no watch of the runbook: {reason}"));
     }
@@ -276,7 +277,7 @@ fn open(args: &Args) -> Result<Exit, String> {
     // now: their section in the log ends with its END line (spec 11).
     app.drain_runs(&control, LOG_WAIT);
     drop(app.log.take());
-    if let Some(thread) = log {
+    if let Some(thread) = thread {
         let _ = thread.join();
     }
     result.map_err(|e| format!("terminal error: {}", io_message(&e)))
@@ -470,16 +471,6 @@ fn restore_terminal() {
     let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
 }
 
-/// Whether `a` and `b` name one file, through a link too: each run would
-/// append to the runbook (spec 4).
-fn same_file(a: &Path, b: &Path) -> bool {
-    use std::os::unix::fs::MetadataExt;
-    match (std::fs::metadata(a), std::fs::metadata(b)) {
-        (Ok(a), Ok(b)) => (a.dev(), a.ino()) == (b.dev(), b.ino()),
-        _ => false,
-    }
-}
-
 /// Runbooks are a few KB: the largest of ~/dev/claude/runbooks had 22 KB
 /// on 2026-11-09. The view lays out the whole file at each width.
 const MAX_FILE: u64 = 1024 * 1024;
@@ -567,10 +558,7 @@ struct App {
     log: Option<Sender<log::Message>>,
     /// The messages that wait for room in the channel of the log.
     log_queue: VecDeque<log::Message>,
-    /// The runs that started, which give each run its ID in the log.
-    runs_started: u64,
-    /// The runbook, and its text when stepbook last read it (spec 10).
-    path: PathBuf,
+    /// The text of the runbook when stepbook last read it (spec 10).
     text: String,
     /// The run of a block that a reload removed has ended: the block goes
     /// at the next frame.
@@ -637,8 +625,6 @@ impl App {
             stopping: None,
             log: None,
             log_queue: VecDeque::new(),
-            runs_started: 0,
-            path: PathBuf::new(),
             text: String::new(),
             reapply: false,
         }
@@ -1067,12 +1053,11 @@ impl App {
             Ok(run) => {
                 let screen = run.screen.clone();
                 let started = Instant::now();
-                let run = Some(run);
-                self.runs_started += 1;
                 // The header of old runbooks writes the section itself (spec
                 // 12.3).
                 let header = code.starts_with("exec > >(tee -a ");
-                let log_id = (!header).then_some(self.runs_started);
+                let log_id = (!header).then_some(run.id);
+                let run = Some(run);
                 if let Some(id) = log_id {
                     let time = SystemTime::now();
                     self.log(log::Message::Start {
@@ -1124,6 +1109,7 @@ impl App {
             run::Event::Exit(status) => {
                 let run = ran.run.take().expect("a run sends its exit status once");
                 ran.ended = Some(Instant::now());
+                let took = ran.started.elapsed();
                 // A paste for the program has nowhere to go.
                 if matches!(self.question, Some(Question::Paste { block, .. }) if block == i) {
                     self.question = None;
@@ -1133,12 +1119,10 @@ impl App {
                     let (rc, time) = (status.rc(), SystemTime::now());
                     self.log(log::Message::End { id, rc, time });
                 }
-                let ran = self.ran.get_mut(&i).expect("the run ended just now");
                 // A reload removed the block, which stayed while it ran.
                 self.reapply |= self.view.doc.blocks[i].problem == Some(doc::REMOVED);
                 let saved = self.session.finish(&run);
                 let input = self.view.input_block() == Some(i);
-                let took = ran.started.elapsed();
                 let ended = view::Status::Ended {
                     status,
                     took,
@@ -1160,7 +1144,10 @@ impl App {
 
     /// Reads the runbook again, and applies it (spec 10).
     fn reload(&mut self, size: Size) {
-        match read_runbook(&self.path) {
+        match read_runbook(self.session.file()) {
+            // An editor can write the file with no change, as vim does on
+            // :w.
+            Ok(text) if text == self.text => self.notify("reloaded: no change".into()),
             Ok(text) => {
                 self.text = text;
                 let summary = self.apply(size);
@@ -1935,8 +1922,7 @@ mod tests {
     /// An app on the runbook `text`, which is also in the file `run.md`.
     fn app_on_file(text: &str, tmp: &Path) -> App {
         let mut app = app(text, tmp);
-        app.path = tmp.join("run.md");
-        std::fs::write(&app.path, text).unwrap();
+        std::fs::write(app.session.file(), text).unwrap();
         app.text = text.into();
         app
     }
@@ -1964,7 +1950,7 @@ mod tests {
             fence("new", "true"),
         ]
         .concat();
-        std::fs::write(&app.path, &second).unwrap();
+        std::fs::write(app.session.file(), &second).unwrap();
         assert_eq!(app.handle(&ctrl('r'), SIZE), None);
         assert_eq!(
             app.view.notice.as_deref(),
@@ -1991,13 +1977,17 @@ mod tests {
         key(&mut app, KeyCode::Char('k'));
         enter(&mut app, SIZE);
         assert_eq!(app.question, Some(Question::Rerun(0)));
-        std::fs::write(&app.path, [fence("x", "true"), second.clone()].concat()).unwrap();
+        std::fs::write(
+            app.session.file(),
+            [fence("x", "true"), second.clone()].concat(),
+        )
+        .unwrap();
         app.reload(SIZE);
         assert_eq!(app.question, Some(Question::Rerun(1)));
-        std::fs::write(&app.path, fence("a", "echo a")).unwrap();
+        std::fs::write(app.session.file(), fence("a", "echo a")).unwrap();
         app.reload(SIZE);
         assert_eq!((&app.question, &app.view.question), (&None, &None));
-        std::fs::write(&app.path, &second).unwrap();
+        std::fs::write(app.session.file(), &second).unwrap();
         app.reload(SIZE);
         // A run of b clears its mark, and a reload with no change says so.
         key(&mut app, KeyCode::Char('k'));
@@ -2019,7 +2009,7 @@ mod tests {
         // The full-screen view of the block follows it, through a change
         // of the file: its keys go to the program.
         key(&mut app, KeyCode::Char('o'));
-        std::fs::write(&app.path, "Text.\n").unwrap();
+        std::fs::write(app.session.file(), "Text.\n").unwrap();
         app.reload(SIZE);
         assert!(matches!(&app.view.mode, view::Mode::Full(full) if full.block == 0));
         app.handle(&ctrl('o'), SIZE);
@@ -2029,15 +2019,15 @@ mod tests {
         assert!(code.into_iter().any(|line| line.contains("sleep 1")));
         // The summary compares with the file before: the block counts as
         // removed once, and its key back is a new block, with its run.
-        std::fs::write(&app.path, "Other text.\n").unwrap();
+        std::fs::write(app.session.file(), "Other text.\n").unwrap();
         app.handle(&ctrl('r'), SIZE);
         assert_eq!(app.view.notice.as_deref(), Some("reloaded: no change"));
         let again = first.replace("first", "again");
-        std::fs::write(&app.path, again.replace("echo done", "echo DONE")).unwrap();
+        std::fs::write(app.session.file(), again.replace("echo done", "echo DONE")).unwrap();
         app.handle(&ctrl('r'), SIZE);
         assert_eq!(app.view.notice.as_deref(), Some("reloaded: 2 new"));
         assert!(running(&app) && app.view.changed(1));
-        std::fs::write(&app.path, "Text.\n").unwrap();
+        std::fs::write(app.session.file(), "Text.\n").unwrap();
         app.handle(&ctrl('r'), SIZE);
         assert_eq!(app.view.notice.as_deref(), Some("reloaded: 2 removed"));
         assert_eq!(app.view.doc.blocks.len(), 1);
@@ -2049,7 +2039,7 @@ mod tests {
         assert_eq!(app.view.doc.blocks.len(), 0);
         assert_eq!(app.view.selected, None);
         // A runbook that cannot be read keeps the view as it is.
-        std::fs::remove_file(&app.path).unwrap();
+        std::fs::remove_file(app.session.file()).unwrap();
         app.handle(&ctrl('r'), SIZE);
         let notice = app.view.notice.as_deref().unwrap();
         assert!(notice.starts_with("no reload: cannot read "), "{notice}");
@@ -2705,7 +2695,7 @@ echo \"got $x\"
         assert_eq!(app.view.question.as_deref(), Some("Re-run #1?"));
         // A new unnamed block above shifts the labels of the others.
         let new = "```bash\necho new\n```\n\n";
-        std::fs::write(&app.path, [new, ran, reads].concat()).unwrap();
+        std::fs::write(app.session.file(), [new, ran, reads].concat()).unwrap();
         app.reload(SIZE);
         assert_eq!(app.view.question.as_deref(), Some("Re-run #2?"));
         key(&mut app, KeyCode::Char('n'));
@@ -2715,7 +2705,7 @@ echo \"got $x\"
         key(&mut app, KeyCode::Char('i'));
         assert_eq!(app.handle(&Event::Paste("1\r2\r".into()), SIZE), None);
         assert_eq!(app.view.question.as_deref(), Some("Paste 2 lines to #3?"));
-        std::fs::write(&app.path, [ran, reads].concat()).unwrap();
+        std::fs::write(app.session.file(), [ran, reads].concat()).unwrap();
         app.reload(SIZE);
         assert_eq!(app.view.question.as_deref(), Some("Paste 2 lines to #2?"));
         read_until(&mut app, SIZE, |app| !running(app));

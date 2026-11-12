@@ -18,7 +18,7 @@ pub const WARNING: Style = Style::new().fg(Color::Yellow);
 const MAX_DEPTH: usize = 10;
 
 /// A fenced code block with the language `bash` or `sh` (spec 3).
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Block {
     pub name: Option<String>,
     pub code: String,
@@ -81,12 +81,9 @@ impl Document {
             } if *block == i => Some(lines.clone()),
             _ => None,
         });
-        let block = &old.blocks[i];
         self.blocks.push(Block {
-            name: block.name.clone(),
-            code: block.code.clone(),
-            warnings: block.warnings.clone(),
             problem: Some(REMOVED),
+            ..old.blocks[i].clone()
         });
         let block = Some(self.blocks.len() - 1);
         let lines = lines.unwrap_or_default();
