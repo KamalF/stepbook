@@ -304,6 +304,15 @@ Done when (spec 16): `watch.sh` sees the `END` line of a run, and two concurrent
 
 Kamal signed off the plan on 2026-11-12.
 
+The 9 commits are in, with these choices of Kamal during the work:
+
+- The times of the log are in UTC, marked `Z`: the standard library has no time zones, and libc or a time crate would be one more dependency.
+- A run that ends while another writes to the log writes its whole section at once, and the other section goes on after a `=== CONTINUE <name>` line: a block that never ends held the log, and `watch.sh` waited for every block run after it.
+
+Two choices of Claude, recorded in the spec: a block that a reload removes while it runs stays at the end of the document, not only in the sidebar, since `i` and its output need a place in the view; the key of an unnamed block is its code, not a hash of it.
+
+The check in tmux on 2026-11-12, with `--log`: `watch.sh` printed the `END` line of a short block at once, while a long block ran, then the `END` of the long block, and exited; the log holds the section of the short block within that of the long block, which goes on after `=== CONTINUE long`; an edit of the runbook with vim during the run kept both outputs, marked the changed block with `~` and `changed since run`, and the footer said `reloaded: 1 changed`.
+
 ## Next
 
 1. Kamal pushes `main`.
