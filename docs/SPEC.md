@@ -129,7 +129,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 ```
 
 - **Sidebar:** one row per block, with a status glyph and the name. An unnamed block shows `#<n>`, where n is its position among all the blocks of the file, from 1. Its width, with its left border, is the longest name plus 4, between 12 and 30 columns. A longer name ends with `…`. The sidebar scrolls to keep the selected row visible, and it is hidden on terminals under 80 columns.
-- **Document view:** the rendered runbook. The selected block has a highlighted gutter and sidebar row.
+- **Document view:** the rendered runbook. The gutter of the selected block, and its `▶` and name in the sidebar, are bold blue. Bold cyan was close to the green of `✔` in themes that draw bold colors bright, such as Gruvbox.
 - **Footer:** the mode, then the keys that apply now: `i input` while the selected block runs, and `o output` once it has run. A notification or a question (7.4) shows in place of the keys. A notification lasts 3 seconds.
 - **Minimum size:** on a terminal smaller than 40 columns or 8 rows, stepbook shows only `Enlarge the terminal to at least 40 columns and 8 rows.`, and only the keys that quit work. A question (7.4) waits for a screen large enough to show it. The PTY of a block keeps its size until the screen is large enough again. Below that size, code under a list marker has no room, and the layout of a crafted file costs too much.
 
@@ -591,3 +591,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The full-screen view of a run that ends on the alternate screen stays open (6.3): stepbook leaves that screen, not the program. Only `ctrl-o`, not a key on a screen too small, keeps the view from opening on its own again | 2026-11-11 |
 | The full-screen view opens only with `o` or `i`, or from input mode (6.3), at Kamal's choice: the automatic open sent keys typed for the document to the program, and a program that entered the alternate screen each second kept the keys off. This replaces the automatic open of 6.3, the guard of a key that waited for its frame, the rule of `ctrl-o` against the reopen, and the keys that a view opened again took during the pause. The done-when of milestone 3 changes with it (16) | 2026-11-11 |
 | Prose takes at most 100 columns; code, output and tables take the full width (5.3), at Kamal's choice: on a wide terminal, a paragraph ran to about 185 columns | 2026-11-12 |
+| The selection is bold blue (6.1), at Kamal's choice: Gruvbox with bold-is-bright drew bold cyan as light green | 2026-11-12 |

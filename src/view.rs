@@ -20,7 +20,7 @@ const BOLD: Style = Style::new().add_modifier(Modifier::BOLD);
 const ERROR: Style = Style::new().fg(Color::Red);
 const SUCCESS: Style = Style::new().fg(Color::Green);
 const BLOCK_GUTTER: Style = Style::new();
-const SELECTED: Style = Style::new().fg(Color::Cyan).add_modifier(Modifier::BOLD);
+const SELECTED: Style = Style::new().fg(Color::Blue).add_modifier(Modifier::BOLD);
 /// "▐" has an East Asian width of N, so every terminal draws it 1 column
 /// wide. "▌" has an ambiguous width: a terminal set to draw it wide
 /// would shift the code after it.
@@ -1989,13 +1989,13 @@ pub(crate) mod tests {
     fn the_screen_has_a_sidebar_a_document_view_and_a_footer() {
         assert_snapshot!(screen_with_footer(&view(BLOCKS), 80, 16), @"
         ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
-        │«cyan,b:▶»«red:!» «cyan,b:check»   │ «b:Restart»                                                          │
+        │«blue,b:▶»«red:!» «blue,b:check»   │ «b:Restart»                                                          │
         │   restart │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━» │
         │   #3      │                                                                  │
         │ «red:!» check   │ Why: apply the config.                                           │
         │           │                                                                  │
-        │           │ «cyan,b:▐ »«b:check»  «red:duplicate name»                                          │
-        │           │ «cyan,b:▐ »«blue:ls»                                                             │
+        │           │ «blue,b:▐ »«b:check»  «red:duplicate name»                                          │
+        │           │ «blue,b:▐ »«blue:ls»                                                             │
         │           │                                                                  │
         │           │ ▐ «b:restart»                                                        │
         │           │ ▐ «blue:systemctl» restart api                                          │
@@ -2014,15 +2014,15 @@ pub(crate) mod tests {
         assert_snapshot!(screen(&view, 80, 13), @"
         ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
         │ «red:!» check   │ «b:Restart»                                                          │
-        │«cyan,b:▶»  «cyan,b:restart» │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━» │
+        │«blue,b:▶»  «blue,b:restart» │ «d:━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━» │
         │   #3      │                                                                  │
         │ «red:!» check   │ Why: apply the config.                                           │
         │           │                                                                  │
         │           │ ▐ «b:check»  «red:duplicate name»                                          │
         │           │ ▐ «blue:ls»                                                             │
         │           │                                                                  │
-        │           │ «cyan,b:▐ »«b:restart»                                                        │
-        │           │ «cyan,b:▐ »«blue:systemctl» restart api                                          │
+        │           │ «blue,b:▐ »«b:restart»                                                        │
+        │           │ «blue,b:▐ »«blue:systemctl» restart api                                          │
         └───────────┴──────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -2032,9 +2032,9 @@ pub(crate) mod tests {
         let view = view(&format!("> - ```bash\n>   {}\n>   ```\n", "x".repeat(70)));
         assert_snapshot!(screen(&view, 60, 8), @"
         ┌ run.md ──────────────────────────────────────────────────┐
-        │ «d:│ »• «cyan,b:▐ »«b:#1»                                                 │
-        │ «d:│ »  «cyan,b:▐ »«blue:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx» │
-        │ «d:│ »  «cyan,b:▐»«d:↪»«blue:xxxxxxxxxxxxxxxxxxxx»                               │
+        │ «d:│ »• «blue,b:▐ »«b:#1»                                                 │
+        │ «d:│ »  «blue,b:▐ »«blue:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx» │
+        │ «d:│ »  «blue,b:▐»«d:↪»«blue:xxxxxxxxxxxxxxxxxxxx»                               │
         │                                                          │
         │                                                          │
         └──────────────────────────────────────────────────────────┘
@@ -2068,7 +2068,7 @@ pub(crate) mod tests {
         assert_snapshot!(rows("```bash [name:abcdefghijklmnop]\n```\n"), @"┌ blocks ───────────┬ run.md ──────────────────────────────────────────────────┐");
         assert_snapshot!(screen(&view(&long), 80, 8), @"
         ┌ blocks ─────────────────────┬ run.md ────────────────────────────────────────┐
-        │«cyan,b:▶»  «cyan,b:nnnnnnnnnnnnnnnnnnnnnnnnn…»│ «cyan,b:▐ »«b:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn»     │
+        │«blue,b:▶»  «blue,b:nnnnnnnnnnnnnnnnnnnnnnnnn…»│ «blue,b:▐ »«b:nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn»     │
         │                             │                                                │
         │                             │                                                │
         │                             │                                                │
@@ -2087,7 +2087,7 @@ pub(crate) mod tests {
         │   #5      │                                                                  │
         │   #6      │ ▐ «b:#2»                                                             │
         │   #7      │                                                                  │
-        │«cyan,b:▶»  «cyan,b:#8»      │ ▐ «b:#3»                                                             │
+        │«blue,b:▶»  «blue,b:#8»      │ ▐ «b:#3»                                                             │
         └───────────┴──────────────────────────────────────────────────────────────────┘
         ");
     }
@@ -2163,9 +2163,9 @@ pub(crate) mod tests {
         │                                                          │
         │ Why: step 2.                                             │
         │                                                          │
-        │ «cyan,b:▐ »«b:s2»                                                     │
-        │ «cyan,b:▐ »«blue:ls»                                                     │
-        │ «cyan,b:▐ »«blue:ls»                                                     │
+        │ «blue,b:▐ »«b:s2»                                                     │
+        │ «blue,b:▐ »«blue:ls»                                                     │
+        │ «blue,b:▐ »«blue:ls»                                                     │
         └──────────────────────────────────────────────────────────┘
         ");
     }
@@ -2230,8 +2230,8 @@ pub(crate) mod tests {
         ┌ run.md ──────────────────────────────────────────────────┐
         │ • item                                                   │
         │                                                          │
-        │   «cyan,b:▐ »«b:#1»                                                   │
-        │   «cyan,b:▐ »«blue:ls»                                                   │
+        │   «blue,b:▐ »«b:#1»                                                   │
+        │   «blue,b:▐ »«blue:ls»                                                   │
         │     one                                                  │
         │     two                                                  │
         │                                                          │
