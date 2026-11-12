@@ -464,8 +464,9 @@ impl View {
 
     /// The scroll after the output of block `i` goes from `before` rows to
     /// `after` (see `set_output`). It stops at the end of the document: a
-    /// scroll past it would take effect later, when output under the
-    /// selected block grows, and move the view.
+    /// scroll past it would take effect later, when something else makes
+    /// the document longer, such as an info line that wraps, and move the
+    /// view.
     fn scroll_after(&self, i: usize, before: usize, after: usize, size: Size) -> Option<usize> {
         if too_small(size) {
             return None;
@@ -2738,6 +2739,7 @@ pub(crate) mod tests {
         kept.set_output(0, output(&["o"; 15]), tall);
         // The document now ends 3 rows under the bottom of the view.
         assert_eq!(kept.shown(super::screen(tall)).2, 3);
+        assert_eq!(kept.scroll, 3);
         kept.set_output(3, output(&["o"; 10]), tall);
         assert_eq!(kept.shown(super::screen(tall)).2, 3);
         // Output at the end of the document shrinks, then grows back, under
