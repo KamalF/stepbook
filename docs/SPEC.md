@@ -173,7 +173,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 - Under the block, the rows from before the switch stay: the alternate screen shows only in the full-screen view.
 - If the run ends while its program is on the alternate screen, stepbook leaves it, as `reset` would: vt100 gives no access to the main screen while the alternate screen shows. The main screen shows under the block again. After the run, the full-screen view shows the scrollback and the main screen, the dim line `[stepbook: the last screen of the full-screen program]`, then the last screen of the program, where a crash may have left its message.
 - When the view closes because the program left the alternate screen, the PTY gets its document size back. A program that leaves the alternate screen for a moment, such as vim for `:!ls`, gets SIGWINCH, and can redraw over what it printed there.
-- When the selected block's output grows past the bottom of the view, the view scrolls to keep its last row visible. When the output of a block above the selected block grows or shrinks, the view scrolls by as many rows: the selected block stays where it is on the screen, and a block that prints a lot cannot push it out of the view.
+- When the selected block's output grows past the bottom of the view, the view scrolls to keep its last row visible. When the output of a block above the selected block grows or shrinks, the view scrolls by as many rows if the selected block is on the screen, or if that output is above the top of the screen: what the screen shows stays where it is, and a block that prints a lot cannot push the selected block out of the view. Output that changes on the screen or under it moves nothing above it.
 
 ### 6.4 Copy and paste
 

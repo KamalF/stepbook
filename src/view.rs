@@ -443,22 +443,39 @@ impl View {
 
     /// Sets the output under block `i`. If the block is selected, and its
     /// output grows past the bottom of the view, the view scrolls to keep
-    /// its last row visible. If the block is above the selected block, the
-    /// view scrolls by as many rows as the output grew or shrank, so that
-    /// the selected block stays where it is (spec 6.3).
+    /// its last row visible. If the block is above the selected block, and
+    /// that block is on the screen, or the output is above the top of the
+    /// screen, the view scrolls by as many rows as the output grew or
+    /// shrank: what the screen shows stays where it is (spec 6.3).
     pub fn set_output(&mut self, i: usize, rows: Rows, size: Size) {
         let (before, after) = (self.outputs[i].lines.len(), rows.lines.len());
-        self.outputs[i] = rows;
-        match self.selected {
-            // `shown` bounds the scroll when it reads it.
-            Some(s) if s > i => self.scroll = (self.scroll + after).saturating_sub(before),
-            Some(s) if s == i && after > before && !too_small(size) => {
-                let (shown, text, scroll) = self.shown(screen(size));
-                let end = shown.output_end(i);
-                self.scroll = scroll.max(end.saturating_sub(usize::from(text.height)));
-            }
-            _ => {}
+        if before != after
+            && let Some(scroll) = self.anchored_scroll(i, size)
+        {
+            self.scroll = (scroll + after).saturating_sub(before);
         }
+        self.outputs[i] = rows;
+        if self.selected == Some(i) && after > before && !too_small(size) {
+            let (shown, text, scroll) = self.shown(screen(size));
+            let end = shown.output_end(i);
+            self.scroll = scroll.max(end.saturating_sub(usize::from(text.height)));
+        }
+    }
+
+    /// The scroll that the screen shows, if a change of the output of
+    /// block `i` must move it: the selected block is under the output and
+    /// on the screen, or the output is above the top of the screen. Output
+    /// that changes on the screen, or under it, moves nothing above it.
+    fn anchored_scroll(&self, i: usize, size: Size) -> Option<usize> {
+        let selected = self.selected.filter(|&s| s > i)?;
+        if too_small(size) {
+            return None;
+        }
+        let (shown, text, scroll) = self.shown(screen(size));
+        let view = scroll..scroll + usize::from(text.height);
+        let block = shown.block(selected);
+        let on_screen = block.start < view.end && block.end > view.start;
+        (on_screen || shown.output_end(i) <= scroll).then_some(scroll)
     }
 
     /// Scrolls as little as possible to show the last row of the output of
@@ -2653,6 +2670,25 @@ pub(crate) mod tests {
         assert_eq!(position(&view), (Some(2), scroll + 5));
         view.set_output(0, output(&["o"]), SMALL);
         assert_eq!(position(&view), (Some(2), scroll + 3));
+    }
+
+    #[test]
+    fn output_off_the_screen_moves_the_view_only_from_above_it() {
+        let prose: String = (1..=20).map(|i| format!("Prose {i}.\n\n")).collect();
+        let block = "```bash\nls\n```\n\n";
+        // The view shows prose, and the selected block is under it. The
+        // output of block 0 grows under the view too: the prose stays.
+        let mut below = view(&format!("{prose}{block}Then.\n\n{block}"));
+        below.selected = Some(1);
+        below.set_output(0, output(&["o"; 3]), SMALL);
+        assert_eq!(below.scroll, 0);
+        // The output of block 0 grows above the view: the prose stays where
+        // it is on the screen.
+        let mut above = view(&format!("{block}{prose}{block}"));
+        above.selected = Some(1);
+        above.scroll = 10;
+        above.set_output(0, output(&["o"; 3]), SMALL);
+        assert_eq!(above.scroll, 13);
     }
 
     #[test]
