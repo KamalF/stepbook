@@ -173,7 +173,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 - Under the block, the rows from before the switch stay: the alternate screen shows only in the full-screen view.
 - If the run ends while its program is on the alternate screen, stepbook leaves it, as `reset` would: vt100 gives no access to the main screen while the alternate screen shows. The main screen shows under the block again. After the run, the full-screen view shows the scrollback and the main screen, the dim line `[stepbook: the last screen of the full-screen program]`, then the last screen of the program, where a crash may have left its message.
 - When the view closes because the program left the alternate screen, the PTY gets its document size back. A program that leaves the alternate screen for a moment, such as vim for `:!ls`, gets SIGWINCH, and can redraw over what it printed there.
-- When the selected block's output grows past the bottom of the view, the view scrolls to keep its last row visible. When the output of a block above the selected block grows or shrinks, the view scrolls by as many rows if the selected block is on the screen, or if that output is above the top of the screen: what the screen shows stays where it is, and a block that prints a lot cannot push the selected block out of the view. Output that changes on the screen or under it moves nothing above it.
+- When the selected block's output grows past the bottom of the view, the view scrolls to keep its last row visible. When the output of a block grows or shrinks, the view scrolls by as many rows if that output is above the top of the screen, or above the selected block while the selected block is on the screen: the rows under that output stay where they are on the screen, the selected block among them, and a block that prints a lot cannot push the selected block out of the view. Otherwise, the view does not move.
 
 ### 6.4 Copy and paste
 
@@ -211,7 +211,7 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 
 | Key | Action |
 |---|---|
-| `↓`, `j` / `↑`, `k` | Select the next / previous block, and scroll so that the block, its output and the paragraph above it are visible. If they do not fit, the whole block shows with its output, and with the end of the paragraph. A block taller than the view, with its output, shows from its paragraph, or from its info line. |
+| `↓`, `j` / `↑`, `k` | Select the next / previous block, and scroll so that the block, its output and the paragraph above it are visible. If they do not fit, the whole block shows, then as much of its output as fits, then the end of the paragraph. A block taller than the view shows from its paragraph, or from its info line. |
 | `Home` / `End` | Select the first / last block. Without blocks, scroll to the top / bottom. |
 | `PageDown` / `PageUp` | Scroll one page. The selection moves to the first block whose info line is in view, else to the first block in view. `PageDown` never moves it to an earlier block, and `PageUp` never to a later one. |
 | `Enter` | Run the selected block (8.1). If `j` or `k` would scroll to show the block, `Enter` only does that scroll: it never runs code that is off the screen, such as after the startup or a resize. `Enter`, `i`, `o` and the answer to a question act on the screen as drawn: after other events, such as keys typed ahead, they wait for the next frame. |
