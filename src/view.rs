@@ -443,16 +443,24 @@ impl View {
 
     /// Sets the output under block `i`. If the block is selected, and its
     /// output grows past the bottom of the view, the view scrolls to keep
-    /// its last row visible (spec 6.3).
+    /// its last row visible. If the block is above the selected block, the
+    /// view scrolls by as many rows as the output grew or shrank, so that
+    /// the selected block stays where it is (spec 6.3).
     pub fn set_output(&mut self, i: usize, rows: Rows, size: Size) {
-        let grew = rows.lines.len() > self.outputs[i].lines.len();
+        let (before, after) = (self.outputs[i].lines.len(), rows.lines.len());
+        // The scroll as the screen shows it, before the change.
+        let scroll = (!too_small(size)).then(|| self.shown(screen(size)).2);
         self.outputs[i] = rows;
-        if !grew || self.selected != Some(i) || too_small(size) {
+        let (Some(scroll), Some(selected)) = (scroll, self.selected) else {
             return;
+        };
+        if selected > i {
+            self.scroll = (scroll + after).saturating_sub(before);
+        } else if selected == i && after > before {
+            let (shown, text, scroll) = self.shown(screen(size));
+            let end = shown.output_end(i);
+            self.scroll = scroll.max(end.saturating_sub(usize::from(text.height)));
         }
-        let (shown, text, scroll) = self.shown(screen(size));
-        let end = shown.output_end(i);
-        self.scroll = scroll.max(end.saturating_sub(usize::from(text.height)));
     }
 
     /// Scrolls as little as possible to show the last row of the output of
@@ -2616,6 +2624,22 @@ pub(crate) mod tests {
         assert_eq!(view.scroll, 0);
         view.set_output(0, output(&["o"; 4]), SMALL);
         assert_eq!(view.scroll, 6);
+    }
+
+    #[test]
+    fn the_selected_block_stays_in_place_when_the_output_above_it_changes() {
+        let mut view = steps();
+        view.select_by(2, SMALL);
+        let (_, scroll) = position(&view);
+        view.set_output(0, output(&["o"; 3]), SMALL);
+        assert_eq!(position(&view), (Some(2), scroll + 3));
+        view.set_output(1, output(&["o"; 2]), SMALL);
+        assert_eq!(position(&view), (Some(2), scroll + 5));
+        view.set_output(0, output(&["o"]), SMALL);
+        assert_eq!(position(&view), (Some(2), scroll + 3));
+        // Output under a block below the selected one moves nothing.
+        view.set_output(3, output(&["o"; 3]), SMALL);
+        assert_eq!(position(&view), (Some(2), scroll + 3));
     }
 
     #[test]

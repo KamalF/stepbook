@@ -173,7 +173,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 - Under the block, the rows from before the switch stay: the alternate screen shows only in the full-screen view.
 - If the run ends while its program is on the alternate screen, stepbook leaves it, as `reset` would: vt100 gives no access to the main screen while the alternate screen shows. The main screen shows under the block again. After the run, the full-screen view shows the scrollback and the main screen, the dim line `[stepbook: the last screen of the full-screen program]`, then the last screen of the program, where a crash may have left its message.
 - When the view closes because the program left the alternate screen, the PTY gets its document size back. A program that leaves the alternate screen for a moment, such as vim for `:!ls`, gets SIGWINCH, and can redraw over what it printed there.
-- When the selected block's output grows past the bottom of the view, the view scrolls to keep its last row visible.
+- When the selected block's output grows past the bottom of the view, the view scrolls to keep its last row visible. When the output of a block above the selected block grows or shrinks, the view scrolls by as many rows: the selected block stays where it is on the screen, and a block that prints a lot cannot push it out of the view.
 
 ### 6.4 Copy and paste
 
@@ -605,3 +605,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | Blocks have a background darker than the background of the terminal, which stepbook asks with OSC 11, and the selected block a darker one (5.3), at Kamal's choice: blocks blended into the prose, and the `▐` alone did not set them apart. This ends the rule that stepbook sets no background color | 2026-11-12 |
 | The document view has 1 column of padding on each side (6.1): the rules under H1 and H2 touched the right border. The PTY of a block loses that column | 2026-11-12 |
 | Output rows have a dashed `╎`, not `▕` (6.3), at Kamal's choice: in Ghostty, `▕` stood 5 pixels from the `│` of a quote, in the same dim color, so output could pass for the code of a block in a quote | 2026-11-12 |
+| The selected block stays where it is on the screen when the output of a block above it grows or shrinks (6.3): the output of a running block pushed the selected block out of the view | 2026-11-12 |
