@@ -405,7 +405,7 @@ stepbook appends to the log file, which it creates with mode 0600. It opens the 
 - Output is written a line at a time, as each line ends, with ANSI escape sequences removed and CRLF turned into LF: until it ends, a carriage return can still drop the line. At the end of the run, a last line without a line feed is written with one. Control characters other than tab and line feed are dropped, C1 characters included.
 - A UTF-8 character that is split across two reads is written whole (upmd issue K18, see 18). Bytes that are not valid UTF-8 are written as U+FFFD.
 - A carriage return without a line feed discards the current partial line, as a terminal does. A progress bar therefore logs only its last state.
-- Output on the alternate screen is not logged. The line `[full-screen program output not logged]` marks it once per run.
+- Output on the alternate screen is not logged. The line `[full-screen program output not logged]` marks it once per run. The log reads the switches as vt100 does, so that it leaves out the output that the view shows as full-screen: modes 47 and 1049 enter and leave that screen, and a reset (`ESC c`) leaves it.
 
 ### 12.2 Concurrent runs
 

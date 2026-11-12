@@ -232,13 +232,14 @@ impl vte::Perform for Lines {
         }
     }
 
-    /// The modes of the alternate screen that vt100 knows: 47, 1047 and
-    /// 1049.
+    /// The modes of the alternate screen, as vt100 reads them: 47 and 1049
+    /// after a first intermediate `?`. The view and the log must agree on
+    /// which output is full-screen.
     fn csi_dispatch(&mut self, params: &vte::Params, intermediates: &[u8], _: bool, action: char) {
-        let screen = params
-            .iter()
-            .any(|param| matches!(param, [47 | 1047 | 1049]));
-        if intermediates != b"?" || !screen || !matches!(action, 'h' | 'l') {
+        if intermediates.first() != Some(&b'?') || !matches!(action, 'h' | 'l') {
+            return;
+        }
+        if !params.iter().any(|param| matches!(param, [47 | 1049])) {
             return;
         }
         self.alternate = action == 'h';
@@ -249,6 +250,14 @@ impl vte::Perform for Lines {
             }
             self.line.clear();
             self.done.push_str(FULL_SCREEN);
+        }
+    }
+
+    /// A reset of the terminal (RIS) leaves the alternate screen, as in
+    /// vt100: `reset` after a full-screen program.
+    fn esc_dispatch(&mut self, intermediates: &[u8], _: bool, byte: u8) {
+        if intermediates.is_empty() && byte == b'c' {
+            self.alternate = false;
         }
     }
 }
@@ -346,11 +355,16 @@ mod tests {
             clean(&[b"$ vim\x1b[?1049h"]),
             format!("$ vim\n{FULL_SCREEN}")
         );
-        // Other modes, and the same numbers without "?", are not that
-        // screen.
+        // Other modes, 1047 among them, as vt100 reads it, and the same
+        // numbers without "?", are not that screen.
         assert_eq!(
-            clean(&[b"\x1b[?25hshown\n\x1b[1049hseen\n"]),
-            "shown\nseen\n"
+            clean(&[b"\x1b[?25hshown\n\x1b[1049hseen\n\x1b[?1047hthere\n"]),
+            "shown\nseen\nthere\n"
+        );
+        // A reset of the terminal leaves the alternate screen.
+        assert_eq!(
+            clean(&[b"\x1b[?1049hvim\x1bcafter\n"]),
+            format!("{FULL_SCREEN}after\n")
         );
     }
 
@@ -500,5 +514,55 @@ c2
             prop_assert_eq!(bad, None);
             prop_assert!(text.is_empty() || text.ends_with('\n'));
         }
+
+        /// The log leaves out the output that the view shows as
+        /// full-screen, and only that output.
+        #[test]
+        fn the_log_and_vt100_agree_on_the_alternate_screen(
+            pieces in proptest::collection::vec(piece(), 0..16),
+            cuts in proptest::collection::vec(any::<prop::sample::Index>(), 0..6),
+        ) {
+            let output = pieces.concat();
+            let mut cuts: Vec<usize> = cuts.iter().map(|cut| cut.index(output.len() + 1)).collect();
+            cuts.push(output.len());
+            cuts.sort_unstable();
+            let size = std::num::NonZeroU16::MIN.saturating_add(9);
+            let mut screen = vt100::Parser::new(size, size, 0);
+            let mut cleaner = Cleaner::default();
+            let mut start = 0;
+            for cut in cuts {
+                let read = &output[start..cut];
+                start = cut;
+                screen.process(read);
+                cleaner.lines(read);
+                prop_assert_eq!(cleaner.lines.alternate, screen.screen().alternate_screen());
+            }
+        }
+    }
+
+    /// A piece of output that can change the screen: a CSI sequence of a
+    /// mode, an escape sequence, or text.
+    fn piece() -> impl Strategy<Value = Vec<u8>> {
+        let select = |items: &[&'static str]| prop::sample::select(items.to_vec());
+        let params =
+            proptest::collection::vec(select(&["47", "1047", "1049", "25", "47:1", ""]), 0..3);
+        let csi = (
+            select(&["", "?", ">"]),
+            params,
+            select(&["", "$", " "]),
+            select(&["h", "l", "m"]),
+        )
+            .prop_map(|(private, params, middle, action)| {
+                format!("\x1b[{private}{}{middle}{action}", params.join(";"))
+            });
+        let other = select(&[
+            "\x1bc",
+            "\x1b(c",
+            "\x1b#c",
+            "x\n",
+            "\x1b]0;\x1b[?1049h\x07",
+            "\x1b",
+        ]);
+        prop_oneof![csi, other.prop_map(String::from)].prop_map(String::into_bytes)
     }
 }
