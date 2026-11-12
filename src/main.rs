@@ -173,6 +173,14 @@ enum Exit {
 
 fn open(args: &Args) -> Result<Exit, String> {
     let text = read_runbook(&args.file)?;
+    if let Some(log) = &args.log
+        && same_file(&args.file, log)
+    {
+        let log = log.display();
+        return Err(format!(
+            "give a log with --log PATH, or --no-log: {log} is the runbook itself"
+        ));
+    }
     let path = std::env::var_os("PATH").unwrap_or_default();
     let Some(bash) = run::find_in_path("bash", &path) else {
         return Err("cannot find bash on the PATH".into());
@@ -424,6 +432,16 @@ fn restore_terminal() {
     );
     let _ = disable_raw_mode();
     let _ = execute!(std::io::stdout(), LeaveAlternateScreen);
+}
+
+/// Whether `a` and `b` name one file, through a link too: each run would
+/// append to the runbook (spec 4).
+fn same_file(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    match (std::fs::metadata(a), std::fs::metadata(b)) {
+        (Ok(a), Ok(b)) => (a.dev(), a.ino()) == (b.dev(), b.ino()),
+        _ => false,
+    }
 }
 
 /// Runbooks are a few KB: the largest of ~/dev/claude/runbooks had 22 KB
