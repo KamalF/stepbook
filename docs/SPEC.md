@@ -368,6 +368,7 @@ Blocks are matched by key between the old and the new file. Among blocks with th
 
 - Session state is never touched by a reload.
 - The selection stays on the same block, or moves to the next block if that block was removed.
+- After a reload that moves the selection to another block, or that changes the code of the selected block, keys do nothing for 1 s in the document view, and the footer says `keys off for 1 s`: an `Enter` or a `y` typed as the file changed would run code that the screen did not show yet. In input mode, keys still go to the program.
 - A question about a block (7.4) follows the block, and names it by its label after the reload, since a new unnamed block above shifts the `#<n>` labels. If the reload removed the block, the question ends.
 - The footer shows a summary, such as `reloaded: 2 new, 1 changed, 1 removed`, with the counts that are not zero, or `reloaded: no change`. "Changed" counts the blocks whose code differs from the file before. A block that a reload removed while it runs is not in the file before: it counts as removed once, and a block that takes its key back counts as new.
 - If stepbook cannot read the file, the footer says `no reload: ` and why, and the view stays as it is. The read never blocks the main thread: a FIFO renamed onto the file, or a lease that another process holds on it, makes the reload fail at once.
@@ -627,6 +628,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | At the end, stepbook waits up to 1 s for the end of the runs that it stopped, then up to 1 s for the log to write them (11): each section ends with its `END` line, and a log that blocks cannot keep stepbook from its end | 2026-11-12 |
 | The log must be a regular file of the user, and not a link (12.1): the default log of a runbook from someone else could link to `~/.ssh/authorized_keys`, and each run would append its output there | 2026-11-12 |
 | A line of output that starts with `=== START `, `=== END ` or `=== CONTINUE ` gets a space first in the log (12.1): a program could print an `END` line that `watch.sh` took for the end of a run | 2026-11-12 |
+| After a reload that moves the selection to another block, or that changes the code of the selected block, keys pause for 1 s in the document view (10): an `Enter` typed as another writer saved the file ran a block that the user had not seen | 2026-11-12 |
 | The key of an unnamed block is its code, not a hash of it (3): it is exact, and needs no hash function | 2026-11-12 |
 | A block that a reload removes while it runs stays at the end of the document too, not only in the sidebar (10): `i` and the output under the block need a place in the document view | 2026-11-12 |
 | A changed block shows `~` in the sidebar, and keeps the mark while its code differs from the code of its last run (6.2, 10) | 2026-11-12 |

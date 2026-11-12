@@ -1170,7 +1170,7 @@ impl App {
             Ok(text) if text == self.text => self.notify("reloaded: no change".into()),
             Ok(text) => {
                 self.text = text;
-                let summary = self.apply(size);
+                let (summary, _) = self.apply(size);
                 self.notify(summary);
             }
             Err(message) => self.notify(format!("no reload: {message}")),
@@ -1178,10 +1178,10 @@ impl App {
     }
 
     /// Takes the blocks of `self.text`, and returns the summary of the
-    /// changes for the footer. Each block keeps the output and the result
+    /// changes for the footer, and whether the keys pause. Each block keeps the output and the result
     /// of the block that it matches. A block that the text removed stays at
     /// the end while it runs (spec 10).
-    fn apply(&mut self, size: Size) -> String {
+    fn apply(&mut self, size: Size) -> (String, bool) {
         let old = &self.view.doc;
         let mut doc = doc::parse(&self.text);
         let mut matches = doc::match_blocks(&old.blocks, &doc.blocks);
@@ -1226,7 +1226,20 @@ impl App {
             },
             Some(Question::Quit) | None => {}
         }
+        let before = (self.view.selected).map(|s| (moves[s], old.blocks[s].code.clone()));
         self.view.reload(doc, &matches, &moves, since_run);
+        // An Enter or a `y` typed as the file changed would run code that
+        // the screen did not show yet: the block that the selection moved
+        // to, or the new code of the selected block (spec 10).
+        let selected = self.view.selected;
+        let same = |(moved, code): (Option<usize>, String)| {
+            moved == selected && selected.is_some_and(|t| self.view.doc.blocks[t].code == code)
+        };
+        let pause =
+            self.view.mode == view::Mode::Normal && selected.is_some() && !before.is_some_and(same);
+        if pause {
+            self.paused_until = Some(Instant::now() + PAUSE);
+        }
         // A reload can change the label of the block of the question.
         if let Some(question @ (Question::Rerun(_) | Question::Paste { .. })) = &self.question {
             self.view.question = Some(self.question_text(question));
@@ -1236,9 +1249,13 @@ impl App {
         let parts: Vec<String> = (counts.iter().filter(|(n, _)| *n > 0))
             .map(|(n, what)| format!("{n} {what}"))
             .collect();
-        match parts.is_empty() {
+        let summary = match parts.is_empty() {
             true => "reloaded: no change".into(),
             false => format!("reloaded: {}", parts.join(", ")),
+        };
+        match pause {
+            true => (summary + "; keys off for 1 s", true),
+            false => (summary, false),
         }
     }
 
@@ -1277,8 +1294,8 @@ impl App {
     /// its reader holds gives its rows at a later frame: the reader sends an
     /// event after it.
     fn refresh(&mut self, size: Size) {
-        if std::mem::take(&mut self.reapply) {
-            self.apply(size);
+        if std::mem::take(&mut self.reapply) && self.apply(size).1 {
+            self.notify("keys off for 1 s: the selection moved".into());
         }
         // The blocks whose terminal the reader held: their rows wait for a
         // later frame, as do those that the full-screen view hides.
@@ -2017,6 +2034,12 @@ mod tests {
         std::fs::write(app.session.file(), fence("a", "echo a")).unwrap();
         app.reload(SIZE);
         assert_eq!((&app.question, &app.view.question), (&None, &None));
+        // The selection moved to a, which Enter would run unseen: the keys
+        // pause, as after the end of a run.
+        let notice = app.view.notice.as_deref();
+        assert_eq!(notice, Some("reloaded: 3 removed; keys off for 1 s"));
+        assert!(app.paused_until.is_some());
+        app.paused_until = None;
         std::fs::write(app.session.file(), &second).unwrap();
         app.reload(SIZE);
         // A run of b clears its mark, and a reload with no change says so.
@@ -2055,7 +2078,10 @@ mod tests {
         let again = first.replace("first", "again");
         std::fs::write(app.session.file(), again.replace("echo done", "echo DONE")).unwrap();
         app.handle(&ctrl('r'), SIZE);
-        assert_eq!(app.view.notice.as_deref(), Some("reloaded: 2 new"));
+        // The selected block has new code, which Enter would run unseen.
+        let notice = app.view.notice.as_deref();
+        assert_eq!(notice, Some("reloaded: 2 new; keys off for 1 s"));
+        app.paused_until = None;
         assert!(running(&app) && app.view.changed(1));
         std::fs::write(app.session.file(), "Text.\n").unwrap();
         app.handle(&ctrl('r'), SIZE);
@@ -2760,6 +2786,23 @@ echo \"got $x\"
         assert!(!running(&app));
         let notice = app.view.notice.as_deref();
         assert_eq!(notice, Some("cannot run: duplicate name"));
+    }
+
+    #[test]
+    fn a_reload_in_input_mode_pauses_no_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let text = fence("reads", "echo ready; read -t 2");
+        let mut app = app_on_file(&text, tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        key(&mut app, KeyCode::Char('i'));
+        // The keys go to the program, which a change of the code does not
+        // change.
+        std::fs::write(app.session.file(), text.replace("ready", "set")).unwrap();
+        app.reload(SIZE);
+        assert_eq!(app.view.notice.as_deref(), Some("reloaded: 1 changed"));
+        assert_eq!(app.paused_until, None);
+        read_until(&mut app, SIZE, |app| !running(app));
     }
 
     #[test]
