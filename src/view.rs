@@ -702,6 +702,13 @@ pub struct Page {
     pub widths: Vec<usize>,
 }
 
+/// The most columns of a paragraph, a heading or a rule, after the
+/// prefixes of its lists and quotes: on a wide terminal, longer lines of
+/// prose are hard to read. Code, output and tables take the full width: a
+/// program prints to the width of its terminal, and code wraps at any
+/// character.
+const MAX_PROSE: usize = 100;
+
 /// The lines of the document view at `width` columns.
 pub fn layout(doc: &Document, width: usize) -> Page {
     let mut lines = Vec::new();
@@ -717,24 +724,25 @@ pub fn layout(doc: &Document, width: usize) -> Page {
         let (first, rest) = fitted_prefixes(item, width);
         let width = width.saturating_sub(text_width(rest)).max(1);
         let code_width = width.saturating_sub(GUTTER_WIDTH).max(1);
+        let prose_width = width.min(MAX_PROSE);
         let body = match &item.kind {
-            Kind::Text(text) => wrap(text, width),
+            Kind::Text(text) => wrap(text, prose_width),
             Kind::Heading(level, text) => {
-                let mut body = wrap(text, width);
+                let mut body = wrap(text, prose_width);
                 let rule = match level {
                     HeadingLevel::H1 => "━",
                     HeadingLevel::H2 => "─",
                     _ => "",
                 };
                 if !rule.is_empty() {
-                    body.push(Line::from(Span::styled(rule.repeat(width), DIM)));
+                    body.push(Line::from(Span::styled(rule.repeat(prose_width), DIM)));
                 }
                 body
             }
             Kind::Table(aligns, rows) => table(aligns, rows, width),
             Kind::Code { lines, block } => code(lines, *block, code_width),
             Kind::Source(lines) => lines.iter().flat_map(|l| hard_wrap(l, width)).collect(),
-            Kind::Rule => vec![Line::from(Span::styled("─".repeat(width), DIM))],
+            Kind::Rule => vec![Line::from(Span::styled("─".repeat(prose_width), DIM))],
             Kind::Blank => vec![Line::default()],
         };
         match item.kind {
@@ -1641,6 +1649,17 @@ pub(crate) mod tests {
         «d:│ »
         «d:│ ────────»
         ");
+    }
+
+    #[test]
+    fn prose_takes_at_most_100_columns_and_code_the_full_width() {
+        let words = "word ".repeat(30);
+        let code = "x".repeat(140);
+        let text = format!("# Title\n\n{words}\n\n***\n\n> {words}\n\n```bash\n{code}\n```\n");
+        // The words wrap at 99 columns, and the quote adds its "│ ". The
+        // code wraps at 128 columns, after its gutter.
+        let widths = [5, 100, 0, 99, 49, 0, 100, 0, 101, 51, 0, 4, 130, 14];
+        assert_eq!(line_widths(&text, 130), widths);
     }
 
     #[test]
