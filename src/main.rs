@@ -3,6 +3,7 @@ mod log;
 mod run;
 mod term;
 mod view;
+mod watch;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
@@ -257,6 +258,11 @@ fn open(args: &Args) -> Result<Exit, String> {
         app.log = Some(log);
         thread
     });
+    let changes = sender.clone();
+    if let Err(e) = watch::spawn(&app.path, move || changes.send(Control::Changed).is_ok()) {
+        let reason = io_message(&e);
+        app.notify(format!("ctrl-r reloads: no watch of the runbook: {reason}"));
+    }
     std::thread::spawn(move || read_terminal(sender));
     let result = event_loop(&mut terminal, &mut app, &control);
     run::end_runs();
@@ -509,6 +515,8 @@ enum Control {
     Signal(i32),
     /// A write to the log failed, as this text says.
     Log(String),
+    /// The runbook changed on disk (spec 10).
+    Changed,
 }
 
 /// Sends the terminal events, until the first error.
@@ -1390,6 +1398,10 @@ fn event_loop(
                 Incoming::Control(Control::Signal(signal)) => return Ok(Exit::Signal(signal)),
                 Incoming::Control(Control::Log(text)) => {
                     app.notify(text);
+                    Duration::ZERO
+                }
+                Incoming::Control(Control::Changed) => {
+                    app.reload(size);
                     Duration::ZERO
                 }
                 Incoming::Tick => {
