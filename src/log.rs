@@ -149,35 +149,42 @@ impl<W: Write> Sections<W> {
                 None => return Ok(()),
             },
         };
-        if self.runs.keys().next() != Some(&id) {
-            let section = self.runs.get_mut(&id).expect("the run has a section");
-            section.held.push_str(&text);
+        let result = self.place(id, &text, ended);
+        if ended {
+            // Even after a failed write: an ended run must not keep the log
+            // from the runs after it.
+            let writer = self.runs.keys().next() == Some(&id);
+            self.runs.remove(&id);
+            // The run that has waited longest writes what it holds, then
+            // goes on as it runs.
+            if writer && let Some(next) = self.runs.values_mut().next() {
+                return result.and(next.write_held(&mut self.out));
+            }
+        }
+        result
+    }
+
+    /// Writes the `text` of run `id` if its section has the log, else
+    /// holds it. A section that ends, or that holds MAX_HELD, writes what
+    /// it holds.
+    fn place(&mut self, id: u64, text: &str, ended: bool) -> std::io::Result<()> {
+        let writer = self.runs.keys().next() == Some(&id);
+        let section = self.runs.get_mut(&id).expect("the run has a section");
+        if !writer {
+            section.held.push_str(text);
             // The rest of its section goes in at once: watch.sh sees its
             // END line without a wait for the run that writes.
             if ended || section.held.len() >= MAX_HELD {
                 self.interrupted = true;
-                section.write_held(&mut self.out)?;
-            }
-            if ended {
-                self.runs.remove(&id);
+                return section.write_held(&mut self.out);
             }
             return Ok(());
         }
         if !text.is_empty() && std::mem::take(&mut self.interrupted) {
-            let name = &self.runs[&id].name;
-            self.out
-                .write_all(format!("=== CONTINUE {name}\n").as_bytes())?;
+            let line = format!("=== CONTINUE {}\n", section.name);
+            self.out.write_all(line.as_bytes())?;
         }
-        self.out.write_all(text.as_bytes())?;
-        if ended {
-            self.runs.remove(&id);
-            // The run that has waited longest writes what it holds, then
-            // goes on as it runs.
-            if let Some(next) = self.runs.values_mut().next() {
-                next.write_held(&mut self.out)?;
-            }
-        }
-        Ok(())
+        self.out.write_all(text.as_bytes())
     }
 }
 
@@ -567,6 +574,58 @@ b3
 "
         );
         assert!(String::from_utf8(sections.out).unwrap() == expected);
+    }
+
+    /// A log whose write number `fails` fails, as on a full disk.
+    struct Failing {
+        out: Vec<u8>,
+        writes: usize,
+        fails: usize,
+    }
+
+    impl Write for Failing {
+        fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+            self.writes += 1;
+            if self.writes == self.fails {
+                return Err(std::io::Error::other("disk full"));
+            }
+            self.out.write(bytes)
+        }
+
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_run_whose_end_fails_to_write_leaves_the_log_to_the_next_run() {
+        let out = Failing {
+            out: Vec::new(),
+            writes: 0,
+            fails: 3,
+        };
+        let mut sections = Sections::new(out);
+        let start = |id| Message::Start {
+            id,
+            name: format!("r{id}"),
+            time: time(id),
+        };
+        let output = |id, text: &str| Message::Output {
+            id,
+            bytes: text.as_bytes().to_vec(),
+        };
+        let end = Message::End {
+            id: 1,
+            rc: 0,
+            time: time(5),
+        };
+        sections.write(start(1)).unwrap();
+        sections.write(output(1, "a\n")).unwrap();
+        assert!(sections.write(end).is_err());
+        sections.write(start(2)).unwrap();
+        sections.write(output(2, "b\n")).unwrap();
+        let expected = "=== START r1 00:00:01Z\na\n=== START r2 00:00:02Z\nb\n";
+        assert_eq!(String::from_utf8(sections.out.out).unwrap(), expected);
     }
 
     #[test]
