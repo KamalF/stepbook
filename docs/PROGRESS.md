@@ -253,7 +253,7 @@ Done when: each runbook in `~/dev/claude/runbooks/` opens with no panic, the tmu
 
 ### Kamal's manual checklist of the look and feel
 
-What tmux cannot show, in herdr in Ghostty: open `/tmp/claude-1000/-home-kamal-dev-github-stepbook/d8ee867b-d1ca-4e8c-a4c1-7b6fe0fdf2fa/scratchpad/demo.md` with `stepbook --no-log`, run its blocks, and check:
+What tmux cannot show, in herdr in Ghostty: open `~/dev/claude/runbooks/2026-11-12-stepbook-look-and-feel.md` with `stepbook --no-log`, run its blocks, and check:
 
 1. Blocks are `#1c1c1c` and the selected block `#141414`, from the column after the `▐`; the output and the `toml` block keep the background.
 2. The selection is blue; the `toml` block is dim; output rows have the thin `▕`.
@@ -263,7 +263,7 @@ What tmux cannot show, in herdr in Ghostty: open `/tmp/claude-1000/-home-kamal-d
 ## Next
 
 1. Kamal pushes `main`.
-2. The look and feel review: see its section.
+2. Kamal runs the manual checklist of the look and feel.
 3. Milestone 4, log and reload.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
