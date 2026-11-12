@@ -2066,6 +2066,7 @@ pub(crate) mod tests {
         assert_eq!(shades((0, 43, 54)), (rgb(0, 31, 42), rgb(0, 23, 34)));
         assert_eq!(shades((0, 0, 0)), (rgb(12, 12, 12), rgb(20, 20, 20)));
         assert_eq!(shades((19, 0, 0)), (rgb(31, 12, 12), rgb(39, 20, 20)));
+        assert_eq!(shades((20, 20, 20)), (rgb(8, 8, 8), rgb(0, 0, 0)));
     }
 
     #[test]

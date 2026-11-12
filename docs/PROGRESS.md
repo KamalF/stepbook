@@ -216,7 +216,7 @@ Kamal ran the checklist on 2026-11-12: the six checks pass. Section 5 first scro
 
 Kamal chose from the screens of a prototype, drawn in his theme, on 2026-11-12. What bothered him most: blocks that run blend into the rest of the document, and the `▐` bar alone does not set them apart. His choices:
 
-- Blocks that run get a background darker than the background of the terminal, from the column after the `▐` to the right edge of the view. The selected block gets a darker one. The output keeps the background of the terminal. On his Gruvbox Dark (`#282828`), the prototype drew `#1c1c1c` and `#141414`. stepbook asks the terminal for its background color (OSC 11) at startup: herdr answers it.
+- Blocks that run get a background darker than the background of the terminal, from the column after the `▐` to the right edge of the text. The selected block gets a darker one. The output keeps the background of the terminal. On his Gruvbox Dark (`#282828`), the prototype drew `#1c1c1c` and `#141414`. stepbook asks the terminal for its background color (OSC 11) at startup: herdr answers it.
 - Prose takes at most 100 columns: paragraphs, headings, rules, lists and quotes. Code, output and tables keep the full width of the view.
 - The selection is bold blue, not bold cyan: with bold-is-bright, Gruvbox draws bold cyan as light green, close to the green of `✔`.
 - The code of other code blocks, which never runs, is dim, as their gutter is.

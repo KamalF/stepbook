@@ -1325,19 +1325,30 @@ mod tests {
         let color = query_background(input.as_fd(), &mut Vec::new(), Duration::from_secs(5));
         assert_eq!(color, Some((0, 0, 0)));
         assert_eq!(rest(&input), b"");
-        // A paste that pauses for longer than the wait, and one whose start
-        // comes in two parts across the end of the wait.
-        let pastes: [&[&[u8]]; 2] = [
+        // A paste that starts at the bound of the answers.
+        let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
+        let typed = [&[b'x'; MAX_ANSWERS - 6][..], b"\x1b[200~y\ri\x1b[201~"].concat();
+        terminal.write_all(&typed).unwrap();
+        let wait = Duration::from_millis(50);
+        assert_eq!(query_background(input.as_fd(), &mut Vec::new(), wait), None);
+        assert_eq!(rest(&input), b"");
+        // A paste that pauses for longer than the wait, and pastes whose
+        // start comes in two parts across the end of the wait.
+        let pastes: [&[&[u8]]; 3] = [
             &[b"\x1b[200~y", b"\r", b"i\x1b[201~"],
             &[b"\x1b[20", b"0~y\ri\x1b[201~"],
+            &[b"\x1b[200", b"~y\ri\x1b[201~"],
         ];
         for parts in pastes {
             let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
-            let parts: Vec<Vec<u8>> = parts.iter().map(|part| part.to_vec()).collect();
+            // The first part comes before the end of the wait, the others
+            // after it.
+            terminal.write_all(parts[0]).unwrap();
+            let later: Vec<Vec<u8>> = parts[1..].iter().map(|part| part.to_vec()).collect();
             let typing = std::thread::spawn(move || {
-                for part in parts {
-                    terminal.write_all(&part).unwrap();
+                for part in later {
                     std::thread::sleep(Duration::from_millis(100));
+                    terminal.write_all(&part).unwrap();
                 }
                 terminal
             });
