@@ -412,8 +412,8 @@ stepbook appends to the log file, which it creates with mode 0600. It opens the 
 
 Only one run writes to the log at a time, so the lines of two runs never mix:
 
-- A run that starts while another run writes to the log holds its text in memory.
-- When it ends, it writes its whole section at once, with its real start time, even while the other run goes on: `watch.sh` sees its `END` line without a wait for the other run, such as a `tail -f` that never ends. The section of the other run then goes on after a `=== CONTINUE <name>` line.
+- A run that starts while another run writes to the log holds its text in memory, up to 1 MiB. Past 1 MiB, it writes what it holds at once, and its section goes on later after a `=== CONTINUE <name>` line: a run that never ends, such as a second `tail -f`, must not fill the memory. The section of the other run then goes on after a `=== CONTINUE <name>` line too.
+- When it ends, it writes the rest of its section at once, with its real start time, even while the other run goes on: `watch.sh` sees its `END` line without a wait for the other run, such as a `tail -f` that never ends. The section of the other run then goes on after a `=== CONTINUE <name>` line.
 - When the run that writes ends, the run that has waited longest writes what it holds, `START` line included, then goes on as it runs.
 
 ### 12.3 Old runbooks
@@ -479,7 +479,7 @@ Each test states one rule, and its name is that rule.
   - A removed working directory makes the run fail and resets the session directory.
   - `ctrl-c` (byte `0x03`) reports rc 130 and saves the state.
   - Two concurrent runs merge their changes.
-  - Concurrent runs write contiguous log sections.
+  - Concurrent runs write contiguous log sections, while a run that waits holds less than 1 MiB.
   - The old logging header suppresses the native log.
 - **Render tests:** snapshots with ratatui's `TestBackend` and `insta`, covering document elements, control characters (in the code, the text, the file name and a directory name), block states, the sidebar and the footer modes.
 
@@ -503,7 +503,7 @@ v1 comes in five milestones, built in order. Each milestone ends with `cargo mut
 3. **Input and full-screen view.** Input mode (7.2), the full-screen view (7.3), and the switch to the alternate screen (6.3).
    - Done when: a `read -s` prompt takes a password in input mode, and `o` shows `less` in the full-screen view, which closes when less exits. In herdr, a paste reaches the program (manual check).
 4. **Log and reload.** The log (12), the file watcher and the reload (10).
-   - Done when: `watch.sh` sees the `END` line of a run, and two concurrent runs write contiguous sections. An edit of the runbook in vim during a run keeps each output and marks the changed blocks.
+   - Done when: `watch.sh` sees the `END` line of a run, and two concurrent runs write contiguous sections, while the run that waits holds less than 1 MiB. An edit of the runbook in vim during a run keeps each output and marks the changed blocks.
 5. **Migration.** A README, an install with mise from the GitHub repository, and a first release on crates.io. Then the runbook skill moves to stepbook (15).
    - Done when: the runbook skill opens its runbooks with stepbook, and Kamal has run a real runbook with it.
 
@@ -620,6 +620,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | stepbook opens the log at startup, and does not start if it cannot; a write that fails later shows in the footer once (12.1) | 2026-11-12 |
 | A run that ends while another writes to the log writes its whole section at once, and the other section goes on after a `=== CONTINUE <name>` line (12.2), at Kamal's choice: a block that never ends held the log, and `watch.sh` waited for the `END` line of each block run after it | 2026-11-12 |
 | The log splits a line longer than 1 MiB (12.1): output with no line feed, such as `base64 -w0`, stayed in memory whole until the end of the run | 2026-11-12 |
+| A run that waits for the log writes what it holds past 1 MiB, and its section goes on after a `=== CONTINUE <name>` line (12.2), at Kamal's choice: with two blocks that never end, such as two `tail -f`, the second one held its output in memory for the whole session | 2026-11-12 |
 | The key of an unnamed block is its code, not a hash of it (3): it is exact, and needs no hash function | 2026-11-12 |
 | A block that a reload removes while it runs stays at the end of the document too, not only in the sidebar (10): `i` and the output under the block need a place in the document view | 2026-11-12 |
 | A changed block shows `~` in the sidebar, and keeps the mark while its code differs from the code of its last run (6.2, 10) | 2026-11-12 |

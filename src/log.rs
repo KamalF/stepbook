@@ -17,6 +17,11 @@ const FULL_SCREEN: &str = "[full-screen program output not logged]\n";
 /// goes on the next line.
 const MAX_LINE: usize = 1024 * 1024;
 
+/// The most text that a run that waits for the log holds: past it, the
+/// run writes what it holds, and its section goes on later (spec 12.2). A
+/// run that never ends must not fill the memory.
+const MAX_HELD: usize = 1024 * 1024;
+
 /// Messages in flight to the thread of the log. While they all wait, the
 /// main thread reads no output of the runs that write to the log: a slow
 /// disk slows their programs, as a slow view does, and the output in
@@ -93,6 +98,19 @@ struct Section {
     cleaner: Cleaner,
     /// The text that waits for the log.
     held: String,
+    /// The log has a part of the section: the next part follows a
+    /// CONTINUE line.
+    parted: bool,
+}
+
+impl Section {
+    /// Writes the text that the section holds to `out`.
+    fn write_held(&mut self, out: &mut impl Write) -> std::io::Result<()> {
+        if std::mem::replace(&mut self.parted, true) {
+            out.write_all(format!("=== CONTINUE {}\n", self.name).as_bytes())?;
+        }
+        out.write_all(std::mem::take(&mut self.held).as_bytes())
+    }
 }
 
 impl<W: Write> Sections<W> {
@@ -112,6 +130,7 @@ impl<W: Write> Sections<W> {
                     name,
                     cleaner: Cleaner::default(),
                     held: String::new(),
+                    parted: false,
                 };
                 debug_assert!(self.runs.keys().next_back().is_none_or(|&last| last < id));
                 self.runs.insert(id, section);
@@ -133,12 +152,14 @@ impl<W: Write> Sections<W> {
         if self.runs.keys().next() != Some(&id) {
             let section = self.runs.get_mut(&id).expect("the run has a section");
             section.held.push_str(&text);
-            // Its whole section goes in at once: watch.sh sees its END
-            // line without a wait for the run that writes.
-            if ended {
-                let section = self.runs.remove(&id).expect("the run has a section");
+            // The rest of its section goes in at once: watch.sh sees its
+            // END line without a wait for the run that writes.
+            if ended || section.held.len() >= MAX_HELD {
                 self.interrupted = true;
-                self.out.write_all(section.held.as_bytes())?;
+                section.write_held(&mut self.out)?;
+            }
+            if ended {
+                self.runs.remove(&id);
             }
             return Ok(());
         }
@@ -153,8 +174,7 @@ impl<W: Write> Sections<W> {
             // The run that has waited longest writes what it holds, then
             // goes on as it runs.
             if let Some(next) = self.runs.values_mut().next() {
-                self.out
-                    .write_all(std::mem::take(&mut next.held).as_bytes())?;
+                next.write_held(&mut self.out)?;
             }
         }
         Ok(())
@@ -489,6 +509,64 @@ c2
 === START r4 00:00:07Z
 ";
         assert_eq!(String::from_utf8(sections.out).unwrap(), expected);
+    }
+
+    #[test]
+    fn a_run_that_waits_writes_what_it_holds_past_the_limit() {
+        let mut sections = Sections::new(Vec::new());
+        let start = |id| Message::Start {
+            id,
+            name: format!("r{id}"),
+            time: time(id),
+        };
+        let output = |id, text: &str| Message::Output {
+            id,
+            bytes: text.as_bytes().to_vec(),
+        };
+        let end = |id| Message::End {
+            id,
+            rc: 0,
+            time: time(10 + id),
+        };
+        // With its START line, the section holds MAX_HELD bytes.
+        let line = "=== START r2 00:00:02Z\n";
+        let held = format!("{}\n", "x".repeat(MAX_HELD - line.len() - 1));
+        let messages = [
+            start(1),
+            start(2),
+            output(1, "a1\n"),
+            output(2, &held),
+            output(1, "a2\n"),
+            output(2, "b2\n"),
+            start(3),
+            output(3, &held),
+            end(3),
+            end(1),
+            output(2, "b3\n"),
+            end(2),
+        ];
+        for message in messages {
+            sections.write(message).unwrap();
+        }
+        let expected = format!(
+            "\
+=== START r1 00:00:01Z
+a1
+=== START r2 00:00:02Z
+{held}=== CONTINUE r1
+a2
+=== START r3 00:00:03Z
+{held}=== CONTINUE r3
+=== END r3 rc=0 00:00:13Z
+=== CONTINUE r1
+=== END r1 rc=0 00:00:11Z
+=== CONTINUE r2
+b2
+b3
+=== END r2 rc=0 00:00:12Z
+"
+        );
+        assert!(String::from_utf8(sections.out).unwrap() == expected);
     }
 
     #[test]
