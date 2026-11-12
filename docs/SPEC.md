@@ -408,10 +408,11 @@ stepbook appends to the log file, which it creates with mode 0600. It opens the 
 
 ### 12.2 Concurrent runs
 
-Only one run writes to the log at a time, so sections never interleave:
+Only one run writes to the log at a time, so the lines of two runs never mix:
 
-- A run that starts while another run writes to the log buffers its output in memory.
-- When the log is free, the waiting run writes its `START` line (with its real start time) and its buffered output, then continues live.
+- A run that starts while another run writes to the log holds its text in memory.
+- When it ends, it writes its whole section at once, with its real start time, even while the other run goes on: `watch.sh` sees its `END` line without a wait for the other run, such as a `tail -f` that never ends. The section of the other run then goes on after a `=== CONTINUE <name>` line.
+- When the run that writes ends, the run that has waited longest writes what it holds, `START` line included, then goes on as it runs.
 
 ### 12.3 Old runbooks
 
@@ -615,3 +616,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The log writes the output a line at a time, as each line ends (12.1): a carriage return can drop a line until it ends | 2026-11-12 |
 | The times of the log are in UTC, marked `Z` (12.1), at Kamal's choice: the standard library has no time zones, and libc or a time crate would be one more dependency | 2026-11-12 |
 | stepbook opens the log at startup, and does not start if it cannot; a write that fails later shows in the footer once (12.1) | 2026-11-12 |
+| A run that ends while another writes to the log writes its whole section at once, and the other section goes on after a `=== CONTINUE <name>` line (12.2), at Kamal's choice: a block that never ends held the log, and `watch.sh` waited for the `END` line of each block run after it | 2026-11-12 |

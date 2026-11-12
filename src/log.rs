@@ -62,8 +62,9 @@ pub fn spawn(
 }
 
 /// The sections of the runs, as the log holds them (spec 12.1). One run
-/// writes to the log at a time, so that sections never interleave: the
-/// others hold their text until the log is free (spec 12.2).
+/// writes to the log at a time, so that lines of two runs never mix: the
+/// others hold their text, and write their whole section when they end
+/// (spec 12.2).
 struct Sections<W> {
     out: W,
     runs: BTreeMap<u64, Section>,
@@ -71,6 +72,9 @@ struct Sections<W> {
     writer: Option<u64>,
     /// The runs that wait for the log, in the order that they started.
     waiting: VecDeque<u64>,
+    /// The section of another run came after the last line of the writer:
+    /// its next line follows a CONTINUE line.
+    interrupted: bool,
 }
 
 struct Section {
@@ -78,7 +82,6 @@ struct Section {
     cleaner: Cleaner,
     /// The text that waits for the log.
     held: String,
-    ended: bool,
 }
 
 impl<W: Write> Sections<W> {
@@ -88,6 +91,7 @@ impl<W: Write> Sections<W> {
             runs: BTreeMap::new(),
             writer: None,
             waiting: VecDeque::new(),
+            interrupted: false,
         }
     }
 
@@ -99,7 +103,6 @@ impl<W: Write> Sections<W> {
                     name,
                     cleaner: Cleaner::default(),
                     held: String::new(),
-                    ended: false,
                 };
                 self.runs.insert(id, section);
                 match self.writer {
@@ -124,33 +127,38 @@ impl<W: Write> Sections<W> {
         if self.writer != Some(id) {
             let section = self.runs.get_mut(&id).expect("the run has a section");
             section.held.push_str(&text);
-            section.ended |= ended;
+            // Its whole section goes in at once: watch.sh sees its END
+            // line without a wait for the run that writes.
+            if ended {
+                let held = std::mem::take(&mut section.held);
+                self.runs.remove(&id);
+                self.waiting.retain(|&run| run != id);
+                self.interrupted = true;
+                self.out.write_all(held.as_bytes())?;
+            }
             return Ok(());
+        }
+        if !text.is_empty() && std::mem::take(&mut self.interrupted) {
+            let name = &self.runs[&id].name;
+            self.out
+                .write_all(format!("=== CONTINUE {name}\n").as_bytes())?;
         }
         self.out.write_all(text.as_bytes())?;
         if ended {
             self.runs.remove(&id);
             self.writer = None;
-            self.next()?;
-        }
-        Ok(())
-    }
-
-    /// The log is free: the runs that wait write what they hold, in turn,
-    /// until one that has not ended takes the log.
-    fn next(&mut self) -> std::io::Result<()> {
-        while let Some(id) = self.waiting.pop_front() {
-            let section = self
-                .runs
-                .get_mut(&id)
-                .expect("a run that waits has a section");
-            self.out
-                .write_all(std::mem::take(&mut section.held).as_bytes())?;
-            if !section.ended {
-                self.writer = Some(id);
-                return Ok(());
+            self.interrupted = false;
+            // The run that has waited longest writes what it holds, then
+            // goes on as it runs.
+            if let Some(next) = self.waiting.pop_front() {
+                let section = self
+                    .runs
+                    .get_mut(&next)
+                    .expect("a run that waits has a section");
+                self.writer = Some(next);
+                self.out
+                    .write_all(std::mem::take(&mut section.held).as_bytes())?;
             }
-            self.runs.remove(&id);
         }
         Ok(())
     }
@@ -430,15 +438,17 @@ partial
         for message in messages {
             sections.write(message).unwrap();
         }
-        // Each waiting run keeps the time it started at.
+        // A run that ends while r1 writes goes in at once, and r1 goes on
+        // after a CONTINUE line. Each run keeps the time it started at.
         let expected = "\
 === START r1 00:00:01Z
 a1
-a2
-=== END r1 rc=0 00:00:05Z
 === START r2 00:00:02Z
 b1
 === END r2 rc=0 00:00:04Z
+=== CONTINUE r1
+a2
+=== END r1 rc=0 00:00:05Z
 === START r3 00:00:03Z
 c1
 c2

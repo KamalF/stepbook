@@ -294,7 +294,7 @@ The plan, one commit per line, on the branch `m4-log-reload`:
 2. `feat`: stepbook does not start if the log would be the runbook itself (4).
 3. `feat`: the cleaning of the output for the log: escape sequences removed with `vte`, CRLF as LF, a carriage return alone drops the partial line, U+FFFD for bytes that are not UTF-8, and a character split across two reads whole (12.1).
 4. `feat`: the log: one section per run, with its `START` and `END` lines, in a file created with mode 0600, and the output as it arrives; one marker line for output on the alternate screen (12.1). A thread of its own writes the log: a slow disk must not block the main thread (13).
-5. `feat`: one run writes to the log at a time: a run that starts meanwhile keeps its output in memory, then writes its section with its real start time (12.2).
+5. `feat`: one run writes to the log at a time: a run that starts meanwhile keeps its output in memory, then writes its section with its real start time (12.2). Kamal chose, during the work, that a run that ends meanwhile writes its section at once, and the other section goes on after a `=== CONTINUE <name>` line: a block that never ends held the log.
 6. `feat`: a block whose first line starts with the `exec > >(tee -a ` header of old runbooks writes no section (12.3).
 7. `feat`: block keys, and the matching of the blocks of two versions of the file (3, 10).
 8. `feat`: `ctrl-r` reloads the file: outputs, results and the selection follow the matching; changed blocks show `changed since run`, and removed blocks that run stay until their run ends; the footer gives a summary (10).
