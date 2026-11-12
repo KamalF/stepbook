@@ -478,13 +478,19 @@ const MAX_FILE: u64 = 1024 * 1024;
 
 /// Reads a runbook, which must be a regular file of at most `MAX_FILE`
 /// bytes: a link to /dev/zero would fill the memory. The check is on the
-/// file that the open gave, and the open never blocks: a reload reads the
+/// path, then on the file that the open gave, and the open never blocks: a reload reads the
 /// runbook on the main thread, where a FIFO renamed onto its name, or a
 /// lease that another process holds on it, would stop stepbook. Its lines
 /// must nest at most `doc::MAX_NESTING` levels.
 fn read_runbook(path: &Path) -> Result<String, String> {
     use rustix::fs::OFlags;
     let fail = |reason: String| format!("cannot read {}: {reason}", path.display());
+    // Before the open too: the open of a device, such as a serial port,
+    // can act on it.
+    let metadata = std::fs::metadata(path).map_err(|e| fail(io_message(&e)))?;
+    if !metadata.is_file() {
+        return Err(fail("not a regular file".into()));
+    }
     let flags = (OFlags::NONBLOCK | OFlags::NOCTTY).bits();
     let file = (std::fs::OpenOptions::new().read(true))
         .custom_flags(flags as i32)
