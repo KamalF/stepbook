@@ -146,12 +146,14 @@ struct Section {
 }
 
 impl Section {
-    /// Writes the text that the section holds to `out`.
+    /// Writes the text that the section holds to `out`. The text goes even
+    /// if a write fails: on a full disk, the 1 MiB bound must hold.
     fn write_held(&mut self, out: &mut impl Write) -> std::io::Result<()> {
+        let held = std::mem::take(&mut self.held);
         if std::mem::replace(&mut self.parted, true) {
             out.write_all(format!("=== CONTINUE {}\n", self.name).as_bytes())?;
         }
-        out.write_all(std::mem::take(&mut self.held).as_bytes())
+        out.write_all(held.as_bytes())
     }
 }
 
@@ -685,6 +687,43 @@ b3
         sections.write(output(2, "b\n")).unwrap();
         let expected = "=== START r1 00:00:01Z\na\n=== START r2 00:00:02Z\nb\n";
         assert_eq!(String::from_utf8(sections.out.out).unwrap(), expected);
+    }
+
+    #[test]
+    fn a_run_that_waits_holds_no_more_than_the_limit_when_writes_fail() {
+        // The third write is the CONTINUE line of the second part of r2.
+        let out = Failing {
+            out: Vec::new(),
+            writes: 0,
+            fails: 3,
+        };
+        let mut sections = Sections::new(out);
+        let held = "x\n".repeat(MAX_HELD / 2);
+        let messages = [
+            Message::Start {
+                id: 1,
+                name: "r1".into(),
+                time: time(1),
+            },
+            Message::Start {
+                id: 2,
+                name: "r2".into(),
+                time: time(2),
+            },
+            Message::Output {
+                id: 2,
+                bytes: held.clone().into_bytes(),
+            },
+        ];
+        for message in messages {
+            sections.write(message).unwrap();
+        }
+        let output = Message::Output {
+            id: 2,
+            bytes: held.into_bytes(),
+        };
+        assert!(sections.write(output).is_err());
+        assert!(sections.runs[&2].held.is_empty());
     }
 
     #[test]
