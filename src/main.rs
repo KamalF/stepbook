@@ -2190,6 +2190,30 @@ mod tests {
     }
 
     #[test]
+    fn the_messages_that_wait_for_the_log_go_at_the_end() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("Text.\n", tmp.path());
+        let (log, messages) = crossbeam_channel::bounded(1);
+        app.log = Some(log);
+        let end = |id| log::Message::End {
+            id,
+            rc: 0,
+            time: SystemTime::now(),
+        };
+        app.log(end(1));
+        app.log(end(2));
+        assert_eq!(app.log_queue.len(), 1);
+        let reader = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            messages.iter().count()
+        });
+        let (_sender, control) = crossbeam_channel::unbounded();
+        app.drain_runs(&control, Duration::from_secs(10));
+        drop(app.log.take());
+        assert_eq!(reader.join().unwrap(), 2);
+    }
+
+    #[test]
     fn enter_on_a_block_that_has_run_asks_before_it_runs_it_again() {
         let tmp = tempfile::tempdir().unwrap();
         let mut app = app("```bash [name:count]\necho run >> runs\n```\n", tmp.path());

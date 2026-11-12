@@ -99,17 +99,26 @@ pub fn spawn(
     let (sender, receiver) = crossbeam_channel::bounded(MESSAGES);
     let thread = std::thread::spawn(move || {
         let mut sections = Sections::new(out);
-        let mut reported: Option<Instant> = None;
+        let mut reported = None;
         for message in receiver {
             if let Err(error) = sections.write(message)
-                && reported.is_none_or(|at| at.elapsed() >= REPORT_EVERY)
+                && due(&mut reported, Instant::now())
             {
-                reported = Some(Instant::now());
                 failed(error);
             }
         }
     });
     (sender, thread)
+}
+
+/// Whether a failed write at `now` is reported, after the report at
+/// `reported`, if any: at most once every `REPORT_EVERY`.
+fn due(reported: &mut Option<Instant>, now: Instant) -> bool {
+    let due = reported.is_none_or(|at| now >= at + REPORT_EVERY);
+    if due {
+        *reported = Some(now);
+    }
+    due
 }
 
 /// Waits up to `wait` for the end of the thread of the log, and returns
@@ -692,6 +701,11 @@ b3
         thread.join().unwrap();
         // Three writes fail within 10 s: one report.
         assert_eq!(received.try_iter().collect::<Vec<_>>(), ["disk full"]);
+        // A disk that stays full shows again 10 s later.
+        let (start, mut reported) = (Instant::now(), None);
+        let at = |seconds| start + Duration::from_secs(seconds);
+        let reports = [0, 5, 9, 10, 19, 20].map(|seconds| due(&mut reported, at(seconds)));
+        assert_eq!(reports, [true, false, false, true, false, true]);
     }
 
     #[test]
