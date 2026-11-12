@@ -1694,6 +1694,43 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_runs_write_contiguous_sections_in_the_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("run.log");
+        let block = |name| {
+            let code = format!("for i in 1 2 3; do echo {name}$i; sleep 0.05; done");
+            format!("```bash [name:{name}]\n{code}\n```\n\n")
+        };
+        let mut app = app(&format!("{}{}", block("a"), block("b")), tmp.path());
+        let thread = with_log(&mut app, &path);
+        enter(&mut app, SIZE);
+        key(&mut app, KeyCode::Char('j'));
+        enter(&mut app, SIZE);
+        assert_eq!(app.runs().count(), 2);
+        read_until(&mut app, SIZE, |app| !running(app));
+        // The times at the end of the START and END lines vary.
+        let lines = log_lines(&mut app, thread, &path).into_iter().map(|line| {
+            match line.starts_with("=== ") {
+                true => line.rsplit_once(' ').unwrap().0.to_string(),
+                false => line,
+            }
+        });
+        let expected = [
+            "=== START a",
+            "a1",
+            "a2",
+            "a3",
+            "=== END a rc=0",
+            "=== START b",
+            "b1",
+            "b2",
+            "b3",
+            "=== END b rc=0",
+        ];
+        assert_eq!(lines.collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
     fn a_run_that_stepbook_stops_ends_its_section_in_the_log() {
         let tmp = tempfile::tempdir().unwrap();
         let path = tmp.path().join("run.log");

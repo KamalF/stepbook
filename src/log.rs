@@ -1,5 +1,5 @@
 //! The log of the runs (spec 12).
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::fs::File;
 use std::io::Write;
 use std::os::unix::fs::OpenOptionsExt;
@@ -61,15 +61,24 @@ pub fn spawn(
     (sender, thread)
 }
 
-/// The sections of the runs, as the log holds them (spec 12.1).
+/// The sections of the runs, as the log holds them (spec 12.1). One run
+/// writes to the log at a time, so that sections never interleave: the
+/// others hold their text until the log is free (spec 12.2).
 struct Sections<W> {
     out: W,
     runs: BTreeMap<u64, Section>,
+    /// The run whose section the log holds now.
+    writer: Option<u64>,
+    /// The runs that wait for the log, in the order that they started.
+    waiting: VecDeque<u64>,
 }
 
 struct Section {
     name: String,
     cleaner: Cleaner,
+    /// The text that waits for the log.
+    held: String,
+    ended: bool,
 }
 
 impl<W: Write> Sections<W> {
@@ -77,31 +86,73 @@ impl<W: Write> Sections<W> {
         Sections {
             out,
             runs: BTreeMap::new(),
+            writer: None,
+            waiting: VecDeque::new(),
         }
     }
 
     fn write(&mut self, message: Message) -> std::io::Result<()> {
-        let text = match message {
+        let (id, text, ended) = match message {
             Message::Start { id, name, time } => {
                 let line = format!("=== START {name} {}\n", clock(time));
-                let cleaner = Cleaner::default();
-                self.runs.insert(id, Section { name, cleaner });
-                line
+                let section = Section {
+                    name,
+                    cleaner: Cleaner::default(),
+                    held: String::new(),
+                    ended: false,
+                };
+                self.runs.insert(id, section);
+                match self.writer {
+                    None => self.writer = Some(id),
+                    Some(_) => self.waiting.push_back(id),
+                }
+                (id, line, false)
             }
             Message::Output { id, bytes } => match self.runs.get_mut(&id) {
-                Some(section) => section.cleaner.lines(&bytes),
+                Some(section) => (id, section.cleaner.lines(&bytes), false),
                 None => return Ok(()),
             },
-            Message::End { id, rc, time } => match self.runs.remove(&id) {
-                Some(mut section) => {
+            Message::End { id, rc, time } => match self.runs.get_mut(&id) {
+                Some(section) => {
                     let (name, time) = (&section.name, clock(time));
                     let end = format!("=== END {name} rc={rc} {time}\n");
-                    section.cleaner.finish() + &end
+                    (id, section.cleaner.finish() + &end, true)
                 }
                 None => return Ok(()),
             },
         };
-        self.out.write_all(text.as_bytes())
+        if self.writer != Some(id) {
+            let section = self.runs.get_mut(&id).expect("the run has a section");
+            section.held.push_str(&text);
+            section.ended |= ended;
+            return Ok(());
+        }
+        self.out.write_all(text.as_bytes())?;
+        if ended {
+            self.runs.remove(&id);
+            self.writer = None;
+            self.next()?;
+        }
+        Ok(())
+    }
+
+    /// The log is free: the runs that wait write what they hold, in turn,
+    /// until one that has not ended takes the log.
+    fn next(&mut self) -> std::io::Result<()> {
+        while let Some(id) = self.waiting.pop_front() {
+            let section = self
+                .runs
+                .get_mut(&id)
+                .expect("a run that waits has a section");
+            self.out
+                .write_all(std::mem::take(&mut section.held).as_bytes())?;
+            if !section.ended {
+                self.writer = Some(id);
+                return Ok(());
+            }
+            self.runs.remove(&id);
+        }
+        Ok(())
     }
 }
 
@@ -341,6 +392,58 @@ partial
 === END check rc=3 00:00:12Z
 === START #2 00:00:10Z
 === END #2 rc=130 01:00:00Z
+";
+        assert_eq!(String::from_utf8(sections.out).unwrap(), expected);
+    }
+
+    #[test]
+    fn one_run_writes_to_the_log_at_a_time() {
+        let mut sections = Sections::new(Vec::new());
+        let start = |id, seconds| Message::Start {
+            id,
+            name: format!("r{id}"),
+            time: time(seconds),
+        };
+        let output = |id, text: &str| Message::Output {
+            id,
+            bytes: text.as_bytes().to_vec(),
+        };
+        let end = |id, seconds| Message::End {
+            id,
+            rc: 0,
+            time: time(seconds),
+        };
+        let messages = [
+            start(1, 1),
+            start(2, 2),
+            output(2, "b1\n"),
+            output(1, "a1\n"),
+            start(3, 3),
+            end(2, 4),
+            output(3, "c1\n"),
+            output(1, "a2\n"),
+            end(1, 5),
+            output(3, "c2\n"),
+            end(3, 6),
+            start(4, 7),
+        ];
+        for message in messages {
+            sections.write(message).unwrap();
+        }
+        // Each waiting run keeps the time it started at.
+        let expected = "\
+=== START r1 00:00:01Z
+a1
+a2
+=== END r1 rc=0 00:00:05Z
+=== START r2 00:00:02Z
+b1
+=== END r2 rc=0 00:00:04Z
+=== START r3 00:00:03Z
+c1
+c2
+=== END r3 rc=0 00:00:06Z
+=== START r4 00:00:07Z
 ";
         assert_eq!(String::from_utf8(sections.out).unwrap(), expected);
     }
