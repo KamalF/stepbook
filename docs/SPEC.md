@@ -238,7 +238,7 @@ A paste does nothing in the document view: a line feed in it would run the selec
 
 ### 7.4 Confirmation dialogs
 
-A question shows in the footer, in place of the keys, so that it hides no part of the document. The question of a paste (7.2) shows in input mode and in the full-screen view too, and the next key answers it. It ends with the run. `y` confirms. `n`, `Esc` and every other key cancel. If a resize hid the block to re-run, `y` shows it and asks again, as `Enter` does (7.1).
+A question shows in the footer, in place of the keys, so that it hides no part of the document. The question of a paste (7.2) shows in input mode and in the full-screen view too, and the next key answers it. It ends with the run. `y` confirms. `n`, `Esc` and every other key cancel. A question always shows its `(y/N)`: if the footer is too narrow, the text before it ends with `…`. A notification and the keys end with `…` too, where the footer cuts them. If a resize hid the block to re-run, `y` shows it and asks again, as `Enter` does (7.1).
 
 ## 8. Running blocks
 
@@ -594,3 +594,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The selection is bold blue (6.1), at Kamal's choice: Gruvbox with bold-is-bright drew bold cyan as light green | 2026-11-12 |
 | The code of a block that cannot run is dim, as its gutter is (5.3), at Kamal's choice: it looked like the code of a block | 2026-11-12 |
 | Output rows have a dim `▕` in the column of the gutter (6.3), at Kamal's choice: output could print rows that passed for the code of a nested block | 2026-11-12 |
+| A question in the footer always shows its `(y/N)` (7.4): at 45 columns, the question to quit lost it | 2026-11-12 |

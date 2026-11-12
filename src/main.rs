@@ -548,13 +548,10 @@ impl App {
         match action(event, size)? {
             Action::Quit => match self.runs().count() {
                 0 => return Some(Exit::Quit),
-                1 => self.ask(
-                    Question::Quit,
-                    "1 block running. Stop it and quit? (y/N)".into(),
-                ),
+                1 => self.ask(Question::Quit, "1 block running. Stop it and quit?".into()),
                 n => self.ask(
                     Question::Quit,
-                    format!("{n} blocks running. Stop them and quit? (y/N)"),
+                    format!("{n} blocks running. Stop them and quit?"),
                 ),
             },
             Action::Select(step) => self.view.select_by(step, size),
@@ -636,7 +633,7 @@ impl App {
             1 => "1 line".to_string(),
             n => format!("{n} lines"),
         };
-        let text = format!("Paste {lines} to {}? (y/N)", self.view.doc.label(i));
+        let text = format!("Paste {lines} to {}?", self.view.doc.label(i));
         self.ask(Question::Paste(i, bytes), text);
         true
     }
@@ -757,7 +754,7 @@ impl App {
 
     fn ask_rerun(&mut self, i: usize) {
         let label = self.view.doc.label(i);
-        self.ask(Question::Rerun(i), format!("Re-run {label}? (y/N)"));
+        self.ask(Question::Rerun(i), format!("Re-run {label}?"));
     }
 
     fn ask(&mut self, question: Question, text: String) {
@@ -1283,7 +1280,7 @@ mod tests {
         enter(&mut app, SIZE);
         read_until(&mut app, SIZE, |app| !running(app));
         enter(&mut app, SIZE);
-        assert_eq!(app.view.question.as_deref(), Some("Re-run count? (y/N)"));
+        assert_eq!(app.view.question.as_deref(), Some("Re-run count?"));
         // A resize is no answer, and every key but y says no.
         assert_eq!(app.handle(&Event::Resize(80, 24), SIZE), None);
         assert!(app.question.is_some());
@@ -1830,14 +1827,11 @@ echo \"got $x\"
         // One line with no line feed goes at once. A control character,
         // such as ctrl-o, which readline takes for Enter, asks first.
         paste(&mut app, "\x0fz");
-        assert_eq!(
-            app.view.question.as_deref(),
-            Some("Paste 1 line to #1? (y/N)")
-        );
+        assert_eq!(app.view.question.as_deref(), Some("Paste 1 line to #1?"));
         key(&mut app, KeyCode::Char('n'));
         paste(&mut app, "x\t");
         paste(&mut app, "1\r2\r");
-        let question = "Paste 2 lines to #1? (y/N)";
+        let question = "Paste 2 lines to #1?";
         assert_eq!(app.view.question.as_deref(), Some(question));
         // The answer waits for the frame that shows the question.
         let y = Event::Key(KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE));
@@ -1845,7 +1839,7 @@ echo \"got $x\"
         key(&mut app, KeyCode::Char('n'));
         assert_eq!(app.view.mode, view::Mode::Input(0));
         paste(&mut app, "y\r");
-        let question = "Paste 1 line to #1? (y/N)";
+        let question = "Paste 1 line to #1?";
         assert_eq!(app.view.question.as_deref(), Some(question));
         assert_eq!(app.handle(&y, SIZE), None);
         key(&mut app, KeyCode::Char('z'));
@@ -1920,14 +1914,14 @@ echo \"got $x\"
         key(&mut app, KeyCode::Char('q'));
         assert_eq!(
             app.view.question.as_deref(),
-            Some("1 block running. Stop it and quit? (y/N)")
+            Some("1 block running. Stop it and quit?")
         );
         key(&mut app, KeyCode::Char('n'));
         key(&mut app, KeyCode::Down);
         enter(&mut app, SIZE);
         read_until(&mut app, SIZE, |app| output(app, 1).contains("ready"));
         key(&mut app, KeyCode::Char('q'));
-        let question = "2 blocks running. Stop them and quit? (y/N)";
+        let question = "2 blocks running. Stop them and quit?";
         assert_eq!(app.view.question.as_deref(), Some(question));
         key(&mut app, KeyCode::Char('y'));
         assert!(!app.stopped());

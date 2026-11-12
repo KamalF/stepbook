@@ -96,7 +96,8 @@ pub struct View {
     pub mode: Mode,
     /// Whether the glyph of a running block shows: it blinks.
     pub blink: bool,
-    /// The question that the footer asks, in place of the keys (spec 7.4).
+    /// The question that the footer asks, in place of the keys, without
+    /// the "(y/N)" that the footer adds (spec 7.4).
     pub question: Option<String>,
     /// The notification that the footer shows, in place of the keys.
     pub notice: Option<String>,
@@ -172,7 +173,7 @@ impl View {
                 frame.set_cursor_position((text.x + x as u16, y));
             }
         }
-        frame.render_widget(self.footer(), footer);
+        frame.render_widget(self.footer(footer.width), footer);
     }
 
     /// The full-screen view: only the terminal of the block, so that a
@@ -195,7 +196,7 @@ impl View {
         {
             frame.set_cursor_position((area.x + column, area.y + row as u16));
         }
-        frame.render_widget(self.footer(), footer);
+        frame.render_widget(self.footer(footer.width), footer);
     }
 
     /// Whether block `i` runs.
@@ -224,8 +225,10 @@ impl View {
     }
 
     /// The mode, then the question, the notification or the keys that
-    /// apply now (spec 6.1). Both can quote a directory name (spec 6.5).
-    fn footer(&self) -> Line<'static> {
+    /// apply now (spec 6.1), cut with "…" to `width` columns. A question
+    /// always keeps its "(y/N)" (spec 7.4). Both can quote a directory
+    /// name (spec 6.5).
+    fn footer(&self, width: u16) -> Line<'static> {
         let reversed = Style::new().add_modifier(Modifier::REVERSED);
         let (mode, text) = match (&self.question, self.input_block(), &self.mode, &self.notice) {
             (Some(question), ..) => (" CONFIRM ", escaped(question, Style::new())),
@@ -250,7 +253,17 @@ impl View {
                 (" NORMAL ", vec![Span::raw(keys)])
             }
         };
-        let spans = [vec![Span::styled(mode, reversed), Span::raw("  ")], text];
+        let end = match self.question {
+            Some(_) => " (y/N)",
+            None => "",
+        };
+        // The mode and the end are ASCII: one column per byte.
+        let room = usize::from(width).saturating_sub(mode.len() + 2 + end.len());
+        let spans = [
+            vec![Span::styled(mode, reversed), Span::raw("  ")],
+            truncate(&text, room),
+            vec![Span::raw(end)],
+        ];
         Line::from(spans.concat())
     }
 
@@ -2358,7 +2371,7 @@ pub(crate) mod tests {
     #[test]
     fn the_footer_shows_the_keys_that_apply_now() {
         let mut view = view(BLOCKS);
-        let footer = |view: &View| markup(&[view.footer()]);
+        let footer = |view: &View| markup(&[view.footer(80)]);
         assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  q quit");
         view.set_status(0, Status::Running(Duration::ZERO));
         assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  i input  o output  q quit");
@@ -2475,11 +2488,21 @@ pub(crate) mod tests {
     #[test]
     fn the_footer_shows_a_question_or_a_notification_in_place_of_the_keys() {
         let mut view = view(BLOCKS);
-        let footer = |view: &View| markup(&[view.footer()]);
+        let footer = |view: &View| markup(&[view.footer(80)]);
         view.notice = Some("session directory reset to /a\u{1b}[2Jb".into());
         assert_snapshot!(footer(&view), @"«r: NORMAL »  «yellow:session directory reset to /a^[[2Jb»");
-        view.question = Some("Re-run check? (y/N)".into());
+        view.question = Some("Re-run check?".into());
         assert_snapshot!(footer(&view), @"«r: CONFIRM »  Re-run check? (y/N)");
+    }
+
+    #[test]
+    fn a_narrow_footer_cuts_its_text_and_keeps_the_y_n_of_a_question() {
+        let mut view = view(BLOCKS);
+        view.notice = Some("session directory reset to /a/long/path".into());
+        let footer = |view: &View| markup(&[view.footer(45)]);
+        assert_snapshot!(footer(&view), @"«r: NORMAL »  «yellow:session directory reset to /a/long…»");
+        view.question = Some("1 block running. Stop it and quit?".into());
+        assert_snapshot!(footer(&view), @"«r: CONFIRM »  1 block running. Stop it an… (y/N)");
     }
 
     #[test]
