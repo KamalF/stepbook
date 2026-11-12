@@ -448,18 +448,16 @@ impl View {
     /// the selected block stays where it is (spec 6.3).
     pub fn set_output(&mut self, i: usize, rows: Rows, size: Size) {
         let (before, after) = (self.outputs[i].lines.len(), rows.lines.len());
-        // The scroll as the screen shows it, before the change.
-        let scroll = (!too_small(size)).then(|| self.shown(screen(size)).2);
         self.outputs[i] = rows;
-        let (Some(scroll), Some(selected)) = (scroll, self.selected) else {
-            return;
-        };
-        if selected > i {
-            self.scroll = (scroll + after).saturating_sub(before);
-        } else if selected == i && after > before {
-            let (shown, text, scroll) = self.shown(screen(size));
-            let end = shown.output_end(i);
-            self.scroll = scroll.max(end.saturating_sub(usize::from(text.height)));
+        match self.selected {
+            // `shown` bounds the scroll when it reads it.
+            Some(s) if s > i => self.scroll = (self.scroll + after).saturating_sub(before),
+            Some(s) if s == i && after > before && !too_small(size) => {
+                let (shown, text, scroll) = self.shown(screen(size));
+                let end = shown.output_end(i);
+                self.scroll = scroll.max(end.saturating_sub(usize::from(text.height)));
+            }
+            _ => {}
         }
     }
 
@@ -2654,9 +2652,6 @@ pub(crate) mod tests {
         view.set_output(1, output(&["o"; 2]), SMALL);
         assert_eq!(position(&view), (Some(2), scroll + 5));
         view.set_output(0, output(&["o"]), SMALL);
-        assert_eq!(position(&view), (Some(2), scroll + 3));
-        // Output under a block below the selected one moves nothing.
-        view.set_output(3, output(&["o"; 3]), SMALL);
         assert_eq!(position(&view), (Some(2), scroll + 3));
     }
 

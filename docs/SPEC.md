@@ -606,4 +606,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The document view has 1 column of padding on each side (6.1): the rules under H1 and H2 touched the right border. The PTY of a block loses that column | 2026-11-12 |
 | Output rows have a dashed `╎`, not `▕` (6.3), at Kamal's choice: in Ghostty, `▕` stood 5 pixels from the `│` of a quote, in the same dim color, so output could pass for the code of a block in a quote | 2026-11-12 |
 | The selected block stays where it is on the screen when the output of a block above it grows or shrinks (6.3): the output of a running block pushed the selected block out of the view | 2026-11-12 |
-| `j`, `k`, `Home` and `End` scroll to show the output of the block too (7.1), at Kamal's choice: after a run of the block above, the output of the last block stayed under the bottom of the view, and only `o` showed it | 2026-11-12 |
+| `j`, `k`, `Home` and `End` scroll to show the output of the block too, and so `Enter` first does that scroll (7.1), at Kamal's choice: after a run of the block above, the output of the last block stayed under the bottom of the view, and only `o` showed it | 2026-11-12 |
