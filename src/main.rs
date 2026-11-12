@@ -312,7 +312,7 @@ fn query_background(
     let end = Instant::now() + wait;
     let mut answers = Vec::new();
     let mut buffer = [0; 256];
-    while device_attributes_end(&answers).is_none() && answers.len() < MAX_ANSWERS {
+    while device_attributes(&answers).is_none() && answers.len() < MAX_ANSWERS {
         let left = end.saturating_duration_since(Instant::now());
         let timeout = Timespec::try_from(left).unwrap_or_default();
         let mut fds = [PollFd::new(&input, PollFlags::IN)];
@@ -329,16 +329,16 @@ fn query_background(
     parse_background(&answers)
 }
 
-/// Where the answer to DA1 ends in `bytes`, if they hold one:
+/// Where the answer to DA1 starts in `bytes`, if they hold all of it:
 /// `ESC [ ?`, then digits and semicolons, then `c`.
-fn device_attributes_end(bytes: &[u8]) -> Option<usize> {
+fn device_attributes(bytes: &[u8]) -> Option<usize> {
     let escapes = (0..bytes.len()).filter(|&i| bytes[i] == 0x1b);
-    escapes.into_iter().find_map(|i| {
-        let rest = bytes[i..].strip_prefix(b"\x1b[?")?;
-        let end = rest
-            .iter()
-            .position(|b| !b.is_ascii_digit() && *b != b';')?;
-        (rest[end] == b'c').then_some(i + 3 + end + 1)
+    escapes.into_iter().find(|&i| {
+        let Some(rest) = bytes[i..].strip_prefix(b"\x1b[?") else {
+            return false;
+        };
+        let end = rest.iter().position(|b| !b.is_ascii_digit() && *b != b';');
+        end.is_some_and(|end| rest[end] == b'c')
     })
 }
 
@@ -346,7 +346,7 @@ fn device_attributes_end(bytes: &[u8]) -> Option<usize> {
 /// `ESC ] 11 ; rgb:R/G/B`, ended by BEL or by `ESC \`, where R, G and B
 /// have 1 to 4 hex digits each.
 fn parse_background(bytes: &[u8]) -> Option<(u8, u8, u8)> {
-    let bytes = &bytes[..device_attributes_end(bytes).unwrap_or(bytes.len())];
+    let bytes = &bytes[..device_attributes(bytes).unwrap_or(bytes.len())];
     let start = bytes.windows(5).position(|w| w == b"\x1b]11;")? + 5;
     let rest = &bytes[start..];
     let end = rest.iter().position(|&b| b == 0x07 || b == 0x1b)?;
@@ -1230,6 +1230,21 @@ mod tests {
             background(&answers, Duration::from_secs(5)).0,
             Some((255, 128, 0))
         );
+    }
+
+    #[test]
+    fn the_wait_takes_answers_that_come_later() {
+        let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
+        let answer = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            terminal.write_all(b"\x1b]11;rgb:0/0/0\x07").unwrap();
+            std::thread::sleep(Duration::from_millis(50));
+            terminal.write_all(DA1).unwrap();
+            terminal
+        });
+        let color = query_background(input.as_fd(), &mut Vec::new(), Duration::from_secs(5));
+        assert_eq!(color, Some((0, 0, 0)));
+        answer.join().unwrap();
     }
 
     #[test]

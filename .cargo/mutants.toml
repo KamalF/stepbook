@@ -5,6 +5,9 @@ gitignore = true
 
 # Mutants that no test should catch. A run then shows only new gaps.
 exclude_re = [
+    # Past the bound of the answers, one more read of 256 bytes at most
+    # changes nothing.
+    "replace < with <= in query_background",
     # The event loop draws each frame and applies the action of each key:
     # the check in tmux covers it, and main::action has its own tests.
     "replace event_loop -> ",
