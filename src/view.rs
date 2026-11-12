@@ -809,9 +809,14 @@ fn code(lines: &[Vec<Span<'static>>], block: Option<usize>, width: usize) -> Vec
     let mut out = Vec::new();
     for line in lines {
         for (row, part) in hard_wrap(line, width).into_iter().enumerate() {
-            out.push(Line::from(
-                [gutter(row, style), mark_end_space(part.spans)].concat(),
-            ));
+            let mut text = mark_end_space(part.spans);
+            // Code that cannot run looks inert, as frontmatter does.
+            if block.is_none() {
+                for span in &mut text {
+                    span.style = span.style.patch(DIM);
+                }
+            }
+            out.push(Line::from([gutter(row, style), text].concat()));
         }
     }
     // An empty code block shows as a gutter, so that it, and the list
@@ -1581,17 +1586,17 @@ pub(crate) mod tests {
         // pulldown-cmark turns CR LF into LF, but CR CR LF keeps one CR.
         let text = "```\ncd /tmp/x\r\r\nrm -rf *\n```";
         assert_snapshot!(render(text, 40), @"
-        «d:▐ »cd /tmp/x«yellow:^M»
-        «d:▐ »rm -rf *
+        «d:▐ cd /tmp/x»«yellow,d:^M»
+        «d:▐ rm -rf *»
         ");
     }
 
     #[test]
-    fn other_code_blocks_have_a_dim_gutter_and_no_highlighting() {
+    fn other_code_blocks_are_dim_and_not_highlighted() {
         assert_snapshot!(render("```python\nif x: 'a'\n```\n\n    ls '$x'", 40), @"
-        «d:▐ »if x: 'a'
+        «d:▐ if x: 'a'»
 
-        «d:▐ »ls '$x'
+        «d:▐ ls '$x'»
         ");
     }
 
@@ -1802,8 +1807,8 @@ pub(crate) mod tests {
     #[test]
     fn tabs_in_code_expand_to_8_columns() {
         assert_snapshot!(render("```\na\tb\n\tc\n```", 40), @"
-        «d:▐ »a«d:⇥»      b
-        «d:▐ ⇥»       c
+        «d:▐ a⇥      b»
+        «d:▐ ⇥       c»
         ");
     }
 
