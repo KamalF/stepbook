@@ -36,6 +36,33 @@ const WRAP_MARK: &str = "↪";
 /// The sidebar shows on terminals at least this wide.
 const SIDEBAR_SCREEN_WIDTH: u16 = 80;
 
+/// The backgrounds of the blocks that run, from the background color of
+/// the terminal: a little darker, and darker still for the selected block,
+/// so that blocks stand apart from the prose (spec 5.3).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Shades {
+    pub block: Color,
+    pub selected: Color,
+}
+
+impl Shades {
+    pub fn new((red, green, blue): (u8, u8, u8)) -> Shades {
+        // On a background this dark, a darker shade would not show.
+        let lighter = red.max(green).max(blue) < 20;
+        let shade = |step: u8| {
+            let value = |v: u8| match lighter {
+                true => v + step,
+                false => v.saturating_sub(step),
+            };
+            Color::Rgb(value(red), value(green), value(blue))
+        };
+        Shades {
+            block: shade(12),
+            selected: shade(20),
+        }
+    }
+}
+
 /// The state of a block that has run, or tried to (spec 6.2).
 #[derive(Clone, Debug, PartialEq)]
 pub enum Status {
@@ -101,6 +128,8 @@ pub struct View {
     pub question: Option<String>,
     /// The notification that the footer shows, in place of the keys.
     pub notice: Option<String>,
+    /// The backgrounds of blocks, if the terminal gave its own.
+    pub shades: Option<Shades>,
     statuses: Vec<Option<Status>>,
     /// Whether the program of each block is on the alternate screen.
     alternates: Vec<bool>,
@@ -131,6 +160,7 @@ impl View {
             blink: true,
             question: None,
             notice: None,
+            shades: None,
             statuses: vec![None; blocks],
             alternates: vec![false; blocks],
             outputs: vec![Rows::default(); blocks],
@@ -159,6 +189,22 @@ impl View {
         for (y, row) in (text.y..text.bottom()).zip(scroll..shown.len()) {
             let line = self.line(&shown, row, self.selected);
             frame.buffer_mut().set_line(text.x, y, &line, text.width);
+            let shaded = match shown.row(row) {
+                Row::Info(block, _) | Row::Code(block, _) => Some(block),
+                Row::Output(..) | Row::Page(_) => None,
+            };
+            if let (Some(shades), Some(block)) = (self.shades, shaded) {
+                let shade = match self.selected == Some(block) {
+                    true => shades.selected,
+                    false => shades.block,
+                };
+                // From the column after "▐", to the right edge of the text:
+                // the bar is the left edge of the block.
+                let x = text.x + text_width(&shown.page.prefixes[block]) as u16 + 1;
+                let width = text.right().saturating_sub(x);
+                let area = Rect::new(x, y, width, 1);
+                frame.buffer_mut().set_style(area, Style::new().bg(shade));
+            }
         }
         // In input mode, the cursor of the program shows in its output.
         if let Mode::Input(i) = self.mode
@@ -2030,6 +2076,44 @@ pub(crate) mod tests {
         │           │ ▐ «blue:echo»                                                           │
         └───────────┴──────────────────────────────────────────────────────────────────┘
         «r: NORMAL »  ↑↓ move  ↵ run  q quit
+        ");
+    }
+
+    #[test]
+    fn shades_are_darker_than_the_background_or_lighter_on_a_black_one() {
+        let shades = |rgb| {
+            let shades = Shades::new(rgb);
+            (shades.block, shades.selected)
+        };
+        let rgb = Color::Rgb;
+        assert_eq!(shades((40, 40, 40)), (rgb(28, 28, 28), rgb(20, 20, 20)));
+        assert_eq!(shades((0, 43, 54)), (rgb(0, 31, 42), rgb(0, 23, 34)));
+        assert_eq!(shades((0, 0, 0)), (rgb(12, 12, 12), rgb(20, 20, 20)));
+        assert_eq!(shades((19, 0, 0)), (rgb(31, 12, 12), rgb(39, 20, 20)));
+    }
+
+    #[test]
+    fn blocks_take_their_shade_from_the_column_after_the_gutter() {
+        let text = "- item\n\n  ```bash\n  ls\n  ```\n\n```bash\nls\n```\n\n```text\nx\n```\n";
+        let mut view = view(text);
+        view.shades = Some(Shades::new((40, 40, 40)));
+        view.set_output(1, output(&["out"]), SMALL);
+        // The selected block is darker. Output and other code keep the
+        // background of the terminal.
+        assert_snapshot!(screen(&view, 40, 14), @"
+        ┌ run.md ──────────────────────────────┐
+        │ • item                               │
+        │                                      │
+        │   «blue,b:▐»«blue,bg=#141414,b: »«bg=#141414,b:#1»«bg=#141414:                              » │
+        │   «blue,b:▐»«blue,bg=#141414,b: »«blue,bg=#141414:ls»«bg=#141414:                              » │
+        │                                      │
+        │ ▐«bg=#1c1c1c: »«bg=#1c1c1c,b:#2»«bg=#1c1c1c:                                » │
+        │ ▐«bg=#1c1c1c: »«blue,bg=#1c1c1c:ls»«bg=#1c1c1c:                                » │
+        │ «d:▕» out                                │
+        │                                      │
+        │ «d:▐ x»                                  │
+        │                                      │
+        └──────────────────────────────────────┘
         ");
     }
 

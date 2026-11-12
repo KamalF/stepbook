@@ -6,6 +6,7 @@ mod view;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal, Read, Write};
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -27,6 +28,7 @@ use ratatui::crossterm::terminal::{
 use ratatui::crossterm::{execute, queue};
 use ratatui::layout::Size;
 use ratatui::{DefaultTerminal, Terminal};
+use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::process::Signal;
 use signal_hook::consts::{SIGCHLD, SIGHUP, SIGINT, SIGQUIT, SIGTERM};
 
@@ -217,8 +219,12 @@ fn open(args: &Args) -> Result<Exit, String> {
     let session = run::Session::new(workspace, bash, state, file, log).map_err(fail)?;
     let mut terminal = set_up_terminal(session.workspace())
         .map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
+    let background = terminal_input()
+        .ok()
+        .and_then(|input| query_background(input.as_fd(), &mut std::io::stdout(), QUERY_WAIT));
     let title = args.file.file_name().unwrap_or(args.file.as_os_str());
-    let view = view::View::new(doc, title.to_string_lossy().into_owned());
+    let mut view = view::View::new(doc, title.to_string_lossy().into_owned());
+    view.shades = background.map(view::Shades::new);
     let mut app = App::new(view, session, crossbeam_channel::tick(TICK));
     std::thread::spawn(move || read_terminal(sender));
     let result = event_loop(&mut terminal, &mut app, &control);
@@ -270,6 +276,90 @@ fn set_up_terminal(workspace: &Path) -> std::io::Result<DefaultTerminal> {
         Terminal::new(CrosstermBackend::new(stdout))
     };
     set_up().inspect_err(|_| restore_terminal())
+}
+
+/// The input of the terminal, where crossterm reads the keys: stdin if it
+/// is a terminal, else /dev/tty.
+fn terminal_input() -> std::io::Result<OwnedFd> {
+    let stdin = std::io::stdin();
+    match stdin.is_terminal() {
+        true => stdin.as_fd().try_clone_to_owned(),
+        false => Ok(std::fs::File::open("/dev/tty")?.into()),
+    }
+}
+
+/// How long stepbook waits for the answers of the terminal at startup. A
+/// terminal answers the query of its device attributes at once: the wait
+/// ends there.
+const QUERY_WAIT: Duration = Duration::from_millis(500);
+
+/// The most bytes that stepbook reads while it waits for the answers.
+const MAX_ANSWERS: usize = 4096;
+
+/// Asks the terminal for its background color (OSC 11), then for its
+/// device attributes (DA1), and returns the color, as red, green and blue
+/// (spec 5.3). A terminal answers in order, and every terminal answers DA1:
+/// one that does not know OSC 11 gives no color, and stepbook waits no
+/// longer. The keys typed before the answers are lost: they would arrive
+/// mixed with them.
+fn query_background(
+    input: BorrowedFd,
+    output: &mut impl Write,
+    wait: Duration,
+) -> Option<(u8, u8, u8)> {
+    output.write_all(b"\x1b]11;?\x1b\\\x1b[c").ok()?;
+    output.flush().ok()?;
+    let end = Instant::now() + wait;
+    let mut answers = Vec::new();
+    let mut buffer = [0; 256];
+    while device_attributes_end(&answers).is_none() && answers.len() < MAX_ANSWERS {
+        let left = end.saturating_duration_since(Instant::now());
+        let timeout = Timespec::try_from(left).unwrap_or_default();
+        let mut fds = [PollFd::new(&input, PollFlags::IN)];
+        match rustix::event::poll(&mut fds, Some(&timeout)) {
+            Ok(0) => break,
+            Ok(_) => match rustix::io::read(input, &mut buffer) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => answers.extend_from_slice(&buffer[..n]),
+            },
+            Err(rustix::io::Errno::INTR) => {}
+            Err(_) => break,
+        }
+    }
+    parse_background(&answers)
+}
+
+/// Where the answer to DA1 ends in `bytes`, if they hold one:
+/// `ESC [ ?`, then digits and semicolons, then `c`.
+fn device_attributes_end(bytes: &[u8]) -> Option<usize> {
+    let escapes = (0..bytes.len()).filter(|&i| bytes[i] == 0x1b);
+    escapes.into_iter().find_map(|i| {
+        let rest = bytes[i..].strip_prefix(b"\x1b[?")?;
+        let end = rest
+            .iter()
+            .position(|b| !b.is_ascii_digit() && *b != b';')?;
+        (rest[end] == b'c').then_some(i + 3 + end + 1)
+    })
+}
+
+/// The color in the answer to OSC 11 in `bytes`, before the answer to DA1:
+/// `ESC ] 11 ; rgb:R/G/B`, ended by BEL or by `ESC \`, where R, G and B
+/// have 1 to 4 hex digits each.
+fn parse_background(bytes: &[u8]) -> Option<(u8, u8, u8)> {
+    let bytes = &bytes[..device_attributes_end(bytes).unwrap_or(bytes.len())];
+    let start = bytes.windows(5).position(|w| w == b"\x1b]11;")? + 5;
+    let rest = &bytes[start..];
+    let end = rest.iter().position(|&b| b == 0x07 || b == 0x1b)?;
+    let text = std::str::from_utf8(&rest[..end]).ok()?;
+    let mut values = text.strip_prefix("rgb:")?.split('/').map(|hex| {
+        let ok = (1..=4).contains(&hex.len()) && hex.bytes().all(|b| b.is_ascii_hexdigit());
+        let value = u32::from_str_radix(hex, 16).ok().filter(|_| ok)?;
+        // A value of n digits is a fraction of 16^n - 1.
+        let max = (1u32 << (4 * hex.len())) - 1;
+        u8::try_from((value * 255 + max / 2) / max).ok()
+    });
+    let rgb = (values.next()??, values.next()??, values.next()??);
+    values.next().is_none().then_some(rgb)
 }
 
 /// Ignores errors: after a SIGHUP, the terminal is gone.
@@ -1113,6 +1203,78 @@ mod tests {
     use super::*;
 
     const SIZE: Size = Size::new(80, 24);
+
+    /// The answer of `query_background` to the bytes that the terminal
+    /// sends, and the bytes that it writes.
+    fn background(answers: &[u8], wait: Duration) -> (Option<(u8, u8, u8)>, Vec<u8>) {
+        let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
+        terminal.write_all(answers).unwrap();
+        let mut output = Vec::new();
+        let color = query_background(input.as_fd(), &mut output, wait);
+        (color, output)
+    }
+
+    const DA1: &[u8] = b"\x1b[?62;22c";
+
+    #[test]
+    fn the_background_comes_from_the_answer_to_osc_11_before_da1() {
+        let (color, output) = background(
+            b"\x1b]11;rgb:2828/2828/2828\x1b\\\x1b[?62;22c",
+            Duration::from_secs(5),
+        );
+        assert_eq!(color, Some((40, 40, 40)));
+        assert_eq!(output, b"\x1b]11;?\x1b\\\x1b[c");
+        // Keys typed ahead come before the answers, and are lost.
+        let answers = [b"jj\x1b]11;rgb:ff/80/0\x07".as_slice(), DA1].concat();
+        assert_eq!(
+            background(&answers, Duration::from_secs(5)).0,
+            Some((255, 128, 0))
+        );
+    }
+
+    #[test]
+    fn without_an_answer_to_osc_11_the_wait_ends_with_da1() {
+        let start = Instant::now();
+        assert_eq!(background(DA1, Duration::from_secs(10)).0, None);
+        assert!(start.elapsed() < Duration::from_secs(5));
+        // A terminal that answers nothing gives no color at the end of the
+        // wait.
+        assert_eq!(background(b"", Duration::from_millis(50)).0, None);
+    }
+
+    #[test]
+    fn the_answer_to_osc_11_has_1_to_4_hex_digits_per_color() {
+        let parse = |answer: &str| parse_background(format!("\x1b]11;{answer}\x07").as_bytes());
+        assert_eq!(parse("rgb:f/8/0"), Some((255, 136, 0)));
+        assert_eq!(parse("rgb:fff/800/000"), Some((255, 128, 0)));
+        assert_eq!(parse("rgb:FFFF/0000/7fff"), Some((255, 0, 127)));
+        for answer in [
+            "rgb:28/28",
+            "rgb:28/28/28/28",
+            "rgb:12345/0/0",
+            "rgb:/0/0",
+            "rgb:+f/0/0",
+            "rgb:zz/0/0",
+            "rgba:28/28/28/ff",
+            "#282828",
+        ] {
+            assert_eq!(parse(answer), None, "{answer}");
+        }
+        // An OSC 11 after the answer to DA1 is not an answer.
+        assert_eq!(
+            parse_background(&[DA1, b"\x1b]11;rgb:0/0/0\x07"].concat()),
+            None
+        );
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn any_bytes_parse_without_a_panic(bytes in proptest::collection::vec(proptest::prelude::any::<u8>(), 0..64)) {
+            let _ = parse_background(&bytes);
+            let answer = [b"\x1b]11;rgb:".as_slice(), &bytes, b"\x07"].concat();
+            let _ = parse_background(&answer);
+        }
+    }
 
     fn parse(args: &[&str]) -> Result<Command, String> {
         parse_args(args.iter().map(OsString::from))

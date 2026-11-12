@@ -104,7 +104,14 @@ systemctl --user restart api
 
 Prose takes at most 100 columns, after the prefixes of its lists and quotes: a paragraph, a heading with its rule, and a thematic break. On a wide terminal, longer lines of prose are hard to read. Code, output and tables take the full width of the view: a program prints to the width of its terminal.
 
-All colors come from the terminal's 16-color palette, so they follow the terminal's theme. stepbook sets no background color.
+All colors come from the terminal's 16-color palette, so they follow the terminal's theme, except the background of blocks.
+
+Blocks have a background a little darker than the background of the terminal, so that they stand apart from the prose. The selected block has a darker one. The shade covers the info line and the code, from the column after the `▐` to the right edge of the text: the bar is the left edge of the block. The output keeps the background of the terminal, and so does code that cannot run.
+
+- The 16 colors have no shade close to the background: in Gruvbox, color 0 is the background itself. So at startup, stepbook asks the terminal for its background color (OSC 11), then for its device attributes (DA1). A terminal answers in order, and every terminal answers DA1, so stepbook waits for that answer, and at most 0.5 s.
+- The shade of a block takes 12 off each of the red, green and blue values of the background, from 0 to 255, and the shade of the selected block takes 20: `#282828` gives `#1c1c1c` and `#141414`. If the three values are all under 20, the shades add 12 and 20 instead: a darker shade would not show.
+- If the terminal gives no color, blocks have no background.
+- The keys typed before the answers arrive are lost: they come mixed with the answers.
 
 No nesting depth can crash stepbook: it walks the document without recursion (upmd issue S9, see 18). Prefixes show only the innermost 10 levels of blockquotes and list items, and they take at most half the width of the view: the outer levels go first, and the innermost level always stays. The text and the code keep room in the view, and a deep item keeps its marker.
 
@@ -412,7 +419,7 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 
 | Module | Role |
 |---|---|
-| `main.rs` | Arguments, terminal setup and restore, the event loop. |
+| `main.rs` | Arguments, terminal setup and restore, the query of the background color, the event loop. |
 | `doc.rs` | Markdown to render model and blocks, attribute parsing, block keys, reload matching. |
 | `view.rs` | Layout and rendering: sidebar, document view, footer, dialogs, full-screen view. |
 | `run.rs` | Workspace, wrapper script, PTY spawn, reader threads, state file, diff and merge. |
@@ -595,3 +602,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The code of a block that cannot run is dim, as its gutter is (5.3), at Kamal's choice: it looked like the code of a block | 2026-11-12 |
 | Output rows have a dim `▕` in the column of the gutter (6.3), at Kamal's choice: output could print rows that passed for the code of a nested block | 2026-11-12 |
 | A question in the footer always shows its `(y/N)` (7.4): at 45 columns, the question to quit lost it | 2026-11-12 |
+| Blocks have a background darker than the background of the terminal, which stepbook asks with OSC 11, and the selected block a darker one (5.3), at Kamal's choice: blocks blended into the prose, and the `▐` alone did not set them apart. This ends the rule that stepbook sets no background color | 2026-11-12 |
