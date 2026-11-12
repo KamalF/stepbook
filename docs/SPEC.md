@@ -391,7 +391,7 @@ Blocks are matched by key between the old and the new file. Among blocks with th
 
 ### 12.1 Format
 
-stepbook appends to the log file, which it creates with mode 0600. It opens the log at startup: if it cannot, it does not start. The log must be a regular file of the user, with no other hard link, and not a symbolic link, a dangling one included: a runbook from someone else can come with a `run.log` that links to `~/.ssh/authorized_keys` or `~/.bashrc`, and each run would append its output there. In a directory that other users can write, one of them could also make the log first, as their own file or as a FIFO, and read the output. A FIFO fails at once, with or without a reader. Each run writes one section:
+stepbook appends to the log file, which it creates with mode 0600. It opens the log at startup: if it cannot, it does not start. The log must be a regular file of the user, with no other hard link, and not a symbolic link, a dangling one included: a runbook from someone else can come with a `run.log` that links to `~/.ssh/authorized_keys` or `~/.bashrc`, and each run would append its output there. In a directory that other users can write, one of them could also make the log first, as their own file or as a FIFO, and read the output. A FIFO fails at once, with or without a reader. stepbook does not check the directory of the log: a user who can rename its entries, in a directory without the sticky bit, can replace the log after the start, but can replace the runbook there too, whose code the user runs. Each run writes one section:
 
 ```text
 === START restart 13:03:07Z
@@ -629,6 +629,13 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The log must be a regular file of the user, with no other hard link, and not a symbolic link (12.1): the default log of a runbook from someone else could link to `~/.ssh/authorized_keys`, and each run would append its output there | 2026-11-12 |
 | A line of output that starts with `=== START `, `=== END ` or `=== CONTINUE ` gets a space first in the log (12.1): a program could print an `END` line that `watch.sh` took for the end of a run | 2026-11-12 |
 | After a reload that moves the selection to another block, or that changes the code of the selected block, keys pause for 1 s, unless they go to a program (10): an `Enter` typed as another writer saved the file ran a block that the user had not seen | 2026-11-12 |
+| Among blocks with the same key, the n-th block of the new file matches the n-th block of the old file (10): two unnamed blocks with the same code keep their own outputs | 2026-11-12 |
+| The summary of a reload compares with the file before: a block that a reload removed while it runs counts as removed once, and a block that takes its key back counts as new (10) | 2026-11-12 |
+| A question about a block follows it through a reload, with the label that the block has after it; a `Re-run` question ends if the reload changes the code of its block (10): `y` ran the block labelled `#3` under the question `Re-run #2?`, and new code under the old question | 2026-11-12 |
+| `i`, and `o` on a running block, end the notification of the document view (6.1): `already running: i to type, o to view` hid the keys that leave input mode and the full-screen view | 2026-11-12 |
+| Through a link, the watcher watches the file that the link names (10): a write through the link never reloaded | 2026-11-12 |
+| The read of a reload never blocks the main thread: the runbook is checked by its path, opened with O_NONBLOCK, then checked again (10): a FIFO renamed onto it, or a lease on it, stopped stepbook in raw mode | 2026-11-12 |
+| The log reads the switches of the alternate screen as vt100 does: modes 47 and 1049, and `ESC c` leaves it (12.1): with mode 1047, the log left out output that the view showed, and after a reset on the alternate screen, the rest of the run | 2026-11-12 |
 | The key of an unnamed block is its code, not a hash of it (3): it is exact, and needs no hash function | 2026-11-12 |
 | A block that a reload removes while it runs stays at the end of the document too, not only in the sidebar (10): `i` and the output under the block need a place in the document view | 2026-11-12 |
 | A changed block shows `~` in the sidebar, and keeps the mark while its code differs from the code of its last run (6.2, 10) | 2026-11-12 |
