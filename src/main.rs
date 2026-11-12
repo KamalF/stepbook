@@ -5,7 +5,7 @@ mod term;
 mod view;
 mod watch;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
@@ -15,7 +15,7 @@ use std::process::ExitCode;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime};
 
-use crossbeam_channel::{Receiver, RecvError, Select, Sender};
+use crossbeam_channel::{Receiver, RecvError, Select, Sender, TrySendError};
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{
@@ -274,7 +274,7 @@ fn open(args: &Args) -> Result<Exit, String> {
     std::mem::forget(terminal);
     // The runs that stepbook stopped send their last output and their end
     // now: their section in the log ends with its END line (spec 11).
-    app.drain_runs(LOG_WAIT);
+    app.drain_runs(&control, LOG_WAIT);
     drop(app.log.take());
     if let Some(thread) = log {
         let _ = thread.join();
@@ -565,6 +565,8 @@ struct App {
     stopping: Option<Instant>,
     /// The thread that writes the log, unless there is no log.
     log: Option<Sender<log::Message>>,
+    /// The messages that wait for room in the channel of the log.
+    log_queue: VecDeque<log::Message>,
     /// The runs that started, which give each run its ID in the log.
     runs_started: u64,
     /// The runbook, and its text when stepbook last read it (spec 10).
@@ -634,6 +636,7 @@ impl App {
             paused_until: None,
             stopping: None,
             log: None,
+            log_queue: VecDeque::new(),
             runs_started: 0,
             path: PathBuf::new(),
             text: String::new(),
@@ -643,44 +646,67 @@ impl App {
 
     /// The next event, a control event first, until `deadline`, or with no
     /// end. An error means that the thread that reads the keys stopped.
+    /// While the channel of the log is full, the runs that write to the
+    /// log wait: their readers stop, and so do their programs.
     fn next(
-        &self,
+        &mut self,
         control: &Receiver<Control>,
         deadline: Option<Instant>,
     ) -> Option<Result<Incoming, RecvError>> {
-        if let Ok(event) = control.try_recv() {
-            return Some(Ok(Incoming::Control(event)));
-        }
-        let runs: Vec<_> = self.runs().collect();
-        // Not biased among the runs, so that no run's output waits for
-        // another's.
-        let mut select = Select::new();
-        select.recv(control);
-        // Without runs, the tick would only wake the loop. With runs, it
-        // comes right after the control channel.
-        if !runs.is_empty() {
-            select.recv(&self.ticks);
-        }
-        for (_, run) in &runs {
-            select.recv(&run.events);
-        }
-        let operation = match deadline {
-            Some(deadline) => select.select_deadline(deadline).ok()?,
-            None => select.select(),
-        };
-        Some(match operation.index() {
-            0 => operation.recv(control).map(Incoming::Control),
-            1 => {
-                let _ = operation.recv(&self.ticks);
-                Ok(Incoming::Tick)
+        loop {
+            if let Ok(event) = control.try_recv() {
+                return Some(Ok(Incoming::Control(event)));
             }
-            n => {
-                let (i, run) = runs[n - 2];
-                let event = operation.recv(&run.events);
-                let event = event.expect("a reader sends the exit status before it stops");
-                Ok(Incoming::Run(i, event))
+            let full = (self.log.as_ref()).filter(|_| !self.log_queue.is_empty());
+            let runs: Vec<_> = (self.ran.iter())
+                .filter(|(_, ran)| full.is_none() || ran.log_id.is_none())
+                .filter_map(|(&i, ran)| Some((i, ran.run.as_ref()?)))
+                .collect();
+            // Not biased among the runs, so that no run's output waits for
+            // another's.
+            let mut select = Select::new();
+            select.recv(control);
+            // Without runs, the tick would only wake the loop. With runs, it
+            // comes right after the control channel.
+            let running = self.ran.values().any(|ran| ran.run.is_some());
+            if running {
+                select.recv(&self.ticks);
             }
-        })
+            if let Some(log) = full {
+                select.send(log);
+            }
+            for (_, run) in &runs {
+                select.recv(&run.events);
+            }
+            let operation = match deadline {
+                Some(deadline) => select.select_deadline(deadline).ok()?,
+                None => select.select(),
+            };
+            let send = 1 + usize::from(running);
+            let first_run = send + usize::from(full.is_some());
+            match (operation.index(), full) {
+                (0, _) => return Some(operation.recv(control).map(Incoming::Control)),
+                (1, _) if running => {
+                    let _ = operation.recv(&self.ticks);
+                    return Some(Ok(Incoming::Tick));
+                }
+                (n, Some(log)) if n == send => {
+                    let message = self.log_queue.pop_front();
+                    let message = message.expect("the log is full only with a queue");
+                    match operation.send(log, message) {
+                        Ok(()) => send_queued(log, &mut self.log_queue),
+                        // The thread of the log ended.
+                        Err(_) => self.log_queue.clear(),
+                    }
+                }
+                (n, _) => {
+                    let (i, run) = runs[n - first_run];
+                    let event = operation.recv(&run.events);
+                    let event = event.expect("a reader sends the exit status before it stops");
+                    return Some(Ok(Incoming::Run(i, event)));
+                }
+            }
+        }
     }
 
     /// The blocks that run, with their runs.
@@ -1034,10 +1060,10 @@ impl App {
     /// a block never runs twice at a time (upmd issue K5).
     fn start(&mut self, i: usize, size: Size) {
         debug_assert!(!self.ran.get(&i).is_some_and(|ran| ran.run.is_some()));
-        let block = &self.view.doc.blocks[i];
+        let code = self.view.doc.blocks[i].code.clone();
         let (columns, rows) = self.view.pty_size(i, size);
         let label = self.view.doc.label(i);
-        let status = match self.session.start(&block.code, &label, columns, rows) {
+        let status = match self.session.start(&code, &label, columns, rows) {
             Ok(run) => {
                 let screen = run.screen.clone();
                 let started = Instant::now();
@@ -1045,7 +1071,7 @@ impl App {
                 self.runs_started += 1;
                 // The header of old runbooks writes the section itself (spec
                 // 12.3).
-                let header = block.code.starts_with("exec > >(tee -a ");
+                let header = code.starts_with("exec > >(tee -a ");
                 let log_id = (!header).then_some(self.runs_started);
                 if let Some(id) = log_id {
                     let time = SystemTime::now();
@@ -1063,7 +1089,7 @@ impl App {
                         started,
                         ended: None,
                         log_id,
-                        code: block.code.clone(),
+                        code,
                     },
                 );
                 view::Status::Running(Duration::ZERO)
@@ -1209,24 +1235,33 @@ impl App {
         }
     }
 
-    /// Sends a message to the thread of the log, if there is a log.
-    fn log(&self, message: log::Message) {
+    /// Sends a message to the thread of the log, if there is a log. The
+    /// message waits in the queue while the channel is full: the main
+    /// thread never blocks on a slow disk (spec 13).
+    fn log(&mut self, message: log::Message) {
         if let Some(log) = &self.log {
-            let _ = log.send(message);
+            self.log_queue.push_back(message);
+            send_queued(log, &mut self.log_queue);
         }
     }
 
     /// After the event loop: reads the last output and the end of each run
-    /// that has not ended, for up to `wait`, so that the log gets them.
-    fn drain_runs(&mut self, wait: Duration) {
+    /// that writes to the log, for up to `wait`, so that the log gets them.
+    fn drain_runs(&mut self, control: &Receiver<Control>, wait: Duration) {
         let deadline = Instant::now() + wait;
-        let running: Vec<usize> = self.runs().map(|(i, _)| i).collect();
-        for i in running {
-            while let Some(run) = self.ran.get(&i).and_then(|ran| ran.run.as_ref()) {
-                let Ok(event) = run.events.recv_deadline(deadline) else {
+        let logs = |ran: &Ran| ran.run.is_some() && ran.log_id.is_some();
+        while self.log.is_some() && self.ran.values().any(logs) {
+            match self.next(control, Some(deadline)) {
+                Some(Ok(Incoming::Run(i, event))) => self.read(i, event),
+                Some(Ok(_)) => {}
+                Some(Err(_)) | None => break,
+            }
+        }
+        if let Some(log) = &self.log {
+            for message in self.log_queue.drain(..) {
+                if log.send_deadline(message, deadline).is_err() {
                     break;
-                };
-                self.read(i, event);
+                }
             }
         }
     }
@@ -1332,6 +1367,18 @@ impl App {
         for i in running {
             self.resize_pty(i, size);
             self.changed.insert(i);
+        }
+    }
+}
+
+/// Sends the messages of `queue` to the thread of the log while its
+/// channel has room.
+fn send_queued(log: &Sender<log::Message>, queue: &mut VecDeque<log::Message>) {
+    while let Some(message) = queue.pop_front() {
+        match log.try_send(message) {
+            Ok(()) => {}
+            Err(TrySendError::Full(message)) => return queue.push_front(message),
+            Err(TrySendError::Disconnected(_)) => return queue.clear(),
         }
     }
 }
@@ -2023,10 +2070,50 @@ mod tests {
         for (_, run) in app.runs() {
             run.signal(Signal::KILL);
         }
-        app.drain_runs(Duration::from_secs(10));
+        let (_sender, control) = crossbeam_channel::unbounded();
+        app.drain_runs(&control, Duration::from_secs(10));
         let lines = log_lines(&mut app, thread, &path);
         assert_eq!(lines[1], "started");
         assert!(lines[2].starts_with("=== END long rc=137 "), "{lines:?}");
+    }
+
+    #[test]
+    fn a_full_log_holds_the_runs_that_write_to_it_and_loses_no_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\nseq 100000\n```\n", tmp.path());
+        // A channel that nothing reads yet, as with a disk that hangs.
+        let (log, messages) = crossbeam_channel::bounded(1);
+        app.log = Some(log);
+        enter(&mut app, SIZE);
+        let (_sender, control) = crossbeam_channel::unbounded();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut reads = 0;
+        while let Some(incoming) = app.next(&control, Some(deadline)) {
+            if let Ok(Incoming::Run(i, event)) = incoming {
+                app.read(i, event);
+                reads += 1;
+            }
+        }
+        // The START line fills the channel, and the first output waits:
+        // the run gets no other read, and its program waits too.
+        assert_eq!((reads, app.log_queue.len()), (1, 1));
+        assert!(running(&app));
+        let thread = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            for message in messages {
+                if let log::Message::Output { bytes, .. } = message {
+                    output.extend(bytes);
+                }
+            }
+            output
+        });
+        read_until(&mut app, SIZE, |app| !running(app));
+        // The messages that wait in the queue, as at the end of stepbook.
+        app.drain_runs(&control, Duration::from_secs(10));
+        drop(app.log.take());
+        let output = String::from_utf8(thread.join().unwrap()).unwrap();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!((lines.len(), lines.last()), (100_000, Some(&"100000")));
     }
 
     #[test]

@@ -12,6 +12,12 @@ use crossbeam_channel::Sender;
 /// The line that stands for the output of a run on the alternate screen.
 const FULL_SCREEN: &str = "[full-screen program output not logged]\n";
 
+/// Messages in flight to the thread of the log. While they all wait, the
+/// main thread reads no output of the runs that write to the log: a slow
+/// disk slows their programs, as a slow view does, and the output in
+/// memory stays bounded (spec 13).
+const MESSAGES: usize = 64;
+
 /// What the main thread sends to the thread of the log.
 pub enum Message {
     /// Run `id`, of the block named `name`, started at `time`.
@@ -46,7 +52,7 @@ pub fn spawn(
     file: File,
     mut failed: impl FnMut(std::io::Error) + Send + 'static,
 ) -> (Sender<Message>, JoinHandle<()>) {
-    let (sender, receiver) = crossbeam_channel::unbounded();
+    let (sender, receiver) = crossbeam_channel::bounded(MESSAGES);
     let thread = std::thread::spawn(move || {
         let mut sections = Sections::new(file);
         let mut ok = true;
