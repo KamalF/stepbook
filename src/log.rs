@@ -2,7 +2,7 @@
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime};
@@ -49,11 +49,32 @@ pub enum Message {
 }
 
 /// Opens the log at `path` to append to it, and creates it with mode 0600
-/// (spec 12.1).
+/// (spec 12.1). The log must be a regular file of the user, not a link: a
+/// runbook from someone else can come with a `run.log` that links to
+/// `~/.ssh/authorized_keys`, and another user can make the log first in
+/// a directory that all can write. A FIFO fails at once, with no reader
+/// too.
 pub fn open(path: &Path) -> std::io::Result<File> {
-    (std::fs::OpenOptions::new().append(true).create(true))
+    use rustix::fs::OFlags;
+    let flags = (OFlags::NOFOLLOW | OFlags::NONBLOCK).bits();
+    let file = (std::fs::OpenOptions::new().append(true).create(true))
         .mode(0o600)
+        .custom_flags(flags as i32)
         .open(path)
+        .map_err(
+            |e| match e.raw_os_error() == Some(rustix::io::Errno::LOOP.raw_os_error()) {
+                true => std::io::Error::other("it is a link"),
+                false => e,
+            },
+        )?;
+    let meta = file.metadata()?;
+    if !meta.is_file() {
+        return Err(std::io::Error::other("it is not a regular file"));
+    }
+    if meta.uid() != rustix::process::geteuid().as_raw() {
+        return Err(std::io::Error::other("it belongs to another user"));
+    }
+    Ok(file)
 }
 
 /// Starts the thread that writes the log to `file`, and returns the sender
@@ -665,6 +686,34 @@ b3
         open(&new).unwrap();
         let mode = std::fs::metadata(&new).unwrap().permissions().mode();
         assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn the_log_is_never_a_link_a_fifo_or_a_file_of_another_user() {
+        let tmp = tempfile::tempdir().unwrap();
+        let error = |path: &Path| open(path).unwrap_err().to_string();
+        // A link, to a file or to nothing: the target stays as it was.
+        let target = tmp.path().join("authorized_keys");
+        let link = tmp.path().join("run.log");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert_eq!(error(&link), "it is a link");
+        assert!(!target.exists());
+        std::fs::write(&target, "key\n").unwrap();
+        assert_eq!(error(&link), "it is a link");
+        // A FIFO fails at once, with no reader.
+        let fifo = tmp.path().join("fifo.log");
+        let mode = rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR;
+        rustix::fs::mknodat(rustix::fs::CWD, &fifo, rustix::fs::FileType::Fifo, mode, 0).unwrap();
+        assert!(open(&fifo).is_err());
+        // And with a reader, which would read the output of the runs.
+        let reader = (std::fs::OpenOptions::new().read(true))
+            .custom_flags(rustix::fs::OFlags::NONBLOCK.bits() as i32)
+            .open(&fifo)
+            .unwrap();
+        assert_eq!(error(&fifo), "it is not a regular file");
+        drop(reader);
+        // /dev/null belongs to root.
+        assert_eq!(error(Path::new("/dev/null")), "it is not a regular file");
     }
 
     #[test]
