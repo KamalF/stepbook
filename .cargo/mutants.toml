@@ -5,6 +5,8 @@ gitignore = true
 
 # Mutants that no test should catch. A run then shows only new gaps.
 exclude_re = [
+    # The flags of inotify are distinct bits: ^ gives the same value as |.
+    "watch.rs:\\d+:\\d+: replace \\| with \\^ in spawn",
     # A selected block that ends at the top of the screen is under an
     # output above the top too, which keeps the view in place either way.
     "view.rs:\\d+:75: replace > with >= in View::scroll_after",

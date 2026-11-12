@@ -12,18 +12,15 @@ use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 /// an editor can write it in several steps.
 pub const SETTLE: Duration = Duration::from_millis(300);
 
-/// Watches the directory of `file`, and calls `changed` once the file has
-/// stayed as it is for `SETTLE` after a change. The watch is on the
-/// directory, because editors often replace a file with a rename. The
-/// thread ends when `changed` returns false.
+/// Watches the directory of `file`, an absolute path, and calls `changed`
+/// once the file has stayed as it is for `SETTLE` after a change. The
+/// watch is on the directory, because editors often replace a file with a
+/// rename. The thread ends when `changed` returns false.
 pub fn spawn(
     file: &Path,
     mut changed: impl FnMut() -> bool + Send + 'static,
 ) -> std::io::Result<()> {
-    let dir = match file.parent() {
-        Some(dir) if !dir.as_os_str().is_empty() => dir,
-        _ => Path::new("."),
-    };
+    let dir = file.parent().unwrap_or(file);
     let name: OsString = file.file_name().unwrap_or_default().to_owned();
     let fd = inotify::init(CreateFlags::CLOEXEC | CreateFlags::NONBLOCK)?;
     // A write ends with CLOSE_WRITE; a rename onto the name is MOVED_TO.

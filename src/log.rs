@@ -346,6 +346,12 @@ mod tests {
             clean(&[b"$ vim\x1b[?1049h"]),
             format!("$ vim\n{FULL_SCREEN}")
         );
+        // Other modes, and the same numbers without "?", are not that
+        // screen.
+        assert_eq!(
+            clean(&[b"\x1b[?25hshown\n\x1b[1049hseen\n"]),
+            "shown\nseen\n"
+        );
     }
 
     fn time(seconds: u64) -> SystemTime {

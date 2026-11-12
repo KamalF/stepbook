@@ -1733,6 +1733,8 @@ mod tests {
             (key(KeyCode::Char('i')), Some(Action::Input)),
             (key(KeyCode::Char('o')), Some(Action::Output)),
             (ctrl('o'), None),
+            (ctrl('r'), Some(Action::Reload)),
+            (key(KeyCode::Char('r')), None),
             (key(KeyCode::Char('x')), None),
         ];
         for (key, expected) in cases {
@@ -1904,7 +1906,7 @@ mod tests {
             fence("new", "true"),
         ]
         .concat();
-        std::fs::write(&app.path, second).unwrap();
+        std::fs::write(&app.path, &second).unwrap();
         assert_eq!(app.handle(&ctrl('r'), SIZE), None);
         assert_eq!(
             app.view.notice.as_deref(),
@@ -1926,6 +1928,19 @@ mod tests {
         );
         assert!(app.view.changed(0) && !app.view.changed(1));
         assert!(app.view.status(2).is_none());
+        // A question follows its block, and goes with it. The next key
+        // answers a question: a change of the file reloads it.
+        key(&mut app, KeyCode::Char('k'));
+        enter(&mut app, SIZE);
+        assert_eq!(app.question, Some(Question::Rerun(0)));
+        std::fs::write(&app.path, [fence("x", "true"), second.clone()].concat()).unwrap();
+        app.reload(SIZE);
+        assert_eq!(app.question, Some(Question::Rerun(1)));
+        std::fs::write(&app.path, fence("a", "echo a")).unwrap();
+        app.reload(SIZE);
+        assert_eq!((&app.question, &app.view.question), (&None, &None));
+        std::fs::write(&app.path, &second).unwrap();
+        app.reload(SIZE);
         // A run of b clears its mark, and a reload with no change says so.
         key(&mut app, KeyCode::Char('k'));
         enter(&mut app, SIZE);
@@ -1939,11 +1954,30 @@ mod tests {
     #[test]
     fn a_block_that_a_reload_removes_stays_until_its_run_ends() {
         let tmp = tempfile::tempdir().unwrap();
-        let mut app = app_on_file(&fence("long", "sleep 0.5; echo done"), tmp.path());
+        let first = [
+            fence("first", "true"),
+            fence("long", "sleep 0.5; echo done"),
+        ]
+        .concat();
+        let mut app = app_on_file(&first, tmp.path());
+        key(&mut app, KeyCode::Char('j'));
         enter(&mut app, SIZE);
+        // The full-screen view of the block follows it, through a change
+        // of the file: its keys go to the program.
+        key(&mut app, KeyCode::Char('o'));
+        std::fs::write(&app.path, "Text.\n").unwrap();
+        app.reload(SIZE);
+        assert!(matches!(&app.view.mode, view::Mode::Full(full) if full.block == 0));
+        app.handle(&ctrl('o'), SIZE);
+        // The removed block keeps its own code.
+        let (lines, blocks) = app.view.rows(60);
+        let code = lines[blocks[0].clone()].iter().map(Line::to_string);
+        assert!(code.into_iter().any(|line| line.contains("sleep 0.5")));
+        std::fs::write(&app.path, first.replace("first", "again")).unwrap();
+        app.handle(&ctrl('r'), SIZE);
         std::fs::write(&app.path, "Text.\n").unwrap();
         app.handle(&ctrl('r'), SIZE);
-        assert_eq!(app.view.notice.as_deref(), Some("reloaded: 1 removed"));
+        assert_eq!(app.view.notice.as_deref(), Some("reloaded: 2 removed"));
         assert_eq!(app.view.doc.blocks.len(), 1);
         assert_eq!(app.view.doc.blocks[0].problem, Some(doc::REMOVED));
         assert!(running(&app));
