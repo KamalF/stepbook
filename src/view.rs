@@ -426,10 +426,17 @@ impl View {
 
     /// Takes the document of a reload (spec 10). For each block of `doc`,
     /// `matches` gives the block that it was, if any, and `changed`
-    /// whether its code changed since its run. The state of each block
-    /// follows it, and the selection stays on its block, or moves to the
-    /// next block if a reload removed it.
-    pub fn reload(&mut self, doc: Document, matches: &[Option<usize>], changed: Vec<bool>) {
+    /// whether its code changed since its run; `moves` is the inverse of
+    /// `matches`. The state of each block follows it, and the selection
+    /// stays on its block, or moves to the next block if a reload removed
+    /// it.
+    pub fn reload(
+        &mut self,
+        doc: Document,
+        matches: &[Option<usize>],
+        moves: &[Option<usize>],
+        changed: Vec<bool>,
+    ) {
         fn moved<T: Default>(old: &mut [T], matches: &[Option<usize>]) -> Vec<T> {
             let take = |i: &Option<usize>| i.map(|i| std::mem::take(&mut old[i]));
             matches
@@ -438,21 +445,18 @@ impl View {
                 .map(Option::unwrap_or_default)
                 .collect()
         }
-        let new = |old: usize| matches.iter().position(|&m| m == Some(old));
         self.selected = match self.selected {
             // Its block, else the next block still there, else the last.
-            Some(s) => (s..self.doc.blocks.len())
-                .find_map(new)
+            Some(s) => moves[s..]
+                .iter()
+                .find_map(|&j| j)
                 .or(matches.len().checked_sub(1)),
             None => (!matches.is_empty()).then_some(0),
         };
-        self.mode = match &self.mode {
-            Mode::Input(i) => new(*i).map_or(Mode::Normal, Mode::Input),
-            Mode::Full(full) => match new(full.block) {
-                Some(block) => Mode::Full(Full {
-                    block,
-                    ..full.clone()
-                }),
+        self.mode = match std::mem::replace(&mut self.mode, Mode::Normal) {
+            Mode::Input(i) => moves[i].map_or(Mode::Normal, Mode::Input),
+            Mode::Full(full) => match moves[full.block] {
+                Some(block) => Mode::Full(Full { block, ..full }),
                 None => Mode::Normal,
             },
             Mode::Normal => Mode::Normal,

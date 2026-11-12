@@ -136,6 +136,18 @@ pub fn match_blocks(old: &[Block], new: &[Block]) -> Vec<Option<usize>> {
     matched.collect()
 }
 
+/// The inverse of `matches`, the result of `match_blocks`: for each of the
+/// `old` blocks, the block that matches it, if any.
+pub fn moves(matches: &[Option<usize>], old: usize) -> Vec<Option<usize>> {
+    let mut moves = vec![None; old];
+    for (j, &i) in matches.iter().enumerate() {
+        if let Some(i) = i {
+            moves[i] = Some(j);
+        }
+    }
+    moves
+}
+
 pub fn parse(text: &str) -> Document {
     parse_with(Builder::default(), text)
 }

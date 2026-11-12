@@ -1123,39 +1123,34 @@ impl App {
         match read_runbook(&self.path) {
             Ok(text) => {
                 self.text = text;
-                self.apply(size, true);
+                let summary = self.apply(size);
+                self.notify(summary);
             }
             Err(message) => self.notify(format!("no reload: {message}")),
         }
     }
 
-    /// Takes the blocks of `self.text`. Each block keeps the output and the
-    /// result of the block that it matches. A block that the text removed
-    /// stays at the end while it runs. If `report`, the footer gives a
-    /// summary (spec 10).
-    fn apply(&mut self, size: Size, report: bool) {
+    /// Takes the blocks of `self.text`, and returns the summary of the
+    /// changes for the footer. Each block keeps the output and the result
+    /// of the block that it matches. A block that the text removed stays at
+    /// the end while it runs (spec 10).
+    fn apply(&mut self, size: Size) -> String {
         let old = &self.view.doc;
         let mut doc = doc::parse(&self.text);
         let mut matches = doc::match_blocks(&old.blocks, &doc.blocks);
-        let kept: BTreeSet<usize> = matches.iter().flatten().copied().collect();
-        let removed: Vec<usize> = (0..old.blocks.len())
-            .filter(|i| !kept.contains(i))
-            .collect();
-        for &i in &removed {
-            if self.view.running(i) {
+        let mut moves = doc::moves(&matches, old.blocks.len());
+        let new = matches.iter().filter(|m| m.is_none()).count();
+        let changed = (matches.iter().zip(&doc.blocks))
+            .filter(|(m, block)| m.is_some_and(|i| old.blocks[i].code != block.code))
+            .count();
+        let removed = moves.iter().filter(|m| m.is_none()).count();
+        for (i, moved) in moves.iter_mut().enumerate() {
+            if moved.is_none() && self.view.running(i) {
                 doc.keep_removed(old, i);
+                *moved = Some(matches.len());
                 matches.push(Some(i));
             }
         }
-        let changed_code = |(j, m): (usize, &Option<usize>)| {
-            m.is_some_and(|i| old.blocks[i].code != doc.blocks[j].code)
-        };
-        let new = matches.iter().filter(|m| m.is_none()).count();
-        let changed = matches
-            .iter()
-            .enumerate()
-            .filter(|&m| changed_code(m))
-            .count();
         let mut ran = BTreeMap::new();
         for (j, m) in matches.iter().enumerate() {
             if let Some(run) = m.and_then(|i| self.ran.remove(&i)) {
@@ -1169,9 +1164,8 @@ impl App {
             ran.is_some_and(|ran| ran.code != doc.blocks[j].code)
         });
         let since_run = since_run.collect();
-        let new_index = |i: usize| matches.iter().position(|&m| m == Some(i));
         match &mut self.question {
-            Some(Question::Rerun(i) | Question::Paste(i, _)) => match new_index(*i) {
+            Some(Question::Rerun(i) | Question::Paste(i, _)) => match moves[*i] {
                 Some(j) => *i = j,
                 None => {
                     self.question = None;
@@ -1180,21 +1174,15 @@ impl App {
             },
             Some(Question::Quit) | None => {}
         }
-        self.view.reload(doc, &matches, since_run);
+        self.view.reload(doc, &matches, &moves, since_run);
         self.resize(size);
-        if report {
-            let counts = [
-                (new, "new"),
-                (changed, "changed"),
-                (removed.len(), "removed"),
-            ];
-            let parts: Vec<String> = (counts.iter().filter(|(n, _)| *n > 0))
-                .map(|(n, what)| format!("{n} {what}"))
-                .collect();
-            self.notify(match parts.is_empty() {
-                true => "reloaded: no change".into(),
-                false => format!("reloaded: {}", parts.join(", ")),
-            });
+        let counts = [(new, "new"), (changed, "changed"), (removed, "removed")];
+        let parts: Vec<String> = (counts.iter().filter(|(n, _)| *n > 0))
+            .map(|(n, what)| format!("{n} {what}"))
+            .collect();
+        match parts.is_empty() {
+            true => "reloaded: no change".into(),
+            false => format!("reloaded: {}", parts.join(", ")),
         }
     }
 
@@ -1225,7 +1213,7 @@ impl App {
     /// event after it.
     fn refresh(&mut self, size: Size) {
         if std::mem::take(&mut self.reapply) {
-            self.apply(size, false);
+            self.apply(size);
         }
         // The blocks whose terminal the reader held: their rows wait for a
         // later frame, as do those that the full-screen view hides.
