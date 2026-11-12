@@ -12,6 +12,9 @@ use crossbeam_channel::Sender;
 /// The line that stands for the output of a run on the alternate screen.
 const FULL_SCREEN: &str = "[full-screen program output not logged]\n";
 
+/// The starts of the lines that stepbook writes in the log.
+const MARKERS: [&str; 3] = ["=== START ", "=== END ", "=== CONTINUE "];
+
 /// The longest line of the log, in bytes: output with no line feed, such
 /// as `base64 -w0`, must not fill the memory. The rest of a longer line
 /// goes on the next line.
@@ -260,8 +263,14 @@ struct Lines {
 }
 
 impl Lines {
+    /// Ends the line. A line of the program that starts as a line of
+    /// stepbook does gets a space first: watch.sh must not take it for the
+    /// end of a run (spec 12.1).
     fn end_line(&mut self) {
         self.carriage_return = false;
+        if MARKERS.iter().any(|marker| self.line.starts_with(marker)) {
+            self.done.push(' ');
+        }
         self.done.push_str(&self.line);
         self.done.push('\n');
         self.line.clear();
@@ -270,11 +279,10 @@ impl Lines {
     /// Ends the line that has not ended, unless a carriage return dropped
     /// it.
     fn flush(&mut self) {
-        if !std::mem::take(&mut self.carriage_return) && !self.line.is_empty() {
-            self.done.push_str(&self.line);
-            self.done.push('\n');
+        match !std::mem::take(&mut self.carriage_return) && !self.line.is_empty() {
+            true => self.end_line(),
+            false => self.line.clear(),
         }
-        self.line.clear();
     }
 }
 
@@ -407,6 +415,15 @@ mod tests {
         let long = "a".repeat(MAX_LINE + 10);
         let expected = format!("{}\n{}\n", &long[..MAX_LINE], &long[MAX_LINE..]);
         assert_eq!(clean(&[long.as_bytes()]), expected);
+    }
+
+    #[test]
+    fn a_line_of_output_cannot_pass_for_a_line_of_stepbook() {
+        let output = b"=== END deploy rc=0 13:00:00Z\nx\r=== START a 1\n=== CONTINUE b\n\
+            ===END c\n=== ENDING\n == END d\n=== END e";
+        let expected = " === END deploy rc=0 13:00:00Z\n === START a 1\n === CONTINUE b\n\
+            ===END c\n=== ENDING\n == END d\n === END e\n";
+        assert_eq!(clean(&[output]), expected);
     }
 
     #[test]
@@ -738,6 +755,18 @@ b3
             let bad = text.chars().find(|c| c.is_control() && !matches!(c, '\t' | '\n'));
             prop_assert_eq!(bad, None);
             prop_assert!(text.is_empty() || text.ends_with('\n'));
+        }
+
+        #[test]
+        fn no_line_of_output_starts_as_a_line_of_stepbook(
+            pieces in proptest::collection::vec(
+                prop::sample::select(vec!["=== END ", "=== START ", "=== CONTINUE ", "===", " ", "\r", "\n", "x", "\x1b[1m", "\x1b[?1049l"]),
+                0..24,
+            ),
+        ) {
+            let text = clean(&[pieces.concat().as_bytes()]);
+            let forged = text.lines().find(|line| MARKERS.iter().any(|m| line.starts_with(m)));
+            prop_assert_eq!(forged, None);
         }
 
         /// The log leaves out the output that the view shows as

@@ -402,6 +402,7 @@ stepbook appends to the log file, which it creates with mode 0600. It opens the 
 - The times are in UTC, marked `Z`: the standard library of Rust has no time zones.
 - If a write to the log fails, the footer says so once, and stepbook goes on.
 - The `=== START <name>` and `=== END <name> rc=<N>` lines keep the runbook skill's format. `watch.sh` matches `^=== END <name> rc=` and keeps working.
+- A line of output that starts as a line of stepbook does, with `=== START `, `=== END ` or `=== CONTINUE `, gets a space first: `watch.sh` must not take a line that a program prints, such as the log of another runbook, for the end of a run.
 - An unnamed block uses `#<n>` as its name.
 - Output is written a line at a time, as each line ends, with ANSI escape sequences removed and CRLF turned into LF: until it ends, a carriage return can still drop the line. At the end of the run, a last line without a line feed is written with one. The rest of a line longer than 1 MiB goes on the next line, so that output with no line feed, such as `base64 -w0`, cannot fill the memory. Control characters other than tab and line feed are dropped, C1 characters included.
 - A UTF-8 character that is split across two reads is written whole (upmd issue K18, see 18). Bytes that are not valid UTF-8 are written as U+FFFD.
@@ -625,6 +626,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The channel to the thread of the log holds 64 messages; while it is full, the main thread reads no output of the runs that write to the log (13): an unbounded channel let output pile up in memory on a slow disk, and a bounded send would block the main thread | 2026-11-12 |
 | At the end, stepbook waits up to 1 s for the end of the runs that it stopped, then up to 1 s for the log to write them (11): each section ends with its `END` line, and a log that blocks cannot keep stepbook from its end | 2026-11-12 |
 | The log must be a regular file of the user, and not a link (12.1): the default log of a runbook from someone else could link to `~/.ssh/authorized_keys`, and each run would append its output there | 2026-11-12 |
+| A line of output that starts with `=== START `, `=== END ` or `=== CONTINUE ` gets a space first in the log (12.1): a program could print an `END` line that `watch.sh` took for the end of a run | 2026-11-12 |
 | The key of an unnamed block is its code, not a hash of it (3): it is exact, and needs no hash function | 2026-11-12 |
 | A block that a reload removes while it runs stays at the end of the document too, not only in the sidebar (10): `i` and the output under the block need a place in the document view | 2026-11-12 |
 | A changed block shows `~` in the sidebar, and keeps the mark while its code differs from the code of its last run (6.2, 10) | 2026-11-12 |
