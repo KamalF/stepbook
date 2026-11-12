@@ -31,7 +31,7 @@ Copy and paste go through the terminal. See 6.4.
 | Term | Meaning |
 |---|---|
 | Block | A fenced code block whose language token is `bash` or `sh`. |
-| Block key | The block's `name`, or a hash of its code if it has no name. The key identifies the block across reloads. |
+| Block key | The block's `name`, or its code if it has no name. The key identifies the block across reloads. |
 | Run | One execution of a block in its own PTY. Each run has an internal ID that is never reused. |
 | Session state | The exported variables and the working directory that the next run starts with. |
 | Document view | The rendered runbook, with output under each block. |
@@ -47,12 +47,12 @@ stepbook [--log PATH | --no-log] FILE
 | Option | Effect |
 |---|---|
 | `FILE` | The Markdown runbook: a regular file of at most 1 MB, whose lines nest at most 1,000 levels. A level is a quote or list marker at the start of a line, or 2 columns of the whitespace at the start of the line, around the markers, with a tab as 4 columns. Required. |
-| `--log PATH`, `--log=PATH` | Log file. An empty PATH is an invalid argument. The default is `FILE` with its extension replaced by `.log`. |
+| `--log PATH`, `--log=PATH` | Log file. An empty PATH is an invalid argument. The default is `FILE` with its extension replaced by `.log`. If the log would be the runbook itself, such as for a FILE named `notes.log`, or a PATH that names FILE, through a link too, stepbook does not start: each run would append to the runbook. |
 | `--no-log` | Writes no log. |
 | `-h`, `--help` / `-V`, `--version` | Prints help or the version. |
 
 - The first run starts in the current directory of the stepbook process.
-- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, not a regular file, larger than 1 MB or nested too deep, `bash` not found, current directory unreadable, stdout not a terminal, workspace or terminal setup failed) or terminal error during the session, such as a failed read of the keys. Exit code 2: invalid arguments. Exit code 101: a panic, which is a bug.
+- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, not a regular file, larger than 1 MB or nested too deep, a log that would be the runbook itself, that cannot be opened, or that is not a regular file of the user, `bash` not found, current directory unreadable, stdout not a terminal, workspace or terminal setup failed) or terminal error during the session, such as a failed read of the keys. Exit code 2: invalid arguments. Exit code 101: a panic, which is a bug.
 - On SIGTERM, SIGHUP, SIGINT or SIGQUIT, stepbook cleans up (11), then dies of the signal. In raw mode, `ctrl-c` and `ctrl-\` are keys: SIGINT and SIGQUIT come only from `kill`.
 
 ## 5. Document
@@ -137,7 +137,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 
 - **Sidebar:** one row per block, with a status glyph and the name. An unnamed block shows `#<n>`, where n is its position among all the blocks of the file, from 1. Its width, with its left border, is the longest name plus 4, between 12 and 30 columns. A longer name ends with `…`. The sidebar scrolls to keep the selected row visible, and it is hidden on terminals under 80 columns.
 - **Document view:** the rendered runbook, with 1 column of padding on each side: the rules under H1 and H2 touched the right border. The gutter of the selected block, and its `▶` and name in the sidebar, are bold blue. Bold cyan was close to the green of `✔` in themes that draw bold colors bright, such as Gruvbox.
-- **Footer:** the mode, then the keys that apply now: `i input` while the selected block runs, and `o output` once it has run. A notification or a question (7.4) shows in place of the keys. A notification lasts 3 seconds.
+- **Footer:** the mode, then the keys that apply now: `i input` while the selected block runs, and `o output` once it has run. A notification or a question (7.4) shows in place of the keys, in every mode: writes to the log that fail say so at most once every 10 s (12.1). A notification lasts 3 seconds. `i`, and `o` on a running block, end the notification of the document view, such as `already running: i to type, o to view`, which would hide the keys that leave input mode and the full-screen view.
 - **Minimum size:** on a terminal smaller than 40 columns or 8 rows, stepbook shows only `Enlarge the terminal to at least 40 columns and 8 rows.`, and only the keys that quit work. A question (7.4) waits for a screen large enough to show it. The PTY of a block keeps its size until the screen is large enough again. Below that size, code under a list marker has no room, and the layout of a crafted file costs too much.
 
 ### 6.2 Block states
@@ -148,7 +148,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 | Running | `●` (blinking) | `running m:ss` |
 | Succeeded | `✔` | `rc=0 m:ss` |
 | Failed | `✘` | `rc=N m:ss`; for a signal, `rc=130 SIGINT m:ss`; for a run that could not start, the reason, such as `cannot start: directory /x no longer exists` |
-| Changed | `~` plus the last result | `changed since run`, then the last result |
+| Changed | `~` | `changed since run`, then the last result |
 | Cannot run | `!` | the problem of the file, such as `duplicate name` |
 
 - The info line shows the glyph and the state after the name, such as `restart  ✔ rc=0 0:02`, then the problem and the warnings. A run that saved no state adds `state not saved` (9.2).
@@ -354,21 +354,24 @@ Two blocks that run at the same time do not overwrite each other's unrelated cha
 
 ## 10. Reload
 
-stepbook re-reads the file when it changes on disk. It watches the parent directory, because editors often replace the file with a rename, and waits 300 ms after the last change. `ctrl-r` re-reads the file at once.
+stepbook re-reads the file when it changes on disk. It watches the parent directory with inotify, because editors often replace the file with a rename, and waits 300 ms after the last change. A change that waits for the main thread covers the next ones: a file that another writer changes without end must not queue reloads ahead of the keys and the signals. A change is a write that closes the file, or a rename onto its name. Through a link, stepbook watches the file that the link names, which a write through the link changes. inotify is Linux only, as the PTY of a run is (8.2). If stepbook cannot watch the directory, the footer says so at startup, and `ctrl-r` still reloads. `ctrl-r` re-reads the file at once.
 
-Blocks are matched by key between the old and the new file:
+Blocks are matched by key between the old and the new file. Among blocks with the same key, such as two unnamed blocks with the same code, the n-th block of the new file matches the n-th block of the old file:
 
 | After the reload | Result |
 |---|---|
 | Same key, same code | Keeps its output and state. |
-| Same name, changed code | Keeps its last output and result, marked `changed since run`. |
+| Same name, changed code | Keeps its last output and result, marked `changed since run` while its code differs from the code of its last run. A run clears the mark. |
 | New key | Not run. |
 | Key removed, block not running | Removed from the view. Its output stays in the log. |
-| Key removed, block running | The run continues. The block stays in the sidebar, marked `removed`, until the run ends. `i` and `o` still work on it. |
+| Key removed, block running | The run continues. The block stays at the end of the document and of the sidebar, marked `removed`, until the run ends, then goes. `i` and `o` still work on it, and `Enter` says `cannot run: removed`. |
 
 - Session state is never touched by a reload.
 - The selection stays on the same block, or moves to the next block if that block was removed.
-- The footer shows a summary, for example `reloaded: 2 new, 1 changed`.
+- After a reload that moves the selection to another block, or that changes the code of the selected block, keys do nothing for 1 s, and the footer says `keys off for 1 s`: an `Enter` or a `y` typed as the file changed would run code that the screen did not show yet. The pause applies in the full-screen view after the run too, where `o`, `Enter` and `y` typed ahead would leave the view and run the new code. Keys that go to a program, in input mode or in the full-screen view of a running block, still go to it.
+- A question about a block (7.4) follows the block, and names it by its label after the reload, since a new unnamed block above shifts the `#<n>` labels. If the reload removed the block, the question ends. A `Re-run` question also ends if the reload changed the code of its block: it asked about the code that the block had.
+- The footer shows a summary, such as `reloaded: 2 new, 1 changed, 1 removed`, with the counts that are not zero, or `reloaded: no change`. "Changed" counts the blocks whose code differs from the file before. A block that a reload removed while it runs is not in the file before: it counts as removed once, and a block that takes its key back counts as new.
+- If stepbook cannot read the file, the footer says `no reload: ` and why, and the view stays as it is. A FIFO renamed onto the file, or a lease that another process holds on it, makes the reload fail at once: the read is on the main thread. A hung network mount can still block it.
 - Parse problems never stop a reload. They appear as warnings on the info lines.
 
 ## 11. Quit
@@ -377,7 +380,7 @@ Blocks are matched by key between the old and the new file:
 - If runs are active, stepbook asks `N blocks running. Stop them and quit? (y/N)`, or `1 block running. Stop it and quit? (y/N)`. On `y`:
   1. It sends SIGHUP to the processes of each run, as the close of its PTY would: those of the session of its wrapper. `timeout` and `set -m` give a child a process group of its own, in the same session. A process that left the session with `setsid` does not get it. The footer says `stopping the blocks that run`, and keys do nothing.
   2. It waits up to 2 seconds, then sends SIGKILL to the processes of the runs still alive.
-  3. It writes their `END` lines to the log and quits.
+  3. It writes their `END` lines to the log and quits. With a log, stepbook waits up to 1 s for the end of the runs that it stopped, on a signal too, so that each section of the log ends with its `END` line. It then waits up to 1 s more for the log to write them: a log on a FIFO or on a hung mount must not keep stepbook from its end.
 - stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide, as ratatui counts them. On a terminal set to draw them wide, such as VTE with that option or `xterm -cjk_width`, the text after such a character shifts, in code too, and a space can vanish.
 - While it runs, stepbook turns the autowrap of the terminal off: a character that the terminal draws wider than ratatui counts must not wrap into the row below and move what is there.
 - On exit, stepbook restores the terminal, autowrap, bracketed paste and the cursor included, and ends a synchronized update that a failed frame left open. It also deletes the workspace. It does the same on the signals of 4.
@@ -388,28 +391,32 @@ Blocks are matched by key between the old and the new file:
 
 ### 12.1 Format
 
-stepbook appends to the log file, which it creates with mode 0600. Each run writes one section:
+stepbook appends to the log file, which it creates with mode 0600. It opens the log at startup: if it cannot, it does not start. The log must be a regular file of the user, with no other hard link, and not a symbolic link, a dangling one included: a runbook from someone else can come with a `run.log` that links to `~/.ssh/authorized_keys` or `~/.bashrc`, and each run would append its output there. In a directory that other users can write, one of them could also make the log first, as their own file or as a FIFO, and read the output. A FIFO fails at once, with or without a reader. stepbook does not check the directory of the log: a user who can rename its entries, in a directory without the sticky bit, can replace the log after the start, but can replace the runbook there too, whose code the user runs. Each run writes one section:
 
 ```text
-=== START restart 14:03:07
+=== START restart 13:03:07Z
 ● api.service - API
      Active: active (running)
-=== END restart rc=0 14:03:09
+=== END restart rc=0 13:03:09Z
 ```
 
+- The times are in UTC, marked `Z`: the standard library of Rust has no time zones.
+- If writes to the log fail, the footer says so, at most once every 10 s, and stepbook goes on: a question or another notification can hide one notification, and a disk that stays full must still show.
 - The `=== START <name>` and `=== END <name> rc=<N>` lines keep the runbook skill's format. `watch.sh` matches `^=== END <name> rc=` and keeps working.
+- A line of output that starts as a line of stepbook does, with `=== START `, `=== END ` or `=== CONTINUE `, gets a space first: `watch.sh` must not take a line that a program prints, such as the log of another runbook, for the end of a run.
 - An unnamed block uses `#<n>` as its name.
-- Output is written as it arrives, with ANSI escape sequences removed and CRLF turned into LF.
+- Output is written a line at a time, as each line ends, with ANSI escape sequences removed and CRLF turned into LF: until it ends, a carriage return can still drop the line. At the end of the run, a last line without a line feed is written with one. The rest of a line longer than 1 MiB goes on the next line, so that output with no line feed, such as `base64 -w0`, cannot fill the memory. Control characters other than tab and line feed are dropped, C1 characters included.
 - A UTF-8 character that is split across two reads is written whole (upmd issue K18, see 18). Bytes that are not valid UTF-8 are written as U+FFFD.
 - A carriage return without a line feed discards the current partial line, as a terminal does. A progress bar therefore logs only its last state.
-- Output on the alternate screen is not logged. The line `[full-screen program output not logged]` marks it once per run.
+- Output on the alternate screen is not logged. The line `[full-screen program output not logged]` marks it once per run. The log reads the switches as vt100 does, so that it leaves out the output that the view shows as full-screen: modes 47 and 1049 enter and leave that screen, and a reset (`ESC c`) leaves it.
 
 ### 12.2 Concurrent runs
 
-Only one run writes to the log at a time, so sections never interleave:
+Only one run writes to the log at a time, so the lines of two runs never mix:
 
-- A run that starts while another run writes to the log buffers its output in memory.
-- When the log is free, the waiting run writes its `START` line (with its real start time) and its buffered output, then continues live.
+- A run that starts while another run writes to the log holds its text in memory, up to 1 MiB. Past 1 MiB, it writes what it holds at once, and its section goes on later after a `=== CONTINUE <name>` line: a run that never ends, such as a second `tail -f`, must not fill the memory. The section of the other run then goes on after a `=== CONTINUE <name>` line too.
+- When it ends, it writes the rest of its section at once, with its real start time, even while the other run goes on: `watch.sh` sees its `END` line without a wait for the other run, such as a `tail -f` that never ends. The section of the other run then goes on after a `=== CONTINUE <name>` line.
+- When the run that writes ends, the run that has waited longest writes what it holds, `START` line included, then goes on as it runs.
 
 ### 12.3 Old runbooks
 
@@ -428,8 +435,8 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 | `watch.rs` | File watcher. |
 
 - Rust, one crate, no async runtime, no component framework. The target size is 2,000 to 3,000 lines without tests.
-- Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `rustix` (the PTY, poll, and the signals to the processes of a run), `vt100` without its `std` feature (with it, vte keeps each byte of an OSC that never ends), `syntect` (bash syntax only), `notify`, `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
-- The main thread owns all state, except the vt100 screen of each run, which the reader of the run feeds: the main thread only tries its lock. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events. One writer per run writes the keys to its PTY: a write to a program that reads no input would block the main thread.
+- Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `rustix` (the PTY, poll, inotify, and the signals to the processes of a run), `vt100` without its `std` feature (with it, vte keeps each byte of an OSC that never ends), `syntect` (bash syntax only), `vte` (the escape sequences in the log, at the version that vt100 uses), `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
+- The main thread owns all state, except the vt100 screen of each run, which the reader of the run feeds: the main thread only tries its lock. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events. The watcher also shares one flag with the main thread, for a change that waits (10): the main thread clears it before it reads the file, so that a change during the read sends a new event. The thread of the log writes the sections, so that a slow disk never blocks the main thread. Its channel holds 64 messages: while it is full, the main thread reads no output of the runs that write to the log, so that a slow disk slows their programs, as a slow view does, and the output in memory stays bounded. One writer per run writes the keys to its PTY: a write to a program that reads no input would block the main thread.
 - Control events (keys, paste, resize, signals, file change) go to their own channel. The loop handles them before pending output, so keys stay responsive while a block prints a lot.
 - After output, the loop reads the events of the next 16 ms before it draws: a program that prints a lot redraws the view at most about 60 times a second, and at least as often, since the frame ends after 16 ms even while output keeps coming.
 - Each run sends its output, then its exit status, through its own bounded channel, so that the end of a run never comes before its output. A slow UI slows the program, and no output is lost.
@@ -474,7 +481,7 @@ Each test states one rule, and its name is that rule.
   - A removed working directory makes the run fail and resets the session directory.
   - `ctrl-c` (byte `0x03`) reports rc 130 and saves the state.
   - Two concurrent runs merge their changes.
-  - Concurrent runs write contiguous log sections.
+  - Concurrent runs write contiguous log sections, while a run that waits holds less than 1 MiB.
   - The old logging header suppresses the native log.
 - **Render tests:** snapshots with ratatui's `TestBackend` and `insta`, covering document elements, control characters (in the code, the text, the file name and a directory name), block states, the sidebar and the footer modes.
 
@@ -498,7 +505,7 @@ v1 comes in five milestones, built in order. Each milestone ends with `cargo mut
 3. **Input and full-screen view.** Input mode (7.2), the full-screen view (7.3), and the switch to the alternate screen (6.3).
    - Done when: a `read -s` prompt takes a password in input mode, and `o` shows `less` in the full-screen view, which closes when less exits. In herdr, a paste reaches the program (manual check).
 4. **Log and reload.** The log (12), the file watcher and the reload (10).
-   - Done when: `watch.sh` sees the `END` line of a run, and two concurrent runs write contiguous sections. An edit of the runbook in vim during a run keeps each output and marks the changed blocks.
+   - Done when: `watch.sh` sees the `END` line of a run, and two concurrent runs write contiguous sections, while the run that waits holds less than 1 MiB. An edit of the runbook in vim during a run keeps each output and marks the changed blocks.
 5. **Migration.** A README, an install with mise from the GitHub repository, and a first release on crates.io. Then the runbook skill moves to stepbook (15).
    - Done when: the runbook skill opens its runbooks with stepbook, and Kamal has run a real runbook with it.
 
@@ -607,3 +614,28 @@ This spec is the source of truth. A change of decision updates it in the same co
 | Output rows have a dashed `╎`, not `▕` (6.3), at Kamal's choice: in Ghostty, `▕` stood 5 pixels from the `│` of a quote, in the same dim color, so output could pass for the code of a block in a quote | 2026-11-12 |
 | The selected block stays where it is on the screen when the output of a block above it grows or shrinks (6.3): the output of a running block pushed the selected block out of the view | 2026-11-12 |
 | `j`, `k`, `Home` and `End` scroll to show the output of the block too, and so `Enter` first does that scroll (7.1), at Kamal's choice: after a run of the block above, the output of the last block stayed under the bottom of the view, and only `o` showed it | 2026-11-12 |
+| stepbook does not start if the log would be the runbook itself (4), at Kamal's choice: for a FILE named `notes.log`, the default log was the runbook, and each run would append to it | 2026-11-12 |
+| The watcher of the reload uses inotify through rustix, not the `notify` crate (10, 13), at Kamal's choice: no new crate, and Linux is the target of v1 | 2026-11-12 |
+| The log removes escape sequences with `vte`, a direct dependency at the version that vt100 uses (12.1, 13), at Kamal's choice: it is in the build already, and it parses UTF-8 split across reads | 2026-11-12 |
+| The log writes the output a line at a time, as each line ends (12.1): a carriage return can drop a line until it ends | 2026-11-12 |
+| The times of the log are in UTC, marked `Z` (12.1), at Kamal's choice: the standard library has no time zones, and libc or a time crate would be one more dependency | 2026-11-12 |
+| stepbook opens the log at startup, and does not start if it cannot; writes that fail later show in the footer at most once every 10 s (12.1): a single notification could hide behind a question, or under the next notification | 2026-11-12 |
+| A run that ends while another writes to the log writes its whole section at once, and the other section goes on after a `=== CONTINUE <name>` line (12.2), at Kamal's choice: a block that never ends held the log, and `watch.sh` waited for the `END` line of each block run after it | 2026-11-12 |
+| The log splits a line longer than 1 MiB (12.1): output with no line feed, such as `base64 -w0`, stayed in memory whole until the end of the run | 2026-11-12 |
+| A run that waits for the log writes what it holds past 1 MiB, and its section goes on after a `=== CONTINUE <name>` line (12.2), at Kamal's choice: with two blocks that never end, such as two `tail -f`, the second one held its output in memory for the whole session | 2026-11-12 |
+| A notification shows in input mode and in the full-screen view too, in place of the keys (6.1): the footer of those modes hid the one notification of a failed write to the log | 2026-11-12 |
+| The channel to the thread of the log holds 64 messages; while it is full, the main thread reads no output of the runs that write to the log (13): an unbounded channel let output pile up in memory on a slow disk, and a bounded send would block the main thread | 2026-11-12 |
+| At the end, stepbook waits up to 1 s for the end of the runs that it stopped, then up to 1 s for the log to write them (11): each section ends with its `END` line, and a log that blocks cannot keep stepbook from its end | 2026-11-12 |
+| The log must be a regular file of the user, with no other hard link, and not a symbolic link (12.1): the default log of a runbook from someone else could link to `~/.ssh/authorized_keys`, and each run would append its output there | 2026-11-12 |
+| A line of output that starts with `=== START `, `=== END ` or `=== CONTINUE ` gets a space first in the log (12.1): a program could print an `END` line that `watch.sh` took for the end of a run | 2026-11-12 |
+| After a reload that moves the selection to another block, or that changes the code of the selected block, keys pause for 1 s, unless they go to a program (10): an `Enter` typed as another writer saved the file ran a block that the user had not seen | 2026-11-12 |
+| Among blocks with the same key, the n-th block of the new file matches the n-th block of the old file (10): two unnamed blocks with the same code keep their own outputs | 2026-11-12 |
+| The summary of a reload compares with the file before: a block that a reload removed while it runs counts as removed once, and a block that takes its key back counts as new (10) | 2026-11-12 |
+| A question about a block follows it through a reload, with the label that the block has after it; a `Re-run` question ends if the reload changes the code of its block (10): `y` ran the block labelled `#3` under the question `Re-run #2?`, and new code under the old question | 2026-11-12 |
+| `i`, and `o` on a running block, end the notification of the document view (6.1): `already running: i to type, o to view` hid the keys that leave input mode and the full-screen view | 2026-11-12 |
+| Through a link, the watcher watches the file that the link names (10): a write through the link never reloaded | 2026-11-12 |
+| A FIFO or a lease never blocks the read of a reload: the runbook is checked by its path, opened with O_NONBLOCK, then checked again (10): a FIFO renamed onto it, or a lease on it, stopped stepbook in raw mode | 2026-11-12 |
+| The log reads the switches of the alternate screen as vt100 does: modes 47 and 1049, and `ESC c` leaves it (12.1): with mode 1047, the log left out output that the view showed, and after a reset on the alternate screen, the rest of the run | 2026-11-12 |
+| The key of an unnamed block is its code, not a hash of it (3): it is exact, and needs no hash function | 2026-11-12 |
+| A block that a reload removes while it runs stays at the end of the document too, not only in the sidebar (10): `i` and the output under the block need a place in the document view | 2026-11-12 |
+| A changed block shows `~` in the sidebar, and keeps the mark while its code differs from the code of its last run (6.2, 10) | 2026-11-12 |

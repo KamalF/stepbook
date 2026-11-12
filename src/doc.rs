@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::LazyLock;
 
 use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
@@ -18,7 +18,7 @@ pub const WARNING: Style = Style::new().fg(Color::Yellow);
 const MAX_DEPTH: usize = 10;
 
 /// A fenced code block with the language `bash` or `sh` (spec 3).
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Block {
     pub name: Option<String>,
     pub code: String,
@@ -66,7 +66,33 @@ pub struct Document {
     pub blocks: Vec<Block>,
 }
 
+/// The problem of a block that a reload removed while it ran (spec 10).
+pub const REMOVED: &str = "removed";
+
 impl Document {
+    /// Appends block `i` of `old`, which a reload removed while it runs:
+    /// it stays at the end of the document, marked removed, until its run
+    /// ends (spec 10).
+    pub fn keep_removed(&mut self, old: &Document, i: usize) {
+        let lines = old.items.iter().find_map(|item| match &item.kind {
+            Kind::Code {
+                lines,
+                block: Some(block),
+            } if *block == i => Some(lines.clone()),
+            _ => None,
+        });
+        self.blocks.push(Block {
+            problem: Some(REMOVED),
+            ..old.blocks[i].clone()
+        });
+        let block = Some(self.blocks.len() - 1);
+        let lines = lines.unwrap_or_default();
+        for kind in [Kind::Blank, Kind::Code { lines, block }] {
+            let (first, rest) = (Vec::new(), Vec::new());
+            self.items.push(Item { first, rest, kind });
+        }
+    }
+
     /// The name of block `i`, or `#<n>` for the n-th block if it has no name.
     pub fn label(&self, i: usize) -> String {
         match &self.blocks[i].name {
@@ -74,6 +100,49 @@ impl Document {
             None => format!("#{}", i + 1),
         }
     }
+}
+
+/// What identifies a block across reloads (spec 3): its name, or its code
+/// if it has no name.
+#[derive(PartialEq, Eq, Hash)]
+enum Key<'a> {
+    Name(&'a str),
+    Code(&'a str),
+}
+
+impl Block {
+    fn key(&self) -> Key<'_> {
+        match &self.name {
+            Some(name) => Key::Name(name),
+            None => Key::Code(&self.code),
+        }
+    }
+}
+
+/// The block of `old` that each block of `new` matches, by key: the n-th
+/// block with a key matches the n-th block of `old` with that key (spec
+/// 10). A block of `old` that no block matches was removed.
+pub fn match_blocks(old: &[Block], new: &[Block]) -> Vec<Option<usize>> {
+    let mut keys: HashMap<Key, VecDeque<usize>> = HashMap::new();
+    for (i, block) in old.iter().enumerate() {
+        keys.entry(block.key()).or_default().push_back(i);
+    }
+    let matched = new
+        .iter()
+        .map(|block| keys.get_mut(&block.key())?.pop_front());
+    matched.collect()
+}
+
+/// The inverse of `matches`, the result of `match_blocks`: for each of the
+/// `old` blocks, the block that matches it, if any.
+pub fn moves(matches: &[Option<usize>], old: usize) -> Vec<Option<usize>> {
+    let mut moves = vec![None; old];
+    for (j, &i) in matches.iter().enumerate() {
+        if let Some(i) = i {
+            moves[i] = Some(j);
+        }
+    }
+    moves
 }
 
 pub fn parse(text: &str) -> Document {
@@ -1097,6 +1166,58 @@ fn mark_duplicates(blocks: &mut [Block]) {
 mod tests {
     use super::*;
     use proptest::prelude::*;
+
+    /// The blocks of the new `markdown` matched against those of `old`.
+    fn matches(old: &str, new: &str) -> Vec<Option<usize>> {
+        match_blocks(&parse(old).blocks, &parse(new).blocks)
+    }
+
+    fn fence(info: &str, code: &str) -> String {
+        format!("```{info}\n{code}\n```\n\n")
+    }
+
+    #[test]
+    fn blocks_match_by_name_or_by_code() {
+        let old = [
+            fence("bash [name:a]", "ls"),
+            fence("bash", "echo one"),
+            fence("bash [name:b]", "pwd"),
+            fence("bash [name:gone]", "true"),
+        ]
+        .concat();
+        // b moved up and changed its code; the unnamed block keeps its
+        // code; a block is new; gone is gone.
+        let new = [
+            fence("bash [name:b]", "pwd -P"),
+            fence("bash [name:a]", "ls"),
+            fence("bash", "echo one"),
+            fence("bash", "echo two"),
+        ]
+        .concat();
+        assert_eq!(matches(&old, &new), [Some(2), Some(0), Some(1), None]);
+    }
+
+    #[test]
+    fn blocks_with_the_same_key_match_in_order() {
+        let old = [fence("bash", "ls"), fence("bash", "ls")].concat();
+        let new = [
+            fence("bash", "ls"),
+            fence("bash", "pwd"),
+            fence("bash", "ls"),
+        ]
+        .concat();
+        assert_eq!(matches(&old, &new), [Some(0), None, Some(1)]);
+        let three = [
+            fence("bash", "ls"),
+            fence("bash", "ls"),
+            fence("bash", "ls"),
+        ]
+        .concat();
+        assert_eq!(matches(&old, &three), [Some(0), Some(1), None]);
+        // A name and code of the same text are two keys.
+        let named = fence("bash [name:ls]", "x");
+        assert_eq!(matches(&fence("bash", "ls"), &named), [None]);
+    }
 
     fn info(info: &str) -> Option<(Option<String>, Vec<String>)> {
         block(info, "").map(|b| (b.name, b.warnings))

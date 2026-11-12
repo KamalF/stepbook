@@ -1,19 +1,23 @@
 mod doc;
+mod log;
 mod run;
 mod term;
 mod view;
+mod watch;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::ffi::{OsStr, OsString};
 use std::io::{IsTerminal, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant, SystemTime};
 
-use crossbeam_channel::{Receiver, RecvError, Select, Sender};
+use crossbeam_channel::{Receiver, RecvError, Select, Sender, TrySendError};
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::Show;
 use ratatui::crossterm::event::{
@@ -173,6 +177,15 @@ enum Exit {
 
 fn open(args: &Args) -> Result<Exit, String> {
     let text = read_runbook(&args.file)?;
+    // Each run would append to the runbook (spec 4).
+    if let Some(log) = &args.log
+        && run::same_file(&args.file, log)
+    {
+        let log = log.display();
+        return Err(format!(
+            "give a log with --log PATH, or --no-log: {log} is the runbook itself"
+        ));
+    }
     let path = std::env::var_os("PATH").unwrap_or_default();
     let Some(bash) = run::find_in_path("bash", &path) else {
         return Err("cannot find bash on the PATH".into());
@@ -183,6 +196,19 @@ fn open(args: &Args) -> Result<Exit, String> {
     if !std::io::stdout().is_terminal() {
         return Err("run stepbook in a terminal: its output is not a terminal".into());
     }
+    // The runs get absolute paths (spec 8.2).
+    let file = dir.join(&args.file);
+    let log_path = args.log.as_ref().map(|log| dir.join(log));
+    // The log opens before the workspace exists: a startup error leaves
+    // nothing to clean up.
+    let log = match &log_path {
+        Some(path) => Some(log::open(path).map_err(|e| {
+            let reason = io_message(&e);
+            let path = path.display();
+            format!("give another --log PATH, or --no-log: cannot open the log {path}: {reason}")
+        })?),
+        None => None,
+    };
     let doc = doc::parse(&text);
     let (sender, control) = crossbeam_channel::unbounded();
     // Before the workspace exists, so that these signals always delete it,
@@ -212,11 +238,8 @@ fn open(args: &Args) -> Result<Exit, String> {
         )
     };
     let workspace = run::Workspace::create(&parent).map_err(fail)?;
-    // The runs get absolute paths (spec 8.2).
-    let file = dir.join(&args.file);
-    let log = args.log.as_ref().map(|log| dir.join(log));
     let state = run::State::new(dir, std::env::vars_os());
-    let session = run::Session::new(workspace, bash, state, file, log).map_err(fail)?;
+    let session = run::Session::new(workspace, bash, state, file, log_path).map_err(fail)?;
     let mut terminal = set_up_terminal(session.workspace())
         .map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
     let background = terminal_input()
@@ -226,6 +249,26 @@ fn open(args: &Args) -> Result<Exit, String> {
     let mut view = view::View::new(doc, title.to_string_lossy().into_owned());
     view.background = background;
     let mut app = App::new(view, session, crossbeam_channel::tick(TICK));
+    app.text = text;
+    let failed = sender.clone();
+    let (log, thread) = log
+        .map(|file| {
+            log::spawn(file, move |error| {
+                let text = format!("cannot write the log: {}", io_message(&error));
+                let _ = failed.send(Control::Log(text));
+            })
+        })
+        .unzip();
+    app.log = log;
+    let changes = sender.clone();
+    let file = app.session.file();
+    let pending = app.reload_pending.clone();
+    if let Err(e) = watch::spawn(file, pending, move || {
+        changes.send(Control::Changed).is_ok()
+    }) {
+        let reason = io_message(&e);
+        app.notify(format!("ctrl-r reloads: no watch of the runbook: {reason}"));
+    }
     std::thread::spawn(move || read_terminal(sender));
     let result = event_loop(&mut terminal, &mut app, &control);
     run::end_runs();
@@ -235,6 +278,13 @@ fn open(args: &Args) -> Result<Exit, String> {
     // after a SIGHUP: stepbook would end with 101, not die of the signal.
     // restore_terminal shows the cursor.
     std::mem::forget(terminal);
+    // The runs that stepbook stopped send their last output and their end
+    // now: their section in the log ends with its END line (spec 11).
+    app.drain_runs(&control, LOG_WAIT);
+    drop(app.log.take());
+    if let Some(thread) = thread {
+        log::wait(&thread, LOG_WAIT);
+    }
     result.map_err(|e| format!("terminal error: {}", io_message(&e)))
 }
 
@@ -431,15 +481,29 @@ fn restore_terminal() {
 const MAX_FILE: u64 = 1024 * 1024;
 
 /// Reads a runbook, which must be a regular file of at most `MAX_FILE`
-/// bytes: a link to /dev/zero would fill the memory, and a FIFO would
-/// block the open. Its lines must nest at most `doc::MAX_NESTING` levels.
+/// bytes: a link to /dev/zero would fill the memory. The check is on the
+/// path, then on the file that the open gave, and the open never blocks:
+/// a reload reads the runbook on the main thread, where a FIFO renamed
+/// onto its name, or a lease that another process holds on it, would
+/// stop stepbook. Its lines must nest at most `doc::MAX_NESTING` levels.
 fn read_runbook(path: &Path) -> Result<String, String> {
+    use rustix::fs::OFlags;
     let fail = |reason: String| format!("cannot read {}: {reason}", path.display());
+    // Before the open too: the open of a device, such as a serial port,
+    // can act on it.
     let metadata = std::fs::metadata(path).map_err(|e| fail(io_message(&e)))?;
     if !metadata.is_file() {
         return Err(fail("not a regular file".into()));
     }
-    let file = std::fs::File::open(path).map_err(|e| fail(io_message(&e)))?;
+    let flags = (OFlags::NONBLOCK | OFlags::NOCTTY).bits();
+    let file = (std::fs::OpenOptions::new().read(true))
+        .custom_flags(flags as i32)
+        .open(path)
+        .map_err(|e| fail(io_message(&e)))?;
+    let metadata = file.metadata().map_err(|e| fail(io_message(&e)))?;
+    if !metadata.is_file() {
+        return Err(fail("not a regular file".into()));
+    }
     let mut bytes = Vec::new();
     (file.take(MAX_FILE + 1).read_to_end(&mut bytes)).map_err(|e| fail(io_message(&e)))?;
     if bytes.len() as u64 > MAX_FILE {
@@ -459,6 +523,10 @@ fn read_runbook(path: &Path) -> Result<String, String> {
 enum Control {
     Terminal(std::io::Result<Event>),
     Signal(i32),
+    /// A write to the log failed, as this text says.
+    Log(String),
+    /// The runbook changed on disk (spec 10).
+    Changed,
 }
 
 /// Sends the terminal events, until the first error.
@@ -478,6 +546,10 @@ struct Ran {
     run: Option<run::Run>,
     started: Instant,
     ended: Option<Instant>,
+    /// The run in the messages to the log, unless it writes no section.
+    log_id: Option<u64>,
+    /// The code that ran: a reload marks the block if its code changed.
+    code: String,
 }
 
 /// The state that the event loop owns.
@@ -501,6 +573,18 @@ struct App {
     paused_until: Option<Instant>,
     /// While stepbook stops the runs to quit: when it kills those left.
     stopping: Option<Instant>,
+    /// The thread that writes the log, unless there is no log.
+    log: Option<Sender<log::Message>>,
+    /// The messages that wait for room in the channel of the log.
+    log_queue: VecDeque<log::Message>,
+    /// The text of the runbook when stepbook last read it (spec 10).
+    text: String,
+    /// A change of the runbook waits in the control channel: the watcher
+    /// sends no other until the loop takes it.
+    reload_pending: Arc<AtomicBool>,
+    /// The run of a block that a reload removed has ended: the block goes
+    /// at the next frame.
+    reapply: bool,
 }
 
 /// A question in the footer (spec 7.4).
@@ -510,10 +594,18 @@ enum Question {
     Rerun(usize),
     /// Stop the runs and quit.
     Quit,
-    /// Send a paste of several lines to the program of block i, which did
+    /// Send a paste of several lines to the program of a block, which did
     /// not turn on bracketed paste (spec 7.2).
-    Paste(usize, Vec<u8>),
+    Paste {
+        block: usize,
+        bytes: Vec<u8>,
+        lines: usize,
+    },
 }
+
+/// How long stepbook waits, once it stopped the runs, for their end to
+/// reach the log (spec 11).
+const LOG_WAIT: Duration = Duration::from_secs(1);
 
 /// How long the runs have to end after SIGHUP, when stepbook quits (spec
 /// 11).
@@ -553,49 +645,77 @@ impl App {
             notice_until: None,
             paused_until: None,
             stopping: None,
+            log: None,
+            log_queue: VecDeque::new(),
+            text: String::new(),
+            reload_pending: Arc::default(),
+            reapply: false,
         }
     }
 
     /// The next event, a control event first, until `deadline`, or with no
     /// end. An error means that the thread that reads the keys stopped.
+    /// While the channel of the log is full, the runs that write to the
+    /// log wait: their readers stop, and so do their programs.
     fn next(
-        &self,
+        &mut self,
         control: &Receiver<Control>,
         deadline: Option<Instant>,
     ) -> Option<Result<Incoming, RecvError>> {
-        if let Ok(event) = control.try_recv() {
-            return Some(Ok(Incoming::Control(event)));
-        }
-        let runs: Vec<_> = self.runs().collect();
-        // Not biased among the runs, so that no run's output waits for
-        // another's.
-        let mut select = Select::new();
-        select.recv(control);
-        // Without runs, the tick would only wake the loop. With runs, it
-        // comes right after the control channel.
-        if !runs.is_empty() {
-            select.recv(&self.ticks);
-        }
-        for (_, run) in &runs {
-            select.recv(&run.events);
-        }
-        let operation = match deadline {
-            Some(deadline) => select.select_deadline(deadline).ok()?,
-            None => select.select(),
-        };
-        Some(match operation.index() {
-            0 => operation.recv(control).map(Incoming::Control),
-            1 => {
-                let _ = operation.recv(&self.ticks);
-                Ok(Incoming::Tick)
+        loop {
+            if let Ok(event) = control.try_recv() {
+                return Some(Ok(Incoming::Control(event)));
             }
-            n => {
-                let (i, run) = runs[n - 2];
-                let event = operation.recv(&run.events);
-                let event = event.expect("a reader sends the exit status before it stops");
-                Ok(Incoming::Run(i, event))
+            let full = (self.log.as_ref()).filter(|_| !self.log_queue.is_empty());
+            let runs: Vec<_> = (self.ran.iter())
+                .filter(|(_, ran)| full.is_none() || ran.log_id.is_none())
+                .filter_map(|(&i, ran)| Some((i, ran.run.as_ref()?)))
+                .collect();
+            // Not biased among the runs, so that no run's output waits for
+            // another's.
+            let mut select = Select::new();
+            select.recv(control);
+            // Without runs, the tick would only wake the loop. With runs, it
+            // comes right after the control channel.
+            let running = self.ran.values().any(|ran| ran.run.is_some());
+            if running {
+                select.recv(&self.ticks);
             }
-        })
+            if let Some(log) = full {
+                select.send(log);
+            }
+            for (_, run) in &runs {
+                select.recv(&run.events);
+            }
+            let operation = match deadline {
+                Some(deadline) => select.select_deadline(deadline).ok()?,
+                None => select.select(),
+            };
+            let send = 1 + usize::from(running);
+            let first_run = send + usize::from(full.is_some());
+            match (operation.index(), full) {
+                (0, _) => return Some(operation.recv(control).map(Incoming::Control)),
+                (1, _) if running => {
+                    let _ = operation.recv(&self.ticks);
+                    return Some(Ok(Incoming::Tick));
+                }
+                (n, Some(log)) if n == send => {
+                    let message = self.log_queue.pop_front();
+                    let message = message.expect("the log is full only with a queue");
+                    match operation.send(log, message) {
+                        Ok(()) => send_queued(log, &mut self.log_queue),
+                        // The thread of the log ended.
+                        Err(_) => self.log_queue.clear(),
+                    }
+                }
+                (n, _) => {
+                    let (i, run) = runs[n - first_run];
+                    let event = operation.recv(&run.events);
+                    let event = event.expect("a reader sends the exit status before it stops");
+                    return Some(Ok(Incoming::Run(i, event)));
+                }
+            }
+        }
     }
 
     /// The blocks that run, with their runs.
@@ -660,16 +780,22 @@ impl App {
                         // As Enter, y runs no code off the screen (spec 7.1):
                         // after a resize, it shows the block and asks again.
                         Question::Rerun(i) if yes => match self.view.reveal(size) {
-                            true => self.start(i, size),
-                            false => self.ask_rerun(i),
+                            // A reload can give the block a problem, such as
+                            // a duplicate name, after the question.
+                            true => match self.view.doc.blocks[i].problem {
+                                Some(problem) => self.notify(format!("cannot run: {problem}")),
+                                None => self.start(i, size),
+                            },
+                            false => self.ask(Question::Rerun(i)),
                         },
                         Question::Quit if yes => self.stop_runs(),
-                        Question::Paste(i, bytes) if yes => {
-                            if let Some(run) = self.ran.get(&i).and_then(|ran| ran.run.as_ref()) {
+                        Question::Paste { block, bytes, .. } if yes => {
+                            if let Some(run) = self.ran.get(&block).and_then(|ran| ran.run.as_ref())
+                            {
                                 run.write(&bytes);
                             }
                         }
-                        Question::Rerun(_) | Question::Quit | Question::Paste(..) => {}
+                        Question::Rerun(_) | Question::Quit | Question::Paste { .. } => {}
                     }
                 }
                 _ => self.question = Some(question),
@@ -689,11 +815,7 @@ impl App {
         match action(event, size)? {
             Action::Quit => match self.runs().count() {
                 0 => return Some(Exit::Quit),
-                1 => self.ask(Question::Quit, "1 block running. Stop it and quit?".into()),
-                n => self.ask(
-                    Question::Quit,
-                    format!("{n} blocks running. Stop them and quit?"),
-                ),
+                _ => self.ask(Question::Quit),
             },
             Action::Select(step) => self.view.select_by(step, size),
             Action::First => self.view.select_first(size),
@@ -709,18 +831,29 @@ impl App {
             Action::Input => {
                 let i = self.view.selected?;
                 match (self.view.running(i), self.just_ended(i)) {
-                    (true, _) => self.enter_input(i, size),
+                    (true, _) => {
+                        // A notification of the document view, such as
+                        // `already running: i to type`, would hide the keys
+                        // that leave input mode.
+                        self.view.notice = None;
+                        self.enter_input(i, size);
+                    }
                     // The run ended as i came: the keys after it were
                     // typed for the program.
                     (false, true) => self.pause(i),
                     (false, false) => self.notify("not running: ↵ runs it".into()),
                 }
             }
+            Action::Reload => self.reload(size),
             Action::Output => {
                 let i = self.view.selected?;
                 if !self.ran.contains_key(&i) {
                     self.notify("no output: ↵ runs it".into());
                     return None;
+                }
+                // As for `i`: the keys now go to the program.
+                if self.view.running(i) {
+                    self.view.notice = None;
                 }
                 self.open_full(i, size, view::Back::Normal);
                 if self.just_ended(i) {
@@ -770,12 +903,11 @@ impl App {
             run.write(&bytes);
             return true;
         }
-        let lines = match lines {
-            1 => "1 line".to_string(),
-            n => format!("{n} lines"),
-        };
-        let text = format!("Paste {lines} to {}?", self.view.doc.label(i));
-        self.ask(Question::Paste(i, bytes), text);
+        self.ask(Question::Paste {
+            block: i,
+            bytes,
+            lines,
+        });
         true
     }
 
@@ -889,18 +1021,32 @@ impl App {
             Some(view::Status::Running(_)) => {
                 self.notify("already running: i to type, o to view".into());
             }
-            Some(_) => self.ask_rerun(i),
+            Some(_) => self.ask(Question::Rerun(i)),
         }
     }
 
-    fn ask_rerun(&mut self, i: usize) {
-        let label = self.view.doc.label(i);
-        self.ask(Question::Rerun(i), format!("Re-run {label}?"));
+    /// Asks `question` in the footer (spec 7.4).
+    fn ask(&mut self, question: Question) {
+        self.view.question = Some(self.question_text(&question));
+        self.question = Some(question);
     }
 
-    fn ask(&mut self, question: Question, text: String) {
-        self.view.question = Some(text);
-        self.question = Some(question);
+    /// The text of `question`, with the label that its block has now.
+    fn question_text(&self, question: &Question) -> String {
+        match question {
+            Question::Rerun(i) => format!("Re-run {}?", self.view.doc.label(*i)),
+            Question::Quit => match self.runs().count() {
+                1 => "1 block running. Stop it and quit?".into(),
+                n => format!("{n} blocks running. Stop them and quit?"),
+            },
+            Question::Paste { block, lines, .. } => {
+                let label = self.view.doc.label(*block);
+                match lines {
+                    1 => format!("Paste 1 line to {label}?"),
+                    n => format!("Paste {n} lines to {label}?"),
+                }
+            }
+        }
     }
 
     /// Sends SIGHUP to the runs, as the close of their PTY would, before
@@ -938,14 +1084,26 @@ impl App {
     /// a block never runs twice at a time (upmd issue K5).
     fn start(&mut self, i: usize, size: Size) {
         debug_assert!(!self.ran.get(&i).is_some_and(|ran| ran.run.is_some()));
-        let block = &self.view.doc.blocks[i];
+        let code = self.view.doc.blocks[i].code.clone();
         let (columns, rows) = self.view.pty_size(i, size);
         let label = self.view.doc.label(i);
-        let status = match self.session.start(&block.code, &label, columns, rows) {
+        let status = match self.session.start(&code, &label, columns, rows) {
             Ok(run) => {
                 let screen = run.screen.clone();
                 let started = Instant::now();
+                // The header of old runbooks writes the section itself (spec
+                // 12.3).
+                let header = code.starts_with("exec > >(tee -a ");
+                let log_id = (!header).then_some(run.id);
                 let run = Some(run);
+                if let Some(id) = log_id {
+                    let time = SystemTime::now();
+                    self.log(log::Message::Start {
+                        id,
+                        name: label,
+                        time,
+                    });
+                }
                 self.ran.insert(
                     i,
                     Ran {
@@ -953,6 +1111,8 @@ impl App {
                         run,
                         started,
                         ended: None,
+                        log_id,
+                        code,
                     },
                 );
                 view::Status::Running(Duration::ZERO)
@@ -968,6 +1128,7 @@ impl App {
             }
         };
         self.view.set_status(i, status);
+        self.view.set_changed(i, false);
         let _ = self.view.set_alternate(i, false);
         self.view.set_output(i, term::Rows::default(), size);
     }
@@ -976,19 +1137,30 @@ impl App {
     /// the next frame.
     fn read(&mut self, i: usize, event: run::Event) {
         let ran = self.ran.get_mut(&i).expect("a message comes from a run");
+        let id = ran.log_id;
         match event {
-            run::Event::Output(_) => {}
+            run::Event::Output(bytes) => {
+                if let Some(id) = id {
+                    self.log(log::Message::Output { id, bytes });
+                }
+            }
             run::Event::Exit(status) => {
                 let run = ran.run.take().expect("a run sends its exit status once");
                 ran.ended = Some(Instant::now());
+                let took = ran.started.elapsed();
                 // A paste for the program has nowhere to go.
-                if matches!(self.question, Some(Question::Paste(j, _)) if j == i) {
+                if matches!(self.question, Some(Question::Paste { block, .. }) if block == i) {
                     self.question = None;
                     self.view.question = None;
                 }
+                if let Some(id) = id {
+                    let (rc, time) = (status.rc(), SystemTime::now());
+                    self.log(log::Message::End { id, rc, time });
+                }
+                // A reload removed the block, which stayed while it ran.
+                self.reapply |= self.view.doc.blocks[i].problem == Some(doc::REMOVED);
                 let saved = self.session.finish(&run);
                 let input = self.view.input_block() == Some(i);
-                let took = ran.started.elapsed();
                 let ended = view::Status::Ended {
                     status,
                     took,
@@ -1008,10 +1180,150 @@ impl App {
         self.changed.insert(i);
     }
 
+    /// Reads the runbook again, and applies it (spec 10).
+    fn reload(&mut self, size: Size) {
+        match read_runbook(self.session.file()) {
+            // An editor can write the file with no change, as vim does on
+            // :w.
+            Ok(text) if text == self.text => self.notify("reloaded: no change".into()),
+            Ok(text) => {
+                self.text = text;
+                let (summary, _) = self.apply(size);
+                self.notify(summary);
+            }
+            Err(message) => self.notify(format!("no reload: {message}")),
+        }
+    }
+
+    /// Takes the blocks of `self.text`, and returns the summary of the
+    /// changes for the footer, and whether the keys pause. Each block keeps
+    /// the output and the result of the block that it matches. A block
+    /// that the text removed stays at the end while it runs (spec 10).
+    fn apply(&mut self, size: Size) -> (String, bool) {
+        let old = &self.view.doc;
+        let mut doc = doc::parse(&self.text);
+        let mut matches = doc::match_blocks(&old.blocks, &doc.blocks);
+        let mut moves = doc::moves(&matches, old.blocks.len());
+        // The summary compares with the file before, which had no block
+        // that a reload removed while it ran.
+        let in_file = |i: usize| old.blocks[i].problem != Some(doc::REMOVED);
+        let new = matches.iter().filter(|m| !m.is_some_and(in_file)).count();
+        let changed = (matches.iter().zip(&doc.blocks))
+            .filter(|(m, block)| m.is_some_and(|i| in_file(i) && old.blocks[i].code != block.code))
+            .count();
+        let removed = (moves.iter().enumerate())
+            .filter(|&(i, m)| m.is_none() && in_file(i))
+            .count();
+        for (i, moved) in moves.iter_mut().enumerate() {
+            if moved.is_none() && self.view.running(i) {
+                doc.keep_removed(old, i);
+                *moved = Some(matches.len());
+                matches.push(Some(i));
+            }
+        }
+        let mut ran = BTreeMap::new();
+        for (j, m) in matches.iter().enumerate() {
+            if let Some(run) = m.and_then(|i| self.ran.remove(&i)) {
+                ran.insert(j, run);
+            }
+        }
+        self.ran = ran;
+        self.changed = self.ran.keys().copied().collect();
+        let since_run = (0..doc.blocks.len()).map(|j| {
+            let ran = self.ran.get(&j);
+            ran.is_some_and(|ran| ran.code != doc.blocks[j].code)
+        });
+        let since_run = since_run.collect();
+        // A Re-run question asked about the code that the block had: `y`
+        // must not run other code under the same question.
+        let follows = |i: usize, j: usize| old.blocks[i].code == doc.blocks[j].code;
+        match &mut self.question {
+            Some(Question::Rerun(i)) if moves[*i].is_some_and(|j| follows(*i, j)) => {
+                *i = moves[*i].expect("the block moved");
+            }
+            // The question of a paste ends with its run, and a block that
+            // runs stays through a reload.
+            Some(Question::Paste { block: i, .. }) => {
+                *i = moves[*i].expect("a block that runs stays");
+            }
+            Some(Question::Rerun(_)) => {
+                self.question = None;
+                self.view.question = None;
+            }
+            Some(Question::Quit) | None => {}
+        }
+        let before = (self.view.selected).map(|s| (moves[s], old.blocks[s].code.clone()));
+        self.view.reload(doc, &matches, &moves, since_run);
+        // An Enter or a `y` typed as the file changed would run code that
+        // the screen did not show yet: the block that the selection moved
+        // to, or the new code of the selected block (spec 10).
+        let selected = self.view.selected;
+        let same = |(moved, code): (Option<usize>, String)| {
+            moved == selected && selected.is_some_and(|t| self.view.doc.blocks[t].code == code)
+        };
+        // Keys that go to a program are not for the document.
+        let pause =
+            self.view.input_block().is_none() && selected.is_some() && !before.is_some_and(same);
+        if pause {
+            self.paused_until = Some(Instant::now() + PAUSE);
+        }
+        // A reload can change the label of the block of the question.
+        if let Some(question @ (Question::Rerun(_) | Question::Paste { .. })) = &self.question {
+            self.view.question = Some(self.question_text(question));
+        }
+        self.resize(size);
+        let counts = [(new, "new"), (changed, "changed"), (removed, "removed")];
+        let parts: Vec<String> = (counts.iter().filter(|(n, _)| *n > 0))
+            .map(|(n, what)| format!("{n} {what}"))
+            .collect();
+        let summary = match parts.is_empty() {
+            true => "reloaded: no change".into(),
+            false => format!("reloaded: {}", parts.join(", ")),
+        };
+        match pause {
+            true => (summary + "; keys off for 1 s", true),
+            false => (summary, false),
+        }
+    }
+
+    /// Sends a message to the thread of the log, if there is a log. The
+    /// message waits in the queue while the channel is full: the main
+    /// thread never blocks on a slow disk (spec 13).
+    fn log(&mut self, message: log::Message) {
+        if let Some(log) = &self.log {
+            self.log_queue.push_back(message);
+            send_queued(log, &mut self.log_queue);
+        }
+    }
+
+    /// After the event loop: reads the last output and the end of each run
+    /// that writes to the log, for up to `wait`, so that the log gets them.
+    fn drain_runs(&mut self, control: &Receiver<Control>, wait: Duration) {
+        let deadline = Instant::now() + wait;
+        let logs = |ran: &Ran| ran.run.is_some() && ran.log_id.is_some();
+        while self.log.is_some() && self.ran.values().any(logs) {
+            match self.next(control, Some(deadline)) {
+                Some(Ok(Incoming::Run(i, event))) => self.read(i, event),
+                Some(Ok(_)) => {}
+                Some(Err(_)) | None => break,
+            }
+        }
+        if let Some(log) = &self.log {
+            for message in self.log_queue.drain(..) {
+                if log.send_deadline(message, deadline).is_err() {
+                    break;
+                }
+            }
+        }
+    }
+
     /// Makes the rows of the output that changed (spec 6.3). A terminal that
     /// its reader holds gives its rows at a later frame: the reader sends an
     /// event after it.
     fn refresh(&mut self, size: Size) {
+        if std::mem::take(&mut self.reapply) && self.apply(size).1 {
+            self.notify("keys off for 1 s: the selection moved".into());
+        }
         // The blocks whose terminal the reader held: their rows wait for a
         // later frame, as do those that the full-screen view hides.
         let mut later = BTreeSet::new();
@@ -1110,6 +1422,18 @@ impl App {
     }
 }
 
+/// Sends the messages of `queue` to the thread of the log while its
+/// channel has room.
+fn send_queued(log: &Sender<log::Message>, queue: &mut VecDeque<log::Message>) {
+    while let Some(message) = queue.pop_front() {
+        match log.try_send(message) {
+            Ok(()) => {}
+            Err(TrySendError::Full(message)) => return queue.push_front(message),
+            Err(TrySendError::Disconnected(_)) => return queue.clear(),
+        }
+    }
+}
+
 fn event_loop(
     terminal: &mut DefaultTerminal,
     app: &mut App,
@@ -1181,6 +1505,16 @@ fn event_loop(
                     Duration::ZERO
                 }
                 Incoming::Control(Control::Signal(signal)) => return Ok(Exit::Signal(signal)),
+                Incoming::Control(Control::Log(text)) => {
+                    app.notify(text);
+                    Duration::ZERO
+                }
+                Incoming::Control(Control::Changed) => {
+                    // Before the read: a change during it sends a new event.
+                    app.reload_pending.store(false, Ordering::Release);
+                    app.reload(size);
+                    Duration::ZERO
+                }
                 Incoming::Tick => {
                     app.tick();
                     Duration::ZERO
@@ -1218,6 +1552,8 @@ enum Action {
     /// Open the full-screen view of the selected block, if it has run
     /// (spec 7.3).
     Output,
+    /// Read the runbook again (spec 10).
+    Reload,
 }
 
 /// On a screen too small for the view, only the keys that quit work. A
@@ -1244,6 +1580,7 @@ fn action(event: &Event, size: Size) -> Option<Action> {
         // ctrl-o leaves input mode and the full-screen view: twice, it
         // would go back to them, and send the next keys to the program.
         KeyCode::Char('o') if !ctrl => Action::Output,
+        KeyCode::Char('r') if ctrl => Action::Reload,
         _ => return None,
     };
     (action == Action::Quit || !view::too_small(size)).then_some(action)
@@ -1507,6 +1844,8 @@ mod tests {
             (key(KeyCode::Char('i')), Some(Action::Input)),
             (key(KeyCode::Char('o')), Some(Action::Output)),
             (ctrl('o'), None),
+            (ctrl('r'), Some(Action::Reload)),
+            (key(KeyCode::Char('r')), None),
             (key(KeyCode::Char('x')), None),
         ];
         for (key, expected) in cases {
@@ -1537,6 +1876,16 @@ mod tests {
     }
 
     #[test]
+    fn a_runbook_that_is_a_fifo_fails_at_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let fifo = tmp.path().join("run.md");
+        let mode = rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR;
+        rustix::fs::mknodat(rustix::fs::CWD, &fifo, rustix::fs::FileType::Fifo, mode, 0).unwrap();
+        let error = read_runbook(&fifo).unwrap_err();
+        assert!(error.ends_with(": not a regular file"), "{error}");
+    }
+
+    #[test]
     fn io_messages_lose_the_os_error_number() {
         let error = std::io::Error::from_raw_os_error(2);
         assert_eq!(io_message(&error), "No such file or directory");
@@ -1560,6 +1909,392 @@ mod tests {
     fn key(app: &mut App, code: KeyCode) {
         let key = Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
         assert_eq!(app.handle(&key, SIZE), None);
+    }
+
+    /// Gives `app` a log at `path`, and returns the thread that writes it.
+    fn with_log(app: &mut App, path: &Path) -> std::thread::JoinHandle<()> {
+        let (log, thread) = log::spawn(log::open(path).unwrap(), |e| panic!("{e}"));
+        app.log = Some(log);
+        thread
+    }
+
+    /// The lines of the log of `app` at `path`, once its thread wrote them.
+    fn log_lines(app: &mut App, thread: std::thread::JoinHandle<()>, path: &Path) -> Vec<String> {
+        drop(app.log.take());
+        thread.join().unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        text.lines().map(String::from).collect()
+    }
+
+    #[test]
+    fn a_run_writes_its_section_in_the_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("run.log");
+        let mut app = app(
+            "```bash [name:hello]\nprintf 'hi\\r\\nthere'\n```\n",
+            tmp.path(),
+        );
+        let thread = with_log(&mut app, &path);
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        let lines = log_lines(&mut app, thread, &path);
+        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert!(lines[0].starts_with("=== START hello "), "{lines:?}");
+        assert_eq!(lines[1..3], ["hi", "there"]);
+        assert!(lines[3].starts_with("=== END hello rc=0 "), "{lines:?}");
+    }
+
+    #[test]
+    fn a_run_that_ends_while_another_writes_goes_in_the_log_at_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("run.log");
+        let text = "```bash [name:long]\necho a1; sleep 0.5; echo a2\n```\n\n\
+                    ```bash [name:short]\necho b1\n```\n";
+        let mut app = app(text, tmp.path());
+        let thread = with_log(&mut app, &path);
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !app.view.output(0).is_empty());
+        key(&mut app, KeyCode::Char('j'));
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        // The times at the end of the START and END lines vary.
+        let lines = log_lines(&mut app, thread, &path).into_iter().map(|line| {
+            match line.starts_with("=== START") || line.starts_with("=== END") {
+                true => line.rsplit_once(' ').unwrap().0.to_string(),
+                false => line,
+            }
+        });
+        let expected = [
+            "=== START long",
+            "a1",
+            "=== START short",
+            "b1",
+            "=== END short rc=0",
+            "=== CONTINUE long",
+            "a2",
+            "=== END long rc=0",
+        ];
+        assert_eq!(lines.collect::<Vec<_>>(), expected);
+    }
+
+    #[test]
+    fn a_block_with_the_header_of_old_runbooks_writes_no_section() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("run.log");
+        let old = "```bash [name:old]\nexec > >(tee -a /dev/null) 2>&1\necho old\n```\n\n";
+        let new = "```bash [name:new]\necho new\n```\n";
+        let mut app = app(&format!("{old}{new}"), tmp.path());
+        let thread = with_log(&mut app, &path);
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        key(&mut app, KeyCode::Char('j'));
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        let lines = log_lines(&mut app, thread, &path);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines[0].starts_with("=== START new "), "{lines:?}");
+    }
+
+    /// An app on the runbook `text`, which is also in the file `run.md`.
+    fn app_on_file(text: &str, tmp: &Path) -> App {
+        let mut app = app(text, tmp);
+        std::fs::write(app.session.file(), text).unwrap();
+        app.text = text.into();
+        app
+    }
+
+    fn fence(name: &str, code: &str) -> String {
+        format!("```bash [name:{name}]\n{code}\n```\n\n")
+    }
+
+    #[test]
+    fn a_reload_keeps_the_output_of_each_block_and_marks_the_changed_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let unnamed = "```bash\necho c\n```\n\n";
+        let first = [fence("a", "echo a"), fence("b", "echo b"), unnamed.into()].concat();
+        let mut app = app_on_file(&first, tmp.path());
+        for _ in 0..3 {
+            enter(&mut app, SIZE);
+            read_until(&mut app, SIZE, |app| !running(app));
+            key(&mut app, KeyCode::Char('j'));
+        }
+        app.view.select_first(SIZE);
+        // b changes its code and moves up, c goes, and a block is new.
+        let second = [
+            fence("b", "echo B"),
+            fence("a", "echo a"),
+            fence("new", "true"),
+        ]
+        .concat();
+        std::fs::write(app.session.file(), &second).unwrap();
+        assert_eq!(app.handle(&ctrl('r'), SIZE), None);
+        assert_eq!(
+            app.view.notice.as_deref(),
+            Some("reloaded: 1 new, 1 changed, 1 removed")
+        );
+        // The selection stays on a.
+        assert_eq!(app.view.selected, Some(1));
+        assert_eq!(app.view.doc.label(1), "a");
+        let text = |i| {
+            app.view
+                .output(i)
+                .iter()
+                .map(Line::to_string)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            (text(0), text(1), text(2)),
+            (vec!["b".into()], vec!["a".into()], vec![])
+        );
+        assert!(app.view.changed(0) && !app.view.changed(1));
+        assert!(app.view.status(2).is_none());
+        // A question follows its block, and goes with it. The next key
+        // answers a question: a change of the file reloads it.
+        key(&mut app, KeyCode::Char('k'));
+        enter(&mut app, SIZE);
+        assert_eq!(app.question, Some(Question::Rerun(0)));
+        std::fs::write(
+            app.session.file(),
+            [fence("x", "true"), second.clone()].concat(),
+        )
+        .unwrap();
+        app.reload(SIZE);
+        assert_eq!(app.question, Some(Question::Rerun(1)));
+        std::fs::write(app.session.file(), fence("a", "echo a")).unwrap();
+        app.reload(SIZE);
+        assert_eq!((&app.question, &app.view.question), (&None, &None));
+        // The selection moved to a, which Enter would run unseen: the keys
+        // pause, as after the end of a run.
+        let notice = app.view.notice.as_deref();
+        assert_eq!(notice, Some("reloaded: 3 removed; keys off for 1 s"));
+        assert!(app.paused_until.is_some());
+        app.paused_until = None;
+        std::fs::write(app.session.file(), &second).unwrap();
+        app.reload(SIZE);
+        // A run of b clears its mark, and a reload with no change says so.
+        key(&mut app, KeyCode::Char('k'));
+        enter(&mut app, SIZE);
+        key(&mut app, KeyCode::Char('y'));
+        assert!(!app.view.changed(0));
+        read_until(&mut app, SIZE, |app| !running(app));
+        app.handle(&ctrl('r'), SIZE);
+        assert_eq!(app.view.notice.as_deref(), Some("reloaded: no change"));
+    }
+
+    #[test]
+    fn a_block_that_a_reload_removes_stays_until_its_run_ends() {
+        let tmp = tempfile::tempdir().unwrap();
+        let first = [fence("first", "true"), fence("long", "sleep 1; echo done")].concat();
+        let mut app = app_on_file(&first, tmp.path());
+        key(&mut app, KeyCode::Char('j'));
+        enter(&mut app, SIZE);
+        // The full-screen view of the block follows it, through a change
+        // of the file: its keys go to the program.
+        key(&mut app, KeyCode::Char('o'));
+        std::fs::write(app.session.file(), "Text.\n").unwrap();
+        app.reload(SIZE);
+        assert!(matches!(&app.view.mode, view::Mode::Full(full) if full.block == 0));
+        app.handle(&ctrl('o'), SIZE);
+        // The removed block keeps its own code.
+        let (lines, blocks) = app.view.rows(60);
+        let code = lines[blocks[0].clone()].iter().map(Line::to_string);
+        assert!(code.into_iter().any(|line| line.contains("sleep 1")));
+        // The summary compares with the file before: the block counts as
+        // removed once, and its key back is a new block, with its run.
+        std::fs::write(app.session.file(), "Other text.\n").unwrap();
+        app.handle(&ctrl('r'), SIZE);
+        assert_eq!(app.view.notice.as_deref(), Some("reloaded: no change"));
+        let again = first.replace("first", "again");
+        std::fs::write(app.session.file(), again.replace("echo done", "echo DONE")).unwrap();
+        app.handle(&ctrl('r'), SIZE);
+        // The selected block has new code, which Enter would run unseen.
+        let notice = app.view.notice.as_deref();
+        assert_eq!(notice, Some("reloaded: 2 new; keys off for 1 s"));
+        app.paused_until = None;
+        assert!(running(&app) && app.view.changed(1));
+        std::fs::write(app.session.file(), "Text.\n").unwrap();
+        app.handle(&ctrl('r'), SIZE);
+        assert_eq!(app.view.notice.as_deref(), Some("reloaded: 2 removed"));
+        assert_eq!(app.view.doc.blocks.len(), 1);
+        assert_eq!(app.view.doc.blocks[0].problem, Some(doc::REMOVED));
+        assert!(running(&app));
+        assert_eq!(app.view.selected, Some(0));
+        read_until(&mut app, SIZE, |app| !running(app));
+        app.refresh(SIZE);
+        assert_eq!(app.view.doc.blocks.len(), 0);
+        assert_eq!(app.view.selected, None);
+        // The first block of a runbook that had none takes the selection.
+        std::fs::write(app.session.file(), fence("new", "true")).unwrap();
+        app.handle(&ctrl('r'), SIZE);
+        assert_eq!(app.view.selected, Some(0));
+        // Enter would run it unseen.
+        let notice = app.view.notice.as_deref();
+        assert_eq!(notice, Some("reloaded: 1 new; keys off for 1 s"));
+        app.paused_until = None;
+        // A runbook that cannot be read keeps the view as it is.
+        std::fs::remove_file(app.session.file()).unwrap();
+        app.handle(&ctrl('r'), SIZE);
+        let notice = app.view.notice.as_deref().unwrap();
+        assert!(notice.starts_with("no reload: cannot read "), "{notice}");
+    }
+
+    #[test]
+    fn a_run_that_stepbook_stops_ends_its_section_in_the_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("run.log");
+        let mut app = app(
+            "```bash [name:long]\necho started; sleep 30\n```\n",
+            tmp.path(),
+        );
+        let thread = with_log(&mut app, &path);
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !app.view.output(0).is_empty());
+        // As at the end of stepbook, after the event loop.
+        for (_, run) in app.runs() {
+            run.signal(Signal::KILL);
+        }
+        let (_sender, control) = crossbeam_channel::unbounded();
+        app.drain_runs(&control, Duration::from_secs(10));
+        let lines = log_lines(&mut app, thread, &path);
+        assert_eq!(lines[1], "started");
+        assert!(lines[2].starts_with("=== END long rc=137 "), "{lines:?}");
+    }
+
+    #[test]
+    fn a_full_log_holds_the_runs_that_write_to_it_and_loses_no_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\nseq 100000\n```\n", tmp.path());
+        // A channel that nothing reads yet, as with a disk that hangs.
+        let (log, messages) = crossbeam_channel::bounded(1);
+        app.log = Some(log);
+        enter(&mut app, SIZE);
+        let (_sender, control) = crossbeam_channel::unbounded();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        let mut reads = 0;
+        while let Some(incoming) = app.next(&control, Some(deadline)) {
+            if let Ok(Incoming::Run(i, event)) = incoming {
+                app.read(i, event);
+                reads += 1;
+            }
+        }
+        // The START line fills the channel, and the first output waits:
+        // the run gets no other read, and its program waits too.
+        assert_eq!((reads, app.log_queue.len()), (1, 1));
+        assert!(running(&app));
+        let thread = std::thread::spawn(move || {
+            let mut output = Vec::new();
+            for message in messages {
+                if let log::Message::Output { bytes, .. } = message {
+                    output.extend(bytes);
+                }
+            }
+            output
+        });
+        read_until(&mut app, SIZE, |app| !running(app));
+        // The messages that wait in the queue, as at the end of stepbook.
+        app.drain_runs(&control, Duration::from_secs(10));
+        drop(app.log.take());
+        let output = String::from_utf8(thread.join().unwrap()).unwrap();
+        let lines: Vec<&str> = output.lines().collect();
+        assert_eq!((lines.len(), lines.last()), (100_000, Some(&"100000")));
+    }
+
+    #[test]
+    fn a_full_log_holds_only_the_runs_that_write_to_it() {
+        let tmp = tempfile::tempdir().unwrap();
+        // The header of old runbooks: the run writes no section.
+        let text = "```bash\nexec > >(tee -a /dev/null) 2>&1\necho old\n```\n";
+        let mut app = app(text, tmp.path());
+        let (log, messages) = crossbeam_channel::bounded(1);
+        app.log = Some(log);
+        let end = |id| log::Message::End {
+            id,
+            rc: 0,
+            time: SystemTime::now(),
+        };
+        app.log(end(98));
+        app.log(end(99));
+        assert_eq!(app.log_queue.len(), 1);
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        assert_eq!(app.log_queue.len(), 1);
+        // With no run left, the loop still sends what waits, once the log
+        // has room.
+        let reader = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(50));
+            messages.iter().count()
+        });
+        let (_sender, control) = crossbeam_channel::unbounded();
+        let deadline = Instant::now() + Duration::from_millis(500);
+        assert!(app.next(&control, Some(deadline)).is_none());
+        assert!(app.log_queue.is_empty());
+        drop(app.log.take());
+        assert_eq!(reader.join().unwrap(), 2);
+    }
+
+    #[test]
+    fn the_tick_comes_while_a_block_runs() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\nsleep 1\n```\n", tmp.path());
+        app.ticks = crossbeam_channel::tick(Duration::from_millis(10));
+        enter(&mut app, SIZE);
+        let (_sender, control) = crossbeam_channel::unbounded();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        let incoming = app.next(&control, Some(deadline));
+        assert!(matches!(incoming, Some(Ok(Incoming::Tick))));
+        app.ticks = crossbeam_channel::never();
+        read_until(&mut app, SIZE, |app| !running(app));
+    }
+
+    #[test]
+    fn the_drain_at_the_end_waits_only_for_the_runs_that_write_to_the_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("run.log");
+        let mut app = app("```bash\ntrue\n```\n\n```bash\nsleep 30\n```\n", tmp.path());
+        let thread = with_log(&mut app, &path);
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        let (_sender, control) = crossbeam_channel::unbounded();
+        let quick = Duration::from_secs(5);
+        // A run that ended.
+        let start = Instant::now();
+        app.drain_runs(&control, Duration::from_secs(10));
+        assert!(start.elapsed() < quick);
+        // A run that goes on, with no log.
+        log_lines(&mut app, thread, &path);
+        key(&mut app, KeyCode::Char('j'));
+        enter(&mut app, SIZE);
+        let start = Instant::now();
+        app.drain_runs(&control, Duration::from_secs(10));
+        assert!(start.elapsed() < quick);
+        for (_, run) in app.runs() {
+            run.signal(Signal::KILL);
+        }
+        read_until(&mut app, SIZE, |app| !running(app));
+    }
+
+    #[test]
+    fn the_messages_that_wait_for_the_log_go_at_the_end() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("Text.\n", tmp.path());
+        let (log, messages) = crossbeam_channel::bounded(1);
+        app.log = Some(log);
+        let end = |id| log::Message::End {
+            id,
+            rc: 0,
+            time: SystemTime::now(),
+        };
+        app.log(end(1));
+        app.log(end(2));
+        assert_eq!(app.log_queue.len(), 1);
+        let reader = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            messages.iter().count()
+        });
+        let (_sender, control) = crossbeam_channel::unbounded();
+        app.drain_runs(&control, Duration::from_secs(10));
+        drop(app.log.take());
+        assert_eq!(reader.join().unwrap(), 2);
     }
 
     #[test]
@@ -1665,6 +2400,15 @@ mod tests {
             app.view.notice.as_deref(),
             Some("already running: i to type, o to view")
         );
+        // Input mode clears it, as does the full-screen view of the run:
+        // it would hide the keys that leave.
+        key(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.view.notice, None);
+        app.handle(&ctrl('o'), SIZE);
+        enter(&mut app, SIZE);
+        key(&mut app, KeyCode::Char('o'));
+        assert_eq!(app.view.notice, None);
+        app.handle(&ctrl('o'), SIZE);
         key(&mut app, KeyCode::Down);
         enter(&mut app, SIZE);
         assert_eq!(
@@ -2137,6 +2881,96 @@ echo \"got $x\"
         // The terminal draws the tab of the first line as spaces.
         let line = format!("x{}y+z", " ".repeat(7));
         assert!(output(&app, 0).ends_with(&line), "{}", output(&app, 0));
+    }
+
+    #[test]
+    fn a_question_that_a_reload_moves_names_its_block_as_it_is_now() {
+        let tmp = tempfile::tempdir().unwrap();
+        let ran = "```bash\ntrue\n```\n\n";
+        let reads = "```bash\necho ready\nread -t 2\n```\n\n";
+        let mut app = app_on_file(&[ran, reads].concat(), tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        enter(&mut app, SIZE);
+        assert_eq!(app.view.question.as_deref(), Some("Re-run #1?"));
+        // A new unnamed block above shifts the labels of the others.
+        let new = "```bash\necho new\n```\n\n";
+        std::fs::write(app.session.file(), [new, ran, reads].concat()).unwrap();
+        app.reload(SIZE);
+        assert_eq!(app.view.question.as_deref(), Some("Re-run #2?"));
+        key(&mut app, KeyCode::Char('n'));
+        key(&mut app, KeyCode::Char('j'));
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 2).contains("ready"));
+        key(&mut app, KeyCode::Char('i'));
+        assert_eq!(app.handle(&Event::Paste("1\r2\r".into()), SIZE), None);
+        assert_eq!(app.view.question.as_deref(), Some("Paste 2 lines to #3?"));
+        std::fs::write(app.session.file(), [ran, reads].concat()).unwrap();
+        app.reload(SIZE);
+        assert_eq!(app.view.question.as_deref(), Some("Paste 2 lines to #2?"));
+        read_until(&mut app, SIZE, |app| !running(app));
+    }
+
+    #[test]
+    fn a_reload_that_changes_the_code_of_a_block_ends_its_question() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app_on_file(&fence("deploy", "echo safe"), tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        enter(&mut app, SIZE);
+        assert_eq!(app.question, Some(Question::Rerun(0)));
+        std::fs::write(app.session.file(), fence("deploy", "echo other")).unwrap();
+        app.reload(SIZE);
+        assert_eq!((&app.question, &app.view.question), (&None, &None));
+        let notice = app.view.notice.as_deref();
+        assert_eq!(notice, Some("reloaded: 1 changed; keys off for 1 s"));
+    }
+
+    #[test]
+    fn y_runs_no_block_that_a_reload_gave_a_problem() {
+        let tmp = tempfile::tempdir().unwrap();
+        let block = fence("x", "true");
+        let mut app = app_on_file(&block, tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        enter(&mut app, SIZE);
+        assert_eq!(app.question, Some(Question::Rerun(0)));
+        std::fs::write(app.session.file(), [block.as_str(), &block].concat()).unwrap();
+        app.reload(SIZE);
+        key(&mut app, KeyCode::Char('y'));
+        assert!(!running(&app));
+        let notice = app.view.notice.as_deref();
+        assert_eq!(notice, Some("cannot run: duplicate name"));
+    }
+
+    #[test]
+    fn a_reload_in_the_full_screen_view_after_the_run_pauses_the_keys() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app_on_file(&fence("deploy", "echo safe"), tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        key(&mut app, KeyCode::Char('o'));
+        std::fs::write(app.session.file(), fence("deploy", "echo other")).unwrap();
+        app.reload(SIZE);
+        // `o`, Enter and `y`, typed ahead, would run the new code unseen.
+        assert!(app.paused_until.is_some_and(|until| until > Instant::now()));
+    }
+
+    #[test]
+    fn a_reload_in_input_mode_pauses_no_key() {
+        let tmp = tempfile::tempdir().unwrap();
+        let text = fence("reads", "echo ready; read -t 2");
+        let mut app = app_on_file(&text, tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| output(app, 0).contains("ready"));
+        key(&mut app, KeyCode::Char('i'));
+        // The keys go to the program, which a change of the code does not
+        // change.
+        std::fs::write(app.session.file(), text.replace("ready", "set")).unwrap();
+        app.reload(SIZE);
+        assert_eq!(app.view.notice.as_deref(), Some("reloaded: 1 changed"));
+        assert_eq!(app.paused_until, None);
+        read_until(&mut app, SIZE, |app| !running(app));
     }
 
     #[test]

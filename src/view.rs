@@ -124,7 +124,9 @@ pub struct View {
     statuses: Vec<Option<Status>>,
     /// Whether the program of each block is on the alternate screen.
     alternates: Vec<bool>,
-    /// The width of the sidebar: the labels never change.
+    /// Whether the code of each block changed since its run (spec 10).
+    changed: Vec<bool>,
+    /// The width of the sidebar, which only a reload changes.
     sidebar: u16,
     /// The output under each block: the last rows of its terminal.
     outputs: Vec<Rows>,
@@ -154,6 +156,7 @@ impl View {
             background: None,
             statuses: vec![None; blocks],
             alternates: vec![false; blocks],
+            changed: vec![false; blocks],
             outputs: vec![Rows::default(); blocks],
             page: RefCell::default(),
             infos: RefCell::new(vec![None; blocks]),
@@ -267,18 +270,23 @@ impl View {
     fn footer(&self, width: u16) -> Line<'static> {
         let reversed = Style::new().add_modifier(Modifier::REVERSED);
         let state = (&self.question, self.input_block(), &self.mode, &self.notice);
+        let label = match (self.input_block(), &self.mode) {
+            (Some(_), _) => " INPUT ",
+            (None, Mode::Full(_)) => " OUTPUT ",
+            (None, _) => " NORMAL ",
+        };
         let (mode, text, end) = match state {
             (Some(question), ..) => (" CONFIRM ", escaped(question, Style::new()), " (y/N)"),
+            // In every mode: a failed write to the log says so only once.
+            (None, _, _, Some(notice)) => (label, escaped(notice, WARNING), ""),
             (None, Some(i), ..) => {
                 let keys = format!("keys go to {}  ^o leave", self.doc.label(i));
-                (" INPUT ", vec![Span::raw(keys)], "")
+                (label, vec![Span::raw(keys)], "")
             }
-            (None, None, Mode::Full(_), Some(notice)) => (" OUTPUT ", escaped(notice, WARNING), ""),
             (None, None, Mode::Full(full), None) => {
                 let keys = format!("{}  ↑↓ scroll  o back", self.doc.label(full.block));
-                (" OUTPUT ", vec![Span::raw(keys)], "")
+                (label, vec![Span::raw(keys)], "")
             }
-            (None, None, _, Some(notice)) => (" NORMAL ", escaped(notice, WARNING), ""),
             (None, None, _, None) => {
                 let status = self.selected.and_then(|i| self.statuses[i].as_ref());
                 let input = match status {
@@ -287,7 +295,7 @@ impl View {
                     Some(Status::NotStarted(_)) | None => "",
                 };
                 let keys = format!("↑↓ move  ↵ run{input}  q quit");
-                (" NORMAL ", vec![Span::raw(keys)], "")
+                (label, vec![Span::raw(keys)], "")
             }
         };
         // The mode and the end are ASCII: one column per byte.
@@ -347,7 +355,8 @@ impl View {
             // The first info row takes the list marker of the item.
             info.get_or_insert_with(|| {
                 let status = self.statuses[i].as_ref();
-                let rows = info_rows(&self.doc, i, status, self.alternates[i], page.widths[i]);
+                let (alternate, changed) = (self.alternates[i], self.changed[i]);
+                let rows = info_rows(&self.doc, i, status, alternate, changed, page.widths[i]);
                 prefixed(&page.firsts[i], &page.prefixes[i], rows).collect()
             });
         }
@@ -412,6 +421,61 @@ impl View {
         self.alternates[i]
     }
 
+    /// Sets whether the code of block `i` changed since its run.
+    pub fn set_changed(&mut self, i: usize, changed: bool) {
+        if self.changed[i] != changed {
+            self.changed[i] = changed;
+            self.infos.get_mut()[i] = None;
+        }
+    }
+
+    /// Takes the document of a reload (spec 10). For each block of `doc`,
+    /// `matches` gives the block that it was, if any, and `changed`
+    /// whether its code changed since its run; `moves` is the inverse of
+    /// `matches`. The state of each block follows it, and the selection
+    /// stays on its block, or moves to the next block if a reload removed
+    /// it.
+    pub fn reload(
+        &mut self,
+        doc: Document,
+        matches: &[Option<usize>],
+        moves: &[Option<usize>],
+        changed: Vec<bool>,
+    ) {
+        fn moved<T: Default>(old: &mut [T], matches: &[Option<usize>]) -> Vec<T> {
+            let take = |i: &Option<usize>| i.map(|i| std::mem::take(&mut old[i]));
+            matches
+                .iter()
+                .map(take)
+                .map(Option::unwrap_or_default)
+                .collect()
+        }
+        self.selected = match self.selected {
+            // Its block, else the next block still there, else the last.
+            Some(s) => moves[s..]
+                .iter()
+                .find_map(|&j| j)
+                .or(matches.len().checked_sub(1)),
+            None => (!matches.is_empty()).then_some(0),
+        };
+        self.mode = match std::mem::replace(&mut self.mode, Mode::Normal) {
+            Mode::Input(i) => moves[i].map_or(Mode::Normal, Mode::Input),
+            Mode::Full(full) => match moves[full.block] {
+                Some(block) => Mode::Full(Full { block, ..full }),
+                None => Mode::Normal,
+            },
+            Mode::Normal => Mode::Normal,
+        };
+        self.statuses = moved(&mut self.statuses, matches);
+        self.alternates = moved(&mut self.alternates, matches);
+        self.outputs = moved(&mut self.outputs, matches);
+        self.changed = changed;
+        self.sidebar = sidebar_width(&doc);
+        *self.infos.get_mut() = vec![None; doc.blocks.len()];
+        *self.page.get_mut() = None;
+        self.doc = doc;
+    }
+
     /// Sets the state of block `i`.
     pub fn set_status(&mut self, i: usize, status: Status) {
         if self.statuses[i].as_ref() != Some(&status) {
@@ -430,6 +494,11 @@ impl View {
             _ => self.shown(screen(size)).0.page.widths[i] as u16,
         };
         (columns, area.height.max(1))
+    }
+
+    #[cfg(test)]
+    pub fn changed(&self, i: usize) -> bool {
+        self.changed[i]
     }
 
     #[cfg(test)]
@@ -524,9 +593,12 @@ impl View {
             } else {
                 (Span::raw(" "), Style::new())
             };
+            // A block that a reload removed shows that it still runs.
             let glyph = match (self.doc.blocks[i].problem, &self.statuses[i]) {
+                (_, Some(Status::Running(_))) if !self.blink => Span::raw(" "),
+                (_, Some(status @ Status::Running(_))) => status_glyph(status),
                 (Some(_), _) => Span::styled("!", ERROR),
-                (None, Some(Status::Running(_))) if !self.blink => Span::raw(" "),
+                (None, Some(_)) if self.changed[i] => Span::styled("~", WARNING),
                 (None, Some(status)) => status_glyph(status),
                 (None, None) => Span::raw(" "),
             };
@@ -922,9 +994,13 @@ fn info_rows(
     i: usize,
     status: Option<&Status>,
     alternate: bool,
+    changed: bool,
     width: usize,
 ) -> Vec<Line<'static>> {
     let mut info = vec![Span::styled(doc.label(i), BOLD)];
+    if changed {
+        info.extend([Span::raw("  "), Span::styled("changed since run", WARNING)]);
+    }
     if let Some(status) = status {
         info.push(Span::raw("  "));
         info.extend(status_spans(status));
@@ -2090,6 +2166,27 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_block_whose_code_changed_since_its_run_says_so() {
+        let mut view = view("```bash [name:deploy]\nls\n```\n");
+        let ended = Status::Ended {
+            status: run::Status::Code(0),
+            took: Duration::from_secs(2),
+            saved: true,
+        };
+        view.set_status(0, ended);
+        view.set_changed(0, true);
+        assert_snapshot!(screen(&view, 80, 8), @"
+        ┌ blocks ───┬ run.md ──────────────────────────────────────────────────────────┐
+        │«blue,b:▶»«yellow:~» «blue,b:deploy»  │ «blue,b:▐ »«b:deploy»  «yellow:changed since run»  «green:✔» rc=0 0:02                         │
+        │           │ «blue,b:▐ »«blue:ls»                                                             │
+        │           │                                                                  │
+        │           │                                                                  │
+        │           │                                                                  │
+        └───────────┴──────────────────────────────────────────────────────────────────┘
+        ");
+    }
+
+    #[test]
     fn shades_are_darker_than_the_background_or_lighter_on_a_black_one() {
         let shades = |rgb| (shade(rgb, BLOCK_SHADE), shade(rgb, SELECTED_SHADE));
         let rgb = Color::Rgb;
@@ -2480,17 +2577,22 @@ pub(crate) mod tests {
         assert_snapshot!(footer(&view), @"«r: NORMAL »  ↑↓ move  ↵ run  q quit");
         view.selected = Some(0);
         view.mode = Mode::Input(0);
-        view.notice = Some("already running: i to type, o to view".into());
         assert_snapshot!(footer(&view), @"«r: INPUT »  keys go to check  ^o leave");
+        // A notification shows in every mode, in place of the keys.
+        view.notice = Some("cannot write the log: No space left on device".into());
+        assert_snapshot!(footer(&view), @"«r: INPUT »  «yellow:cannot write the log: No space left on device»");
         view.mode = Mode::Full(Full {
             block: 0,
             rows: Rows::default(),
             scroll: 0,
             back: None,
         });
+        assert_snapshot!(footer(&view), @"«r: INPUT »  «yellow:cannot write the log: No space left on device»");
+        view.notice = None;
         assert_snapshot!(footer(&view), @"«r: INPUT »  keys go to check  ^o leave");
         view.set_status(0, Status::NotStarted("cannot start".into()));
-        assert_snapshot!(footer(&view), @"«r: OUTPUT »  «yellow:already running: i to type, o to view»");
+        view.notice = Some("reloaded: 1 changed".into());
+        assert_snapshot!(footer(&view), @"«r: OUTPUT »  «yellow:reloaded: 1 changed»");
         view.notice = None;
         assert_snapshot!(footer(&view), @"«r: OUTPUT »  check  ↑↓ scroll  o back");
     }

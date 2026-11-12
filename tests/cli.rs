@@ -113,3 +113,32 @@ fn error_messages_show_control_characters_escaped() {
     let output = stepbook(&["a.md", name], None);
     assert!(stderr(&output).starts_with("stepbook: unexpected argument '/nonexistent/a^[]52"));
 }
+
+#[test]
+fn a_log_that_is_the_runbook_itself_exits_with_1() {
+    let dir = tempfile::tempdir().unwrap();
+    let notes = dir.path().join("notes.log");
+    std::fs::write(&notes, "# Runbook\n").unwrap();
+    let output = stepbook(&[notes.to_str().unwrap()], None);
+    assert_eq!(output.status.code(), Some(1));
+    let expected = |log: &std::path::Path| {
+        let log = log.display();
+        format!("stepbook: give a log with --log PATH, or --no-log: {log} is the runbook itself\n")
+    };
+    assert_eq!(stderr(&output), expected(&notes));
+    // A PATH that names the runbook through a link.
+    let file = runbook();
+    let link = dir.path().join("link.log");
+    std::os::unix::fs::symlink(file.path(), &link).unwrap();
+    let args = [
+        file.path().to_str().unwrap(),
+        "--log",
+        link.to_str().unwrap(),
+    ];
+    let output = stepbook(&args, None);
+    assert_eq!(output.status.code(), Some(1));
+    assert_eq!(stderr(&output), expected(&link));
+    // Without a log, stepbook goes on to the next check.
+    let output = stepbook(&[notes.to_str().unwrap(), "--no-log"], None);
+    assert!(stderr(&output).contains("run stepbook in a terminal"));
+}

@@ -19,7 +19,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 | 1 | Document view | Done, merged into `main` on 2026-11-10 |
 | 2 | Running blocks | Done, merged into `main` on 2026-11-11 |
 | 3 | Input and full-screen view | Done, merged into `main` on 2026-11-11 |
-| 4 | Log and reload | — |
+| 4 | Log and reload | Done, merged into `main` on 2026-11-12 |
 | 5 | Migration | — |
 
 Kamal signed off the build order and the new dependencies on 2026-11-09.
@@ -284,19 +284,91 @@ What tmux cannot show, in herdr: open the same runbook, and check that the dashe
 
 Kamal checked it on 2026-11-12: it looks fine.
 
+## Milestone 4: log and reload
+
+Kamal's choices on 2026-11-12: stepbook does not start if the log would be the runbook itself (spec 4); the watcher uses inotify through rustix, not the `notify` crate; the log removes escape sequences with `vte`, a direct dependency at the version of vt100.
+
+The plan, one commit per line, on the branch `m4-log-reload`:
+
+1. `docs`: this plan, and Kamal's choices (spec 4, 10, 13).
+2. `feat`: stepbook does not start if the log would be the runbook itself (4).
+3. `feat`: the cleaning of the output for the log: escape sequences removed with `vte`, CRLF as LF, a carriage return alone drops the partial line, U+FFFD for bytes that are not UTF-8, and a character split across two reads whole (12.1).
+4. `feat`: the log: one section per run, with its `START` and `END` lines, in a file created with mode 0600, and the output as it arrives; one marker line for output on the alternate screen (12.1). A thread of its own writes the log: a slow disk must not block the main thread (13).
+5. `feat`: one run writes to the log at a time: a run that starts meanwhile keeps its output in memory, then writes its section with its real start time (12.2). Kamal chose, during the work, that a run that ends meanwhile writes its section at once, and the other section goes on after a `=== CONTINUE <name>` line: a block that never ends held the log.
+6. `feat`: a block whose first line starts with the `exec > >(tee -a ` header of old runbooks writes no section (12.3).
+7. `feat`: block keys, and the matching of the blocks of two versions of the file (3, 10).
+8. `feat`: `ctrl-r` reloads the file: outputs, results and the selection follow the matching; changed blocks show `changed since run`, and removed blocks that run stay until their run ends; the footer gives a summary (10).
+9. `feat`: the watcher: inotify on the parent directory, and a reload 300 ms after the last change (10).
+
+Done when (spec 16): `watch.sh` sees the `END` line of a run, and two concurrent runs write contiguous sections. An edit of the runbook in vim during a run keeps each output and marks the changed blocks.
+
+Kamal signed off the plan on 2026-11-12.
+
+The 9 commits are in, with these choices of Kamal during the work:
+
+- The times of the log are in UTC, marked `Z`: the standard library has no time zones, and libc or a time crate would be one more dependency.
+- A run that ends while another writes to the log writes its whole section at once, and the other section goes on after a `=== CONTINUE <name>` line: a block that never ends held the log, and `watch.sh` waited for every block run after it.
+
+Two choices of Claude, recorded in the spec: a block that a reload removes while it runs stays at the end of the document, not only in the sidebar, since `i` and its output need a place in the view; the key of an unnamed block is its code, not a hash of it.
+
+The check in tmux on 2026-11-12, with `--log`: `watch.sh` printed the `END` line of a short block at once, while a long block ran, then the `END` of the long block, and exited; the log holds the section of the short block within that of the long block, which goes on after `=== CONTINUE long`; an edit of the runbook with vim during the run kept both outputs, marked the changed block with `~` and `changed since run`, and the footer said `reloaded: 1 changed`.
+
+### After the 9 commits
+
+- `cargo mutants` on the diff of the milestone: 138 mutants, 97 caught, 11 missed, 30 unviable, in 10 minutes. The misses got tests (a plain `r`, a question and the full-screen view that follow their block through a reload, the code that a removed block keeps, and `ESC[?25h`, which the log must not take for the alternate screen) or a simpler watcher; the mutants of the inotify flags are excluded: the bits are distinct.
+- `/simplify`, with 4 cleanup agents, on 2026-11-12: their findings are in `~/.cache/stepbook-review/lf/m4-simplify-findings.md`. The triage gave 9 commits, from 4d10a51 to 5828c51:
+  - Four defects, fixed: the log reads the alternate screen as vt100 does (modes 47 and 1049, and `ESC c` leaves it), under a property test that compares the two; the summary of a reload counts a removed block that still runs once; a question that a reload moves names its block by its new label; the channel to the log thread holds 64 messages, and while it is full, the main thread reads no output of the runs that write to the log, so that a slow disk slows their programs.
+  - Two more bounds on memory: a line of the log longer than 1 MiB is split (Claude's choice), and a run that waits for the log writes what it holds past 1 MiB, then goes on after a `=== CONTINUE <name>` line (Kamal's choice: two `tail -f` blocks held the output of the second one for the whole session).
+  - Cleanups: the inverse of the matches of a reload is built once, the writer of the log comes from the order of the run IDs, App drops the state that the session holds, and a reload of the same text does no parse.
+  - Skipped, with the reasons in the log of the review loop: the copies on the hot path of the cleaner, a BufWriter on the log, the parse at the end of a removed block, and three more.
+- Review loop, with a code reviewer and a security reviewer each round, in night mode. Accepted findings per round: 10, 3, 2, 2, 1, 0. Round 6 found no blocker and no should-fix: the loop converged on 2026-11-12. Among the findings:
+  - Round 1 (a blocker): the log followed a link, so a runbook from someone else could come with `run.log -> ~/.ssh/authorized_keys`. The log must now be a regular file of the user, not a link. Also: a failed END write kept the log from later runs; `y` ran a block that a reload gave a problem; a notification hid in input mode; the end waited on a stuck log thread for good; the read of a reload could block on a FIFO or a lease; a program could print an END line for watch.sh; a runbook behind a link never reloaded; an Enter typed as another writer saved the file ran a block that the user had not seen.
+  - Round 2: a log with other hard links; a Re-run question that a code change kept; held text kept on a failed CONTINUE write.
+  - Round 3: the pause after a reload in the full-screen view after a run; `o` kept a stale notification.
+  - Round 4: one report of a full disk could hide behind a question; Decided rows. Rejected: a check of the directory of the log, since whoever can write it can replace the runbook too (spec 12.1 says so).
+  - Round 5: changes of the runbook queued reloads ahead of the keys and the signals; the watcher now merges them.
+  - The log of the loop, with its Decisions and Follow-ups, is `~/.cache/stepbook-review/lf/m4-review-loop-log.md`.
+- The budget script of the review loop reads the cache of claude-statusbar, which has not changed since 2026-10-11: it showed 0% and no reset time. Night mode ran on an hourly resume job in its place, which the end of the loop deleted.
+- `cargo mutants` after the loop, on the diff of the milestone: 231 mutants, 180 caught, 13 missed, 1 timeout and 37 unviable, in 12 minutes. The misses got tests (the select of `App::next` with a full log and a tick, the drain at the end, the time of the pause, the selection after a reload of a runbook that had no block), a simpler question remap, or an exclusion with its reason. A second run on the functions with misses: 52 mutants, 46 caught, 5 unviable, 1 timeout (a hang that the tests catch).
+- The check in tmux on 2026-11-12, with `--log`: `watch.sh` printed the END line of `short` while `long` ran, and exited 0; an edit with `vim -Es` during the run kept both outputs, marked `short` with `~` and `changed since run`, and the footer said `reloaded: 1 changed; keys off for 1 s`; a forged END line got a space first in the log; the log has mode 0600; a log that is a link stopped the start with exit code 1, and its dangling target stayed absent; `q` gave exit code 0. Each of the 95 runbooks of `~/dev/claude/runbooks/` opens with no panic.
+
+### Choices made during the night, for Kamal to confirm
+
+The review loop ran in night mode, and Claude made these choices alone. The spec records each one; any of them can change on a new branch.
+
+1. A notification shows in input mode and in the full-screen view too, in place of the keys; `i`, and `o` on a running block, end a notification of the document view (6.1).
+2. The log must be a regular file of the user, with no other hard link, and not a symbolic link (12.1). `--log /dev/null` now fails: `--no-log` does that job.
+3. A line of output that starts with `=== START `, `=== END ` or `=== CONTINUE ` gets a space first in the log (12.1).
+4. After a reload that moves the selection or changes the code of the selected block, keys pause for 1 s, unless they go to a program (10). A Re-run question ends if the reload changes the code of its block.
+5. Writes to the log that fail show in the footer at most once every 10 s (12.1).
+6. Open, a choice of look: the NORMAL footer does not show `^r reload`, which the example of spec 6.1 shows.
+
+### Kamal's manual checklist of milestone 4
+
+What tmux cannot show, in herdr in Ghostty: open `~/dev/claude/runbooks/2026-11-12-stepbook-log-reload.md` with `stepbook` (with its log), keep a second pane for vim and `tail -f` of the log, and follow its five sections:
+
+1. Two runs in the log: the section of `short` comes whole, then `=== CONTINUE long`.
+2. An edit in vim with your config during a run: both outputs stay, and `~` and `changed since run` read well in your theme.
+3. The pause after a reload of the selected block: `keys off for 1 s`.
+4. A notification in input mode, in place of the keys, for 3 s.
+5. A forged END line gets a space first in the log.
+
 ## Next
 
 1. Kamal pushes `main`.
-2. Milestone 4, log and reload: Claude plans it for Kamal's sign-off. The open point on the default log of a FILE named `x.log` comes first.
+2. Kamal runs the manual checklist of milestone 4, and confirms or changes the choices made during the night (above).
+3. Milestone 5: migration.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
 
 ## Open points
 
+- Follow-ups of the review loop of milestone 4: invisible format characters (U+200B, the bidi controls) reach the log, where a human could take a forged line for an END line; a hung network mount can still block the read of a reload on the main thread; an existing log keeps its mode, such as 0644 from the old tee header; a reload shifts the `#<n>` labels, so two open sections can share a name; a block with the old logging header writes raw output into the same log, and one NUL makes `rg` in watch.sh skip the whole file (`rg -a` would fix it; milestone 5 drops the header).
+
 - Before the first push, Kamal creates `KamalF/stepbook` on GitHub and adds the remote. The sandbox cannot write `.git/config`.
 - Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
 - Follow-ups of the review loop of milestone 3: the input channel of a run holds up to 256 writes, pastes included, while a program reads no input; the full-screen view of an ended block makes the spans of its whole scrollback when it opens, 380 ms with crafted output that changes color on each cell at 180 columns; the answer to DSR 6 ignores origin mode, which vt100 does not expose.
 - Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal). Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
-- Before milestone 4 writes the log: the default log of a FILE named `x.log` is the runbook itself. Spec 4 needs a rule.
+- `run::tests::a_program_gets_the_position_of_its_cursor_from_the_terminal` failed under load too, once, during milestone 4, and passed alone.
 - `the_output_of_a_process_substitution_ends_before_the_run` fails its 900 ms bound under heavy load, such as two test suites at once: the reader of the run parses 20,000 lines of output in a debug build, and tee waits on the PTY. It did so before the last changes of milestone 2 too (checked on c7e5ca9, 2026-11-11). A single suite passes.
 - Claude drives stepbook in tmux from the sandbox with `scripts/tui.sh` and one steps file per check: it starts tmux, sends the keys and captures the pane. The sandbox stops the tmux server when a command ends. Checked on 2026-11-09.
