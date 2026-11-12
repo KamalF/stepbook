@@ -18,7 +18,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 |---|---|---|
 | 1 | Document view | Done, merged into `main` on 2026-11-10 |
 | 2 | Running blocks | Done, merged into `main` on 2026-11-11 |
-| 3 | Input and full-screen view | Done, merged into `main` on 2026-11-11. Kamal's manual checklist is open |
+| 3 | Input and full-screen view | Done, merged into `main` on 2026-11-11 |
 | 4 | Log and reload | — |
 | 5 | Migration | — |
 
@@ -210,9 +210,11 @@ What tmux cannot show, in herdr in Ghostty: open `~/dev/claude/runbooks/2026-11-
 5. After the run, `o` shows the output from its end, and `k` scrolls back.
 6. The look of the footer modes, the cursor, and the dim mark after a run that ended full-screen.
 
+Kamal ran the checklist on 2026-11-12: the six checks pass. Section 5 first scrolled the output of `pager`, which is one line: less draws on the alternate screen, and that screen goes away when less exits. Section 5 now runs `seq 200`, and section 6 explains the alternate screen.
+
 ## Next
 
-1. Kamal runs the manual checklist of milestone 3, and pushes `main`.
+1. Kamal pushes `main`.
 2. The look and feel review (see the open points).
 3. Milestone 4, log and reload.
 
