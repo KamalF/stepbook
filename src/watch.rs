@@ -3,6 +3,8 @@ use std::ffi::OsString;
 use std::mem::MaybeUninit;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use rustix::event::{PollFd, PollFlags, Timespec};
@@ -18,8 +20,15 @@ pub const SETTLE: Duration = Duration::from_millis(300);
 /// rename. Through a link, the watch is on the file that it names, which
 /// a write through the link changes. The thread ends when `changed`
 /// returns false.
+///
+/// `pending` merges the changes that the main thread has not taken yet:
+/// the watcher sets it before it calls `changed`, and calls it again only
+/// once the main thread has cleared it, before it reads the file. A file
+/// that another writer changes without end must not queue reloads ahead
+/// of the keys.
 pub fn spawn(
     file: &Path,
+    pending: Arc<AtomicBool>,
     mut changed: impl FnMut() -> bool + Send + 'static,
 ) -> std::io::Result<()> {
     let file = &std::fs::canonicalize(file)?;
@@ -40,7 +49,7 @@ pub fn spawn(
             match rustix::event::poll(&mut fds, timeout.as_ref()) {
                 Ok(0) => {
                     settled = None;
-                    if !changed() {
+                    if !pending.swap(true, Ordering::AcqRel) && !changed() {
                         return;
                     }
                     continue;
@@ -75,19 +84,21 @@ mod tests {
     use super::*;
     use crossbeam_channel::RecvTimeoutError;
 
-    /// A watch on `run.md` in a new directory, and the channel of its
-    /// changes.
+    /// A watch on `run.md` in a new directory, the channel of its
+    /// changes, and the flag of a change that waits.
     fn watched() -> (
         tempfile::TempDir,
         std::path::PathBuf,
         crossbeam_channel::Receiver<()>,
+        Arc<AtomicBool>,
     ) {
         let tmp = tempfile::tempdir().unwrap();
         let file = tmp.path().join("run.md");
         std::fs::write(&file, "a\n").unwrap();
         let (sender, receiver) = crossbeam_channel::unbounded();
-        spawn(&file, move || sender.send(()).is_ok()).unwrap();
-        (tmp, file, receiver)
+        let pending = Arc::new(AtomicBool::new(false));
+        spawn(&file, pending.clone(), move || sender.send(()).is_ok()).unwrap();
+        (tmp, file, receiver, pending)
     }
 
     const WAIT: Duration = Duration::from_secs(5);
@@ -96,7 +107,7 @@ mod tests {
 
     #[test]
     fn a_write_of_the_file_is_a_change_once_it_settles() {
-        let (_tmp, file, changes) = watched();
+        let (_tmp, file, changes, pending) = watched();
         let start = Instant::now();
         for text in ["b\n", "c\n", "d\n"] {
             std::fs::write(&file, text).unwrap();
@@ -105,12 +116,26 @@ mod tests {
         assert_eq!(changes.recv_timeout(WAIT), Ok(()));
         assert!(start.elapsed() >= SETTLE + Duration::from_millis(100));
         // Three writes in a row are one change.
+        pending.store(false, Ordering::Release);
         assert_eq!(changes.recv_timeout(NONE), Err(RecvTimeoutError::Timeout));
     }
 
     #[test]
+    fn a_change_that_waits_for_the_main_thread_covers_the_next_ones() {
+        let (_tmp, file, changes, pending) = watched();
+        std::fs::write(&file, "b\n").unwrap();
+        assert_eq!(changes.recv_timeout(WAIT), Ok(()));
+        std::fs::write(&file, "c\n").unwrap();
+        assert_eq!(changes.recv_timeout(NONE), Err(RecvTimeoutError::Timeout));
+        // Once the main thread takes the change, the next one comes.
+        pending.store(false, Ordering::Release);
+        std::fs::write(&file, "d\n").unwrap();
+        assert_eq!(changes.recv_timeout(WAIT), Ok(()));
+    }
+
+    #[test]
     fn a_rename_onto_the_file_is_a_change() {
-        let (tmp, file, changes) = watched();
+        let (tmp, file, changes, _pending) = watched();
         let new = tmp.path().join(".run.md.swp");
         std::fs::write(&new, "b\n").unwrap();
         assert_eq!(changes.recv_timeout(NONE), Err(RecvTimeoutError::Timeout));
@@ -126,14 +151,15 @@ mod tests {
         std::fs::write(&target, "a\n").unwrap();
         std::os::unix::fs::symlink(&target, &link).unwrap();
         let (sender, changes) = crossbeam_channel::unbounded();
-        spawn(&link, move || sender.send(()).is_ok()).unwrap();
+        let pending = Arc::new(AtomicBool::new(false));
+        spawn(&link, pending, move || sender.send(()).is_ok()).unwrap();
         std::fs::write(&link, "b\n").unwrap();
         assert_eq!(changes.recv_timeout(WAIT), Ok(()));
     }
 
     #[test]
     fn other_files_of_the_directory_are_no_change() {
-        let (tmp, _file, changes) = watched();
+        let (tmp, _file, changes, _pending) = watched();
         std::fs::write(tmp.path().join("run.log"), "log\n").unwrap();
         std::fs::write(tmp.path().join("run.md.bak"), "a\n").unwrap();
         assert_eq!(changes.recv_timeout(NONE), Err(RecvTimeoutError::Timeout));

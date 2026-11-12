@@ -14,6 +14,7 @@ use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
 
 use crossbeam_channel::{Receiver, RecvError, Select, Sender, TrySendError};
@@ -261,7 +262,10 @@ fn open(args: &Args) -> Result<Exit, String> {
     app.log = log;
     let changes = sender.clone();
     let file = app.session.file();
-    if let Err(e) = watch::spawn(file, move || changes.send(Control::Changed).is_ok()) {
+    let pending = app.reload_pending.clone();
+    if let Err(e) = watch::spawn(file, pending, move || {
+        changes.send(Control::Changed).is_ok()
+    }) {
         let reason = io_message(&e);
         app.notify(format!("ctrl-r reloads: no watch of the runbook: {reason}"));
     }
@@ -575,6 +579,9 @@ struct App {
     log_queue: VecDeque<log::Message>,
     /// The text of the runbook when stepbook last read it (spec 10).
     text: String,
+    /// A change of the runbook waits in the control channel: the watcher
+    /// sends no other until the loop takes it.
+    reload_pending: Arc<AtomicBool>,
     /// The run of a block that a reload removed has ended: the block goes
     /// at the next frame.
     reapply: bool,
@@ -641,6 +648,7 @@ impl App {
             log: None,
             log_queue: VecDeque::new(),
             text: String::new(),
+            reload_pending: Arc::default(),
             reapply: false,
         }
     }
@@ -1500,6 +1508,8 @@ fn event_loop(
                     Duration::ZERO
                 }
                 Incoming::Control(Control::Changed) => {
+                    // Before the read: a change during it sends a new event.
+                    app.reload_pending.store(false, Ordering::Release);
                     app.reload(size);
                     Duration::ZERO
                 }
