@@ -334,13 +334,7 @@ pub struct Run {
 }
 
 pub enum Event {
-    Output(
-        #[cfg_attr(
-            not(test),
-            expect(dead_code, reason = "the log of milestone 4 writes the output")
-        )]
-        Vec<u8>,
-    ),
+    Output(Vec<u8>),
     Exit(Status),
 }
 

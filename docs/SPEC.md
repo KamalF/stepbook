@@ -52,7 +52,7 @@ stepbook [--log PATH | --no-log] FILE
 | `-h`, `--help` / `-V`, `--version` | Prints help or the version. |
 
 - The first run starts in the current directory of the stepbook process.
-- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, not a regular file, larger than 1 MB or nested too deep, a log that would be the runbook itself, `bash` not found, current directory unreadable, stdout not a terminal, workspace or terminal setup failed) or terminal error during the session, such as a failed read of the keys. Exit code 2: invalid arguments. Exit code 101: a panic, which is a bug.
+- Exit code 0: normal quit. Exit code 1: startup error (file unreadable, not a regular file, larger than 1 MB or nested too deep, a log that would be the runbook itself or that cannot be opened, `bash` not found, current directory unreadable, stdout not a terminal, workspace or terminal setup failed) or terminal error during the session, such as a failed read of the keys. Exit code 2: invalid arguments. Exit code 101: a panic, which is a bug.
 - On SIGTERM, SIGHUP, SIGINT or SIGQUIT, stepbook cleans up (11), then dies of the signal. In raw mode, `ctrl-c` and `ctrl-\` are keys: SIGINT and SIGQUIT come only from `kill`.
 
 ## 5. Document
@@ -377,7 +377,7 @@ Blocks are matched by key between the old and the new file:
 - If runs are active, stepbook asks `N blocks running. Stop them and quit? (y/N)`, or `1 block running. Stop it and quit? (y/N)`. On `y`:
   1. It sends SIGHUP to the processes of each run, as the close of its PTY would: those of the session of its wrapper. `timeout` and `set -m` give a child a process group of its own, in the same session. A process that left the session with `setsid` does not get it. The footer says `stopping the blocks that run`, and keys do nothing.
   2. It waits up to 2 seconds, then sends SIGKILL to the processes of the runs still alive.
-  3. It writes their `END` lines to the log and quits.
+  3. It writes their `END` lines to the log and quits. stepbook waits up to 1 s for the end of the runs that it stopped, on a signal too, so that each section of the log ends with its `END` line.
 - stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide, as ratatui counts them. On a terminal set to draw them wide, such as VTE with that option or `xterm -cjk_width`, the text after such a character shifts, in code too, and a space can vanish.
 - While it runs, stepbook turns the autowrap of the terminal off: a character that the terminal draws wider than ratatui counts must not wrap into the row below and move what is there.
 - On exit, stepbook restores the terminal, autowrap, bracketed paste and the cursor included, and ends a synchronized update that a failed frame left open. It also deletes the workspace. It does the same on the signals of 4.
@@ -388,15 +388,17 @@ Blocks are matched by key between the old and the new file:
 
 ### 12.1 Format
 
-stepbook appends to the log file, which it creates with mode 0600. Each run writes one section:
+stepbook appends to the log file, which it creates with mode 0600. It opens the log at startup: if it cannot, it does not start. Each run writes one section:
 
 ```text
-=== START restart 14:03:07
+=== START restart 13:03:07Z
 ● api.service - API
      Active: active (running)
-=== END restart rc=0 14:03:09
+=== END restart rc=0 13:03:09Z
 ```
 
+- The times are in UTC, marked `Z`: the standard library of Rust has no time zones.
+- If a write to the log fails, the footer says so once, and stepbook goes on.
 - The `=== START <name>` and `=== END <name> rc=<N>` lines keep the runbook skill's format. `watch.sh` matches `^=== END <name> rc=` and keeps working.
 - An unnamed block uses `#<n>` as its name.
 - Output is written a line at a time, as each line ends, with ANSI escape sequences removed and CRLF turned into LF: until it ends, a carriage return can still drop the line. At the end of the run, a last line without a line feed is written with one. Control characters other than tab and line feed are dropped, C1 characters included.
@@ -429,7 +431,7 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 
 - Rust, one crate, no async runtime, no component framework. The target size is 2,000 to 3,000 lines without tests.
 - Dependencies: `pulldown-cmark`, `ratatui` with `crossterm`, `rustix` (the PTY, poll, inotify, and the signals to the processes of a run), `vt100` without its `std` feature (with it, vte keeps each byte of an OSC that never ends), `syntect` (bash syntax only), `vte` (the escape sequences in the log, at the version that vt100 uses), `crossbeam-channel`, `anyhow`, `signal-hook` (8.3). For tests only: `insta`, `tempfile`, `proptest`. A new dependency needs Kamal's approval and a line here.
-- The main thread owns all state, except the vt100 screen of each run, which the reader of the run feeds: the main thread only tries its lock. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events. One writer per run writes the keys to its PTY: a write to a program that reads no input would block the main thread.
+- The main thread owns all state, except the vt100 screen of each run, which the reader of the run feeds: the main thread only tries its lock. Other threads (terminal input, one reader per run, the file watcher, a tick timer) only send events. The thread of the log writes the sections, so that a slow disk never blocks the main thread. One writer per run writes the keys to its PTY: a write to a program that reads no input would block the main thread.
 - Control events (keys, paste, resize, signals, file change) go to their own channel. The loop handles them before pending output, so keys stay responsive while a block prints a lot.
 - After output, the loop reads the events of the next 16 ms before it draws: a program that prints a lot redraws the view at most about 60 times a second, and at least as often, since the frame ends after 16 ms even while output keeps coming.
 - Each run sends its output, then its exit status, through its own bounded channel, so that the end of a run never comes before its output. A slow UI slows the program, and no output is lost.
@@ -611,3 +613,5 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The watcher of the reload uses inotify through rustix, not the `notify` crate (10, 13), at Kamal's choice: no new crate, and Linux is the target of v1 | 2026-11-12 |
 | The log removes escape sequences with `vte`, a direct dependency at the version that vt100 uses (12.1, 13), at Kamal's choice: it is in the build already, and it parses UTF-8 split across reads | 2026-11-12 |
 | The log writes the output a line at a time, as each line ends (12.1): a carriage return can drop a line until it ends | 2026-11-12 |
+| The times of the log are in UTC, marked `Z` (12.1), at Kamal's choice: the standard library has no time zones, and libc or a time crate would be one more dependency | 2026-11-12 |
+| stepbook opens the log at startup, and does not start if it cannot; a write that fails later shows in the footer once (12.1) | 2026-11-12 |

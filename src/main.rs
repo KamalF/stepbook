@@ -1,11 +1,4 @@
 mod doc;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the writer of the log, in the next commit, uses it"
-    )
-)]
 mod log;
 mod run;
 mod term;
@@ -19,7 +12,7 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use crossbeam_channel::{Receiver, RecvError, Select, Sender};
 use ratatui::backend::CrosstermBackend;
@@ -199,6 +192,16 @@ fn open(args: &Args) -> Result<Exit, String> {
     if !std::io::stdout().is_terminal() {
         return Err("run stepbook in a terminal: its output is not a terminal".into());
     }
+    // The log opens before the workspace exists: a startup error leaves
+    // nothing to clean up.
+    let log = match &args.log {
+        Some(path) => Some(log::open(&dir.join(path)).map_err(|e| {
+            let reason = io_message(&e);
+            let path = path.display();
+            format!("give another --log PATH, or --no-log: cannot open the log {path}: {reason}")
+        })?),
+        None => None,
+    };
     let doc = doc::parse(&text);
     let (sender, control) = crossbeam_channel::unbounded();
     // Before the workspace exists, so that these signals always delete it,
@@ -230,9 +233,9 @@ fn open(args: &Args) -> Result<Exit, String> {
     let workspace = run::Workspace::create(&parent).map_err(fail)?;
     // The runs get absolute paths (spec 8.2).
     let file = dir.join(&args.file);
-    let log = args.log.as_ref().map(|log| dir.join(log));
+    let log_path = args.log.as_ref().map(|log| dir.join(log));
     let state = run::State::new(dir, std::env::vars_os());
-    let session = run::Session::new(workspace, bash, state, file, log).map_err(fail)?;
+    let session = run::Session::new(workspace, bash, state, file, log_path).map_err(fail)?;
     let mut terminal = set_up_terminal(session.workspace())
         .map_err(|e| format!("cannot set up the terminal: {}", io_message(&e)))?;
     let background = terminal_input()
@@ -242,6 +245,15 @@ fn open(args: &Args) -> Result<Exit, String> {
     let mut view = view::View::new(doc, title.to_string_lossy().into_owned());
     view.background = background;
     let mut app = App::new(view, session, crossbeam_channel::tick(TICK));
+    let failed = sender.clone();
+    let log = log.map(|file| {
+        let (log, thread) = log::spawn(file, move |error| {
+            let text = format!("cannot write the log: {}", io_message(&error));
+            let _ = failed.send(Control::Log(text));
+        });
+        app.log = Some(log);
+        thread
+    });
     std::thread::spawn(move || read_terminal(sender));
     let result = event_loop(&mut terminal, &mut app, &control);
     run::end_runs();
@@ -251,6 +263,13 @@ fn open(args: &Args) -> Result<Exit, String> {
     // after a SIGHUP: stepbook would end with 101, not die of the signal.
     // restore_terminal shows the cursor.
     std::mem::forget(terminal);
+    // The runs that stepbook stopped send their last output and their end
+    // now: their section in the log ends with its END line (spec 11).
+    app.drain_runs(LOG_WAIT);
+    drop(app.log.take());
+    if let Some(thread) = log {
+        let _ = thread.join();
+    }
     result.map_err(|e| format!("terminal error: {}", io_message(&e)))
 }
 
@@ -485,6 +504,8 @@ fn read_runbook(path: &Path) -> Result<String, String> {
 enum Control {
     Terminal(std::io::Result<Event>),
     Signal(i32),
+    /// A write to the log failed, as this text says.
+    Log(String),
 }
 
 /// Sends the terminal events, until the first error.
@@ -504,6 +525,8 @@ struct Ran {
     run: Option<run::Run>,
     started: Instant,
     ended: Option<Instant>,
+    /// The run in the messages to the log.
+    log_id: u64,
 }
 
 /// The state that the event loop owns.
@@ -527,6 +550,10 @@ struct App {
     paused_until: Option<Instant>,
     /// While stepbook stops the runs to quit: when it kills those left.
     stopping: Option<Instant>,
+    /// The thread that writes the log, unless there is no log.
+    log: Option<Sender<log::Message>>,
+    /// The runs that started, which give each run its ID in the log.
+    runs_started: u64,
 }
 
 /// A question in the footer (spec 7.4).
@@ -540,6 +567,10 @@ enum Question {
     /// not turn on bracketed paste (spec 7.2).
     Paste(usize, Vec<u8>),
 }
+
+/// How long stepbook waits, once it stopped the runs, for their end to
+/// reach the log (spec 11).
+const LOG_WAIT: Duration = Duration::from_secs(1);
 
 /// How long the runs have to end after SIGHUP, when stepbook quits (spec
 /// 11).
@@ -579,6 +610,8 @@ impl App {
             notice_until: None,
             paused_until: None,
             stopping: None,
+            log: None,
+            runs_started: 0,
         }
     }
 
@@ -972,6 +1005,13 @@ impl App {
                 let screen = run.screen.clone();
                 let started = Instant::now();
                 let run = Some(run);
+                self.runs_started += 1;
+                let log_id = self.runs_started;
+                self.log(log::Message::Start {
+                    id: log_id,
+                    name: label,
+                    time: SystemTime::now(),
+                });
                 self.ran.insert(
                     i,
                     Ran {
@@ -979,6 +1019,7 @@ impl App {
                         run,
                         started,
                         ended: None,
+                        log_id,
                     },
                 );
                 view::Status::Running(Duration::ZERO)
@@ -1002,8 +1043,9 @@ impl App {
     /// the next frame.
     fn read(&mut self, i: usize, event: run::Event) {
         let ran = self.ran.get_mut(&i).expect("a message comes from a run");
+        let id = ran.log_id;
         match event {
-            run::Event::Output(_) => {}
+            run::Event::Output(bytes) => self.log(log::Message::Output { id, bytes }),
             run::Event::Exit(status) => {
                 let run = ran.run.take().expect("a run sends its exit status once");
                 ran.ended = Some(Instant::now());
@@ -1012,6 +1054,10 @@ impl App {
                     self.question = None;
                     self.view.question = None;
                 }
+                let rc = status.rc();
+                let time = SystemTime::now();
+                self.log(log::Message::End { id, rc, time });
+                let ran = self.ran.get_mut(&i).expect("the run ended just now");
                 let saved = self.session.finish(&run);
                 let input = self.view.input_block() == Some(i);
                 let took = ran.started.elapsed();
@@ -1032,6 +1078,28 @@ impl App {
             }
         }
         self.changed.insert(i);
+    }
+
+    /// Sends a message to the thread of the log, if there is a log.
+    fn log(&self, message: log::Message) {
+        if let Some(log) = &self.log {
+            let _ = log.send(message);
+        }
+    }
+
+    /// After the event loop: reads the last output and the end of each run
+    /// that has not ended, for up to `wait`, so that the log gets them.
+    fn drain_runs(&mut self, wait: Duration) {
+        let deadline = Instant::now() + wait;
+        let running: Vec<usize> = self.runs().map(|(i, _)| i).collect();
+        for i in running {
+            while let Some(run) = self.ran.get(&i).and_then(|ran| ran.run.as_ref()) {
+                let Ok(event) = run.events.recv_deadline(deadline) else {
+                    break;
+                };
+                self.read(i, event);
+            }
+        }
     }
 
     /// Makes the rows of the output that changed (spec 6.3). A terminal that
@@ -1207,6 +1275,10 @@ fn event_loop(
                     Duration::ZERO
                 }
                 Incoming::Control(Control::Signal(signal)) => return Ok(Exit::Signal(signal)),
+                Incoming::Control(Control::Log(text)) => {
+                    app.notify(text);
+                    Duration::ZERO
+                }
                 Incoming::Tick => {
                     app.tick();
                     Duration::ZERO
@@ -1586,6 +1658,60 @@ mod tests {
     fn key(app: &mut App, code: KeyCode) {
         let key = Event::Key(KeyEvent::new(code, KeyModifiers::NONE));
         assert_eq!(app.handle(&key, SIZE), None);
+    }
+
+    /// Gives `app` a log at `path`, and returns the thread that writes it.
+    fn with_log(app: &mut App, path: &Path) -> std::thread::JoinHandle<()> {
+        let (log, thread) = log::spawn(log::open(path).unwrap(), |e| panic!("{e}"));
+        app.log = Some(log);
+        thread
+    }
+
+    /// The lines of the log of `app` at `path`, once its thread wrote them.
+    fn log_lines(app: &mut App, thread: std::thread::JoinHandle<()>, path: &Path) -> Vec<String> {
+        drop(app.log.take());
+        thread.join().unwrap();
+        let text = std::fs::read_to_string(path).unwrap();
+        text.lines().map(String::from).collect()
+    }
+
+    #[test]
+    fn a_run_writes_its_section_in_the_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("run.log");
+        let mut app = app(
+            "```bash [name:hello]\nprintf 'hi\\r\\nthere'\n```\n",
+            tmp.path(),
+        );
+        let thread = with_log(&mut app, &path);
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        let lines = log_lines(&mut app, thread, &path);
+        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert!(lines[0].starts_with("=== START hello "), "{lines:?}");
+        assert_eq!(lines[1..3], ["hi", "there"]);
+        assert!(lines[3].starts_with("=== END hello rc=0 "), "{lines:?}");
+    }
+
+    #[test]
+    fn a_run_that_stepbook_stops_ends_its_section_in_the_log() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("run.log");
+        let mut app = app(
+            "```bash [name:long]\necho started; sleep 30\n```\n",
+            tmp.path(),
+        );
+        let thread = with_log(&mut app, &path);
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !app.view.output(0).is_empty());
+        // As at the end of stepbook, after the event loop.
+        for (_, run) in app.runs() {
+            run.signal(Signal::KILL);
+        }
+        app.drain_runs(Duration::from_secs(10));
+        let lines = log_lines(&mut app, thread, &path);
+        assert_eq!(lines[1], "started");
+        assert!(lines[2].starts_with("=== END long rc=137 "), "{lines:?}");
     }
 
     #[test]
