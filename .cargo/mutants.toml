@@ -5,6 +5,9 @@ gitignore = true
 
 # Mutants that no test should catch. A run then shows only new gaps.
 exclude_re = [
+    # A selected block that ends at the top of the screen is under an
+    # output above the top too, which keeps the view in place either way.
+    "view.rs:\\d+:75: replace > with >= in View::scroll_after",
     # The event loop draws each frame and applies the action of each key:
     # the check in tmux covers it, and main::action has its own tests.
     "replace event_loop -> ",

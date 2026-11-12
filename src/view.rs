@@ -2730,6 +2730,21 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_block_just_under_the_screen_is_not_on_the_screen() {
+        let block = "```bash\nls\n```\n\n";
+        let mut view = view(&format!("{block}One.\n\nTwo.\n\n{block}"));
+        // The text of the view at SMALL is 56 columns wide, and 6 rows high.
+        let (_, blocks) = view.rows(56);
+        view.selected = Some(1);
+        view.scroll = blocks[1].start - 6;
+        // The output of block 0 grows on the screen: the view stays.
+        assert!(blocks[0].end > view.scroll);
+        let scroll = view.scroll;
+        view.set_output(0, output(&["o"; 3]), SMALL);
+        assert_eq!(view.scroll, scroll);
+    }
+
+    #[test]
     fn the_view_keeps_its_place_only_as_far_as_the_document_allows() {
         // The screen is taller than the document: the selected block moves
         // down, and output under it later moves nothing.
