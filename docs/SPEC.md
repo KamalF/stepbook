@@ -90,7 +90,7 @@ systemctl --user restart api
 | Element | Rendering |
 |---|---|
 | Heading | Bold. H1 and H2 have a rule under them. |
-| Paragraph | Word-wrapped to the view width. A soft line break is a space, and a hard line break is a new line. |
+| Paragraph | Word-wrapped to the view width, at most 100 columns (see below). A soft line break is a space, and a hard line break is a new line. |
 | Emphasis, strong, strikethrough, inline code | Terminal styles. Inline code uses a distinct color. |
 | Link | The link text, underlined. |
 | List, task list | Bullets `•` and `◦`, which alternate by level, or numbers. A nested list starts under the text of its item, so bullet lists indent 2 columns per level. Task items show `[ ]` or `[x]`. No Nerd Font glyphs. |
@@ -100,18 +100,18 @@ systemctl --user restart api
 | Raw HTML | Shown dimmed, as source. An HTML block keeps its lines, which wrap at any character. A line end in inline HTML is a space. |
 | Image | `[image: <alt text>]`. |
 | Block | An info line, the code with a gutter, then the output (see 6.3). Bash code is syntax-highlighted, except in a block with a line longer than 1,000 bytes, or in a block that would bring the highlighted code of the file past 32 KB, or past 4,000,000 for the sum of the squares of its line lengths. Comments show in italic, never dimmed: the grammar can take code that bash runs for a comment, and dimmed code would look inert. Long lines wrap at any character, so the view shows all the code that runs. A row that goes on from a wrapped line, of code or of the info line, has a dim `↪` in the second column of its gutter, as vim's showbreak does: without it, a part of a line that starts with `#` would pass for a comment. Code text never reaches the gutter, so a line that starts with `↪` cannot pass for such a row. A long info line wraps too, so its warnings always show. A blank line always follows a code block, even in a tight list: text right under it could pass for code. |
-| Other code block | The code and its gutter dimmed, not highlighted: code that cannot run looks inert, as frontmatter does. Long lines wrap as in a block. |
+| Other code block | The code and its gutter dimmed, not highlighted: code that never runs looks inert, as frontmatter does. Long lines wrap as in a block. |
 
 Prose takes at most 100 columns, after the prefixes of its lists and quotes: a paragraph, a heading with its rule, and a thematic break. On a wide terminal, longer lines of prose are hard to read. Code, output and tables take the full width of the view: a program prints to the width of its terminal.
 
 All colors come from the terminal's 16-color palette, so they follow the terminal's theme, except the background of blocks.
 
-Blocks have a background a little darker than the background of the terminal, so that they stand apart from the prose. The selected block has a darker one. The shade covers the info line and the code, from the column after the `▐` to the right edge of the text: the bar is the left edge of the block. The output keeps the background of the terminal, and so does code that cannot run.
+Blocks have a background a little darker than the background of the terminal, so that they stand apart from the prose. The selected block has a darker one. The shade covers the info line and the code, from the column after the `▐` to the right edge of the text: the bar is the left edge of the block. The output keeps the background of the terminal, and so do other code blocks.
 
 - The 16 colors have no shade close to the background: in Gruvbox, color 0 is the background itself. So at startup, stepbook asks the terminal for its background color (OSC 11), then for its device attributes (DA1). A terminal answers in order, and every terminal answers DA1, so stepbook waits for that answer, and at most 0.5 s.
 - The shade of a block takes 12 off each of the red, green and blue values of the background, from 0 to 255, and the shade of the selected block takes 20: `#282828` gives `#1c1c1c` and `#141414`. If the three values are all under 20, the shades add 12 and 20 instead: a darker shade would not show.
 - If the terminal gives no color, blocks have no background.
-- The keys typed before the answers arrive are lost: they come mixed with the answers.
+- The keys typed before the answers arrive are lost: they come mixed with the answers. stepbook reads the answers a byte at a time, and never past the answer to DA1. It drops a paste that starts before the answers to its end, even after the 0.5 s: the rest of the paste would reach the document view as keys, and a line feed in it would run the selected block (7.1).
 
 No nesting depth can crash stepbook: it walks the document without recursion (upmd issue S9, see 18). Prefixes show only the innermost 10 levels of blockquotes and list items, and they take at most half the width of the view: the outer levels go first, and the innermost level always stays. The text and the code keep room in the view, and a deep item keeps its marker.
 
@@ -136,7 +136,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 ```
 
 - **Sidebar:** one row per block, with a status glyph and the name. An unnamed block shows `#<n>`, where n is its position among all the blocks of the file, from 1. Its width, with its left border, is the longest name plus 4, between 12 and 30 columns. A longer name ends with `…`. The sidebar scrolls to keep the selected row visible, and it is hidden on terminals under 80 columns.
-- **Document view:** the rendered runbook. The gutter of the selected block, and its `▶` and name in the sidebar, are bold blue. Bold cyan was close to the green of `✔` in themes that draw bold colors bright, such as Gruvbox.
+- **Document view:** the rendered runbook, with 1 column of padding on each side: the rules under H1 and H2 touched the right border. The gutter of the selected block, and its `▶` and name in the sidebar, are bold blue. Bold cyan was close to the green of `✔` in themes that draw bold colors bright, such as Gruvbox.
 - **Footer:** the mode, then the keys that apply now: `i input` while the selected block runs, and `o output` once it has run. A notification or a question (7.4) shows in place of the keys. A notification lasts 3 seconds.
 - **Minimum size:** on a terminal smaller than 40 columns or 8 rows, stepbook shows only `Enlarge the terminal to at least 40 columns and 8 rows.`, and only the keys that quit work. A question (7.4) waits for a screen large enough to show it. The PTY of a block keeps its size until the screen is large enough again. Below that size, code under a list marker has no room, and the layout of a crafted file costs too much.
 
@@ -159,7 +159,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 
 - Each block that has run shows its output under the code. The output stays until the block runs again. Reloads do not clear it.
 - stepbook shows the last 15 rows of the block's terminal, scrollback included. Trailing empty rows are trimmed, except the cursor row while the block runs.
-- The output takes the column of the code, after the prefixes of the block. In the first column of the gutter, each output row has a dim `▕`, in the selection color on the selected block. A program cannot write to that column, so its output cannot pass for the info line or the code of a nested block: those have no mark there.
+- The output takes the column of the code, after the prefixes of the block. In the first column of the gutter, each output row has a dim `▕`, in the selection color on the selected block. A program cannot write to that column. So its output cannot pass for the info line or the code of a block in a list, whose rows have nothing there, and its mark differs from the `│` of a block in a quote.
 - PTY size: the columns of the block's code, which are the text width of the document view without the prefixes and the gutter of the block, by the terminal height minus 1. It follows terminal resizes.
 - Output keeps the colors of the program, 256 colors and RGB included, as in a terminal.
 - Scrollback keeps 5,000 lines per run.
@@ -599,7 +599,8 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The full-screen view opens only with `o` or `i`, or from input mode (6.3), at Kamal's choice: the automatic open sent keys typed for the document to the program, and a program that entered the alternate screen each second kept the keys off. This replaces the automatic open of 6.3, the guard of a key that waited for its frame, the rule of `ctrl-o` against the reopen, and the keys that a view opened again took during the pause. The done-when of milestone 3 changes with it (16) | 2026-11-11 |
 | Prose takes at most 100 columns; code, output and tables take the full width (5.3), at Kamal's choice: on a wide terminal, a paragraph ran to about 185 columns | 2026-11-12 |
 | The selection is bold blue (6.1), at Kamal's choice: Gruvbox with bold-is-bright drew bold cyan as light green | 2026-11-12 |
-| The code of a block that cannot run is dim, as its gutter is (5.3), at Kamal's choice: it looked like the code of a block | 2026-11-12 |
+| The code of other code blocks is dim, as their gutter is (5.3), at Kamal's choice: a `toml` block looked like a block that runs | 2026-11-12 |
 | Output rows have a dim `▕` in the column of the gutter (6.3), at Kamal's choice: output could print rows that passed for the code of a nested block | 2026-11-12 |
 | A question in the footer always shows its `(y/N)` (7.4): at 45 columns, the question to quit lost it | 2026-11-12 |
 | Blocks have a background darker than the background of the terminal, which stepbook asks with OSC 11, and the selected block a darker one (5.3), at Kamal's choice: blocks blended into the prose, and the `▐` alone did not set them apart. This ends the rule that stepbook sets no background color | 2026-11-12 |
+| The document view has 1 column of padding on each side (6.1): the rules under H1 and H2 touched the right border. The PTY of a block loses that column | 2026-11-12 |

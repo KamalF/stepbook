@@ -219,7 +219,7 @@ Kamal chose from the screens of a prototype, drawn in his theme, on 2026-11-12. 
 - Blocks that run get a background darker than the background of the terminal, from the column after the `▐` to the right edge of the view. The selected block gets a darker one. The output keeps the background of the terminal. On his Gruvbox Dark (`#282828`), the prototype drew `#1c1c1c` and `#141414`. stepbook asks the terminal for its background color (OSC 11) at startup: herdr answers it.
 - Prose takes at most 100 columns: paragraphs, headings, rules, lists and quotes. Code, output and tables keep the full width of the view.
 - The selection is bold blue, not bold cyan: with bold-is-bright, Gruvbox draws bold cyan as light green, close to the green of `✔`.
-- The code of a block that cannot run is dim, as its gutter is.
+- The code of other code blocks, which never runs, is dim, as their gutter is.
 - Output rows have a dim `▕` in the column of the gutter, in the selection color on the selected block. A program cannot write to that column, so its output can no longer pass for the code of a nested block.
 
 Two fixes need no choice: a question in the footer always shows its `(y/N)`, and the document view gets 1 column of padding at its right, so that the rules under H1 and H2 no longer touch the border.
@@ -230,7 +230,7 @@ The plan, one commit per line, on the branch `look-and-feel`:
 2. `fix`: 1 column of padding at the right of the document view.
 3. `feat`: prose takes at most 100 columns (5.3).
 4. `feat`: the selection is bold blue (6.1).
-5. `feat`: the code of a block that cannot run is dim (5.3).
+5. `feat`: the code of other code blocks is dim (5.3).
 6. `feat`: output rows have a mark in the column of the gutter (6.3).
 7. `fix`: a question in the footer always shows its `(y/N)` (7.4).
 8. `feat`: blocks that run get a darker background, from the answer of the terminal to OSC 11 (5.3, 6.1).

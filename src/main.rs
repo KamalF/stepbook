@@ -293,8 +293,12 @@ fn terminal_input() -> std::io::Result<OwnedFd> {
 /// ends there.
 const QUERY_WAIT: Duration = Duration::from_millis(500);
 
-/// The most bytes that stepbook reads while it waits for the answers.
+/// The most bytes that stepbook keeps while it waits for the answers. The
+/// bytes of a paste do not count.
 const MAX_ANSWERS: usize = 4096;
+
+const PASTE_START: &[u8] = b"\x1b[200~";
+const PASTE_END: &[u8] = b"\x1b[201~";
 
 /// Asks the terminal for its background color (OSC 11), then for its
 /// device attributes (DA1), and returns the color, as red, green and blue
@@ -302,6 +306,11 @@ const MAX_ANSWERS: usize = 4096;
 /// one that does not know OSC 11 gives no color, and stepbook waits no
 /// longer. The keys typed before the answers are lost: they would arrive
 /// mixed with them.
+///
+/// It reads a byte at a time, so that it never takes the start of a paste
+/// after the answers. A paste that starts before them, it drops to its
+/// end: crossterm would read the rest of the paste as keys, and a line
+/// feed in it would run the selected block (spec 7.1).
 fn query_background(
     input: BorrowedFd,
     output: &mut impl Write,
@@ -311,22 +320,59 @@ fn query_background(
     output.flush().ok()?;
     let end = Instant::now() + wait;
     let mut answers = Vec::new();
-    let mut buffer = [0; 256];
-    while device_attributes(&answers).is_none() && answers.len() < MAX_ANSWERS {
-        let left = end.saturating_duration_since(Instant::now());
-        let timeout = Timespec::try_from(left).unwrap_or_default();
-        let mut fds = [PollFd::new(&input, PollFlags::IN)];
-        match rustix::event::poll(&mut fds, Some(&timeout)) {
-            Ok(0) => break,
-            Ok(_) => match rustix::io::read(input, &mut buffer) {
-                Ok(0) | Err(_) => break,
-                Ok(n) => answers.extend_from_slice(&buffer[..n]),
-            },
-            Err(rustix::io::Errno::INTR) => {}
-            Err(_) => break,
+    // While a paste goes on, its last bytes.
+    let mut paste: Option<Vec<u8>> = None;
+    loop {
+        let answered = answers.last() == Some(&b'c') && device_attributes(&answers).is_some();
+        if paste.is_none() && (answered || answers.len() >= MAX_ANSWERS) {
+            break;
+        }
+        // A paste goes on to its end, unless the terminal stops sending.
+        let left = match paste {
+            Some(_) => wait,
+            None => end.saturating_duration_since(Instant::now()),
+        };
+        let Some(byte) = read_byte(input, left) else {
+            break;
+        };
+        match &mut paste {
+            Some(last) => {
+                last.push(byte);
+                if last.ends_with(PASTE_END) {
+                    paste = None;
+                } else if last.len() > PASTE_END.len() {
+                    last.remove(0);
+                }
+            }
+            None => {
+                answers.push(byte);
+                if answers.ends_with(PASTE_START) {
+                    answers.truncate(answers.len() - PASTE_START.len());
+                    paste = Some(Vec::new());
+                }
+            }
         }
     }
     parse_background(&answers)
+}
+
+/// The next byte of `input`, if one comes within `wait`.
+fn read_byte(input: BorrowedFd, wait: Duration) -> Option<u8> {
+    let timeout = Timespec::try_from(wait).unwrap_or_default();
+    let mut fds = [PollFd::new(&input, PollFlags::IN)];
+    loop {
+        match rustix::event::poll(&mut fds, Some(&timeout)) {
+            Ok(0) => return None,
+            Ok(_) => break,
+            Err(rustix::io::Errno::INTR) => {}
+            Err(_) => return None,
+        }
+    }
+    let mut byte = [0];
+    match rustix::io::read(input, &mut byte) {
+        Ok(1) => Some(byte[0]),
+        _ => None,
+    }
 }
 
 /// Where the answer to DA1 starts in `bytes`, if they hold all of it:
@@ -1242,6 +1288,49 @@ mod tests {
         let color = query_background(input.as_fd(), &mut Vec::new(), Duration::from_secs(5));
         assert_eq!(color, Some((0, 0, 0)));
         answer.join().unwrap();
+    }
+
+    /// The bytes left in `input`.
+    fn rest(input: &std::os::unix::net::UnixStream) -> Vec<u8> {
+        std::iter::from_fn(|| read_byte(input.as_fd(), Duration::from_millis(10))).collect()
+    }
+
+    #[test]
+    fn a_paste_after_the_answers_stays_whole_for_the_keys() {
+        let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
+        let paste = b"\x1b[200~y\ri\x1b[201~";
+        terminal
+            .write_all(&[b"\x1b]11;rgb:0/0/0\x07", DA1, paste].concat())
+            .unwrap();
+        let color = query_background(input.as_fd(), &mut Vec::new(), Duration::from_secs(5));
+        assert_eq!(color, Some((0, 0, 0)));
+        assert_eq!(rest(&input), paste);
+    }
+
+    #[test]
+    fn a_paste_before_the_answers_is_dropped_to_its_end() {
+        let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
+        // Longer than the bound of the answers, which comes after it.
+        let paste = [b"\x1b[200~".as_slice(), &[b'y'; 5000], b"\ri\x1b[201~"].concat();
+        terminal
+            .write_all(&[&paste, b"\x1b]11;rgb:0/0/0\x07".as_slice(), DA1].concat())
+            .unwrap();
+        let color = query_background(input.as_fd(), &mut Vec::new(), Duration::from_secs(5));
+        assert_eq!(color, Some((0, 0, 0)));
+        assert_eq!(rest(&input), b"");
+        // A paste that goes on past the end of the wait.
+        let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
+        let typing = std::thread::spawn(move || {
+            for part in [b"\x1b[200~y".as_slice(), b"\r", b"i\x1b[201~"] {
+                terminal.write_all(part).unwrap();
+                std::thread::sleep(Duration::from_millis(30));
+            }
+            terminal
+        });
+        let color = query_background(input.as_fd(), &mut Vec::new(), Duration::from_millis(50));
+        assert_eq!(color, None);
+        let _terminal = typing.join().unwrap();
+        assert_eq!(rest(&input), b"");
     }
 
     #[test]
