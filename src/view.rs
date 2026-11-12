@@ -450,7 +450,7 @@ impl View {
     pub fn set_output(&mut self, i: usize, rows: Rows, size: Size) {
         let (before, after) = (self.outputs[i].lines.len(), rows.lines.len());
         if before != after
-            && let Some(scroll) = self.anchored_scroll(i, before, after, size)
+            && let Some(scroll) = self.scroll_after(i, before, after, size)
         {
             self.scroll = scroll;
         }
@@ -462,12 +462,11 @@ impl View {
         }
     }
 
-    /// The scroll that keeps the rows under the output of block `i` in
-    /// place while it goes from `before` rows to `after`, if the change
-    /// must move the view (see `set_output`). It stops at the end of the
-    /// document: past it, a scroll would take effect later, when output
-    /// under the selected block grows.
-    fn anchored_scroll(&self, i: usize, before: usize, after: usize, size: Size) -> Option<usize> {
+    /// The scroll after the output of block `i` goes from `before` rows to
+    /// `after` (see `set_output`). It stops at the end of the document: a
+    /// scroll past it would take effect later, when output under the
+    /// selected block grows, and move the view.
+    fn scroll_after(&self, i: usize, before: usize, after: usize, size: Size) -> Option<usize> {
         if too_small(size) {
             return None;
         }
@@ -476,11 +475,12 @@ impl View {
         let view = scroll..scroll + height;
         let under = self.selected.filter(|&s| s > i).map(|s| shown.block(s));
         let on_screen = under.is_some_and(|b| b.start < view.end && b.end > view.start);
-        if !on_screen && shown.output_end(i) > scroll {
-            return None;
-        }
+        let kept = match on_screen || shown.output_end(i) <= scroll {
+            true => (scroll + after).saturating_sub(before),
+            false => scroll,
+        };
         let last = (shown.len() + after).saturating_sub(before + height);
-        Some((scroll + after).saturating_sub(before).min(last))
+        Some(kept.min(last))
     }
 
     /// Scrolls as little as possible to show the last row of the output of
@@ -2733,12 +2733,27 @@ pub(crate) mod tests {
         // The screen is taller than the document: the selected block moves
         // down, and output under it later moves nothing.
         let tall = Size::new(60, 50);
-        let mut view = steps();
-        view.select_by(1, tall);
-        view.set_output(0, output(&["o"; 15]), tall);
-        let scroll = view.shown(super::screen(tall)).2;
-        view.set_output(3, output(&["o"; 10]), tall);
-        assert_eq!(view.shown(super::screen(tall)).2, scroll);
+        let mut kept = steps();
+        kept.select_by(1, tall);
+        kept.set_output(0, output(&["o"; 15]), tall);
+        // The document now ends 3 rows under the bottom of the view.
+        assert_eq!(kept.shown(super::screen(tall)).2, 3);
+        kept.set_output(3, output(&["o"; 10]), tall);
+        assert_eq!(kept.shown(super::screen(tall)).2, 3);
+        // Output at the end of the document shrinks, then grows back, under
+        // the selected block: the view moves up with the end, and stays.
+        let prose: String = (1..=20).map(|i| format!("Prose {i}.\n\n")).collect();
+        let block = "```bash\nls\n```\n\n";
+        let mut end = view(&format!("{prose}{block}Then.\n\n{block}"));
+        let size = Size::new(60, 20);
+        end.set_output(1, output(&["o"; 8]), size);
+        end.select_last(size);
+        end.select_by(-1, size);
+        let scroll = end.shown(super::screen(size)).2;
+        end.set_output(1, output(&["o"; 3]), size);
+        assert_eq!(end.shown(super::screen(size)).2, scroll - 5);
+        end.set_output(1, output(&["o"; 8]), size);
+        assert_eq!(end.shown(super::screen(size)).2, scroll - 5);
     }
 
     #[test]
