@@ -1222,14 +1222,20 @@ impl App {
             ran.is_some_and(|ran| ran.code != doc.blocks[j].code)
         });
         let since_run = since_run.collect();
+        // A Re-run question asked about the code that the block had: `y`
+        // must not run other code under the same question.
+        let follows = |i: usize, j: usize| old.blocks[i].code == doc.blocks[j].code;
         match &mut self.question {
-            Some(Question::Rerun(i) | Question::Paste { block: i, .. }) => match moves[*i] {
-                Some(j) => *i = j,
-                None => {
-                    self.question = None;
-                    self.view.question = None;
-                }
-            },
+            Some(Question::Rerun(i)) if moves[*i].is_some_and(|j| follows(*i, j)) => {
+                *i = moves[*i].expect("the block moved");
+            }
+            Some(Question::Paste { block: i, .. }) if moves[*i].is_some() => {
+                *i = moves[*i].expect("the block moved");
+            }
+            Some(Question::Rerun(_) | Question::Paste { .. }) => {
+                self.question = None;
+                self.view.question = None;
+            }
             Some(Question::Quit) | None => {}
         }
         let before = (self.view.selected).map(|s| (moves[s], old.blocks[s].code.clone()));
@@ -2775,6 +2781,21 @@ echo \"got $x\"
         app.reload(SIZE);
         assert_eq!(app.view.question.as_deref(), Some("Paste 2 lines to #2?"));
         read_until(&mut app, SIZE, |app| !running(app));
+    }
+
+    #[test]
+    fn a_reload_that_changes_the_code_of_a_block_ends_its_question() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app_on_file(&fence("deploy", "echo safe"), tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| !running(app));
+        enter(&mut app, SIZE);
+        assert_eq!(app.question, Some(Question::Rerun(0)));
+        std::fs::write(app.session.file(), fence("deploy", "echo other")).unwrap();
+        app.reload(SIZE);
+        assert_eq!((&app.question, &app.view.question), (&None, &None));
+        let notice = app.view.notice.as_deref();
+        assert_eq!(notice, Some("reloaded: 1 changed; keys off for 1 s"));
     }
 
     #[test]
