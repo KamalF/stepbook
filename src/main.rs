@@ -297,8 +297,14 @@ const QUERY_WAIT: Duration = Duration::from_millis(500);
 /// bytes of a paste do not count.
 const MAX_ANSWERS: usize = 4096;
 
-const PASTE_START: &[u8] = b"\x1b[200~";
-const PASTE_END: &[u8] = b"\x1b[201~";
+const PASTE_START: [u8; 6] = *b"\x1b[200~";
+const PASTE_END: [u8; 6] = *b"\x1b[201~";
+
+/// How long the query waits for the next byte of a paste, or of the start
+/// of one, past the end of its own wait: crossterm would read the rest of
+/// the paste as keys. A terminal that never ends a paste must not hold the
+/// startup forever.
+const PASTE_WAIT: Duration = Duration::from_secs(5);
 
 /// Asks the terminal for its background color (OSC 11), then for its
 /// device attributes (DA1), and returns the color, as red, green and blue
@@ -321,34 +327,34 @@ fn query_background(
     let end = Instant::now() + wait;
     let mut answers = Vec::new();
     // While a paste goes on, its last bytes.
-    let mut paste: Option<Vec<u8>> = None;
+    let mut paste: Option<[u8; 6]> = None;
     loop {
         let answered = answers.last() == Some(&b'c') && device_attributes(&answers).is_some();
-        if paste.is_none() && (answered || answers.len() >= MAX_ANSWERS) {
+        let pasting =
+            paste.is_some() || (1..PASTE_START.len()).any(|n| answers.ends_with(&PASTE_START[..n]));
+        if !pasting && (answered || answers.len() >= MAX_ANSWERS) {
             break;
         }
-        // A paste goes on to its end, unless the terminal stops sending.
-        let left = match paste {
-            Some(_) => wait,
-            None => end.saturating_duration_since(Instant::now()),
+        let left = match pasting {
+            true => PASTE_WAIT,
+            false => end.saturating_duration_since(Instant::now()),
         };
         let Some(byte) = read_byte(input, left) else {
             break;
         };
         match &mut paste {
-            Some(last) => {
-                last.push(byte);
-                if last.ends_with(PASTE_END) {
+            Some(window) => {
+                window.rotate_left(1);
+                let [.., last] = window;
+                *last = byte;
+                if *window == PASTE_END {
                     paste = None;
-                } else if last.len() > PASTE_END.len() {
-                    last.remove(0);
                 }
             }
             None => {
                 answers.push(byte);
-                if answers.ends_with(PASTE_START) {
-                    answers.truncate(answers.len() - PASTE_START.len());
-                    paste = Some(Vec::new());
+                if answers.ends_with(&PASTE_START) {
+                    paste = Some([0; 6]);
                 }
             }
         }
@@ -1267,11 +1273,12 @@ mod tests {
         let (color, output) = background(&answers, Duration::from_secs(5));
         assert_eq!(color, Some((40, 40, 40)));
         assert_eq!(output, b"\x1b]11;?\x1b\\\x1b[c");
-        // Keys typed ahead come before the answers, and are lost.
-        let answers = [b"jj\x1b]11;rgb:ff/80/0\x07".as_slice(), DA1].concat();
+        // Keys typed ahead come before the answers, and are lost. A "c" in
+        // them does not end the wait.
+        let answers = [b"jc\x1b]11;rgb:ff/8c/0\x07".as_slice(), DA1].concat();
         assert_eq!(
             background(&answers, Duration::from_secs(5)).0,
-            Some((255, 128, 0))
+            Some((255, 140, 0))
         );
     }
 
@@ -1318,19 +1325,27 @@ mod tests {
         let color = query_background(input.as_fd(), &mut Vec::new(), Duration::from_secs(5));
         assert_eq!(color, Some((0, 0, 0)));
         assert_eq!(rest(&input), b"");
-        // A paste that goes on past the end of the wait.
-        let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
-        let typing = std::thread::spawn(move || {
-            for part in [b"\x1b[200~y".as_slice(), b"\r", b"i\x1b[201~"] {
-                terminal.write_all(part).unwrap();
-                std::thread::sleep(Duration::from_millis(30));
-            }
-            terminal
-        });
-        let color = query_background(input.as_fd(), &mut Vec::new(), Duration::from_millis(50));
-        assert_eq!(color, None);
-        let _terminal = typing.join().unwrap();
-        assert_eq!(rest(&input), b"");
+        // A paste that pauses for longer than the wait, and one whose start
+        // comes in two parts across the end of the wait.
+        let pastes: [&[&[u8]]; 2] = [
+            &[b"\x1b[200~y", b"\r", b"i\x1b[201~"],
+            &[b"\x1b[20", b"0~y\ri\x1b[201~"],
+        ];
+        for parts in pastes {
+            let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
+            let parts: Vec<Vec<u8>> = parts.iter().map(|part| part.to_vec()).collect();
+            let typing = std::thread::spawn(move || {
+                for part in parts {
+                    terminal.write_all(&part).unwrap();
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                terminal
+            });
+            let wait = Duration::from_millis(50);
+            assert_eq!(query_background(input.as_fd(), &mut Vec::new(), wait), None);
+            let _terminal = typing.join().unwrap();
+            assert_eq!(rest(&input), b"");
+        }
     }
 
     #[test]
