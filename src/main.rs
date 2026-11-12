@@ -1,4 +1,12 @@
 mod doc;
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "the writer of the log, in the next commit, uses it"
+    )
+)]
+mod log;
 mod run;
 mod term;
 mod view;

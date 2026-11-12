@@ -399,7 +399,7 @@ stepbook appends to the log file, which it creates with mode 0600. Each run writ
 
 - The `=== START <name>` and `=== END <name> rc=<N>` lines keep the runbook skill's format. `watch.sh` matches `^=== END <name> rc=` and keeps working.
 - An unnamed block uses `#<n>` as its name.
-- Output is written as it arrives, with ANSI escape sequences removed and CRLF turned into LF.
+- Output is written a line at a time, as each line ends, with ANSI escape sequences removed and CRLF turned into LF: until it ends, a carriage return can still drop the line. At the end of the run, a last line without a line feed is written with one. Control characters other than tab and line feed are dropped, C1 characters included.
 - A UTF-8 character that is split across two reads is written whole (upmd issue K18, see 18). Bytes that are not valid UTF-8 are written as U+FFFD.
 - A carriage return without a line feed discards the current partial line, as a terminal does. A progress bar therefore logs only its last state.
 - Output on the alternate screen is not logged. The line `[full-screen program output not logged]` marks it once per run.
@@ -610,3 +610,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | stepbook does not start if the log would be the runbook itself (4), at Kamal's choice: for a FILE named `notes.log`, the default log was the runbook, and each run would append to it | 2026-11-12 |
 | The watcher of the reload uses inotify through rustix, not the `notify` crate (10, 13), at Kamal's choice: no new crate, and Linux is the target of v1 | 2026-11-12 |
 | The log removes escape sequences with `vte`, a direct dependency at the version that vt100 uses (12.1, 13), at Kamal's choice: it is in the build already, and it parses UTF-8 split across reads | 2026-11-12 |
+| The log writes the output a line at a time, as each line ends (12.1): a carriage return can drop a line until it ends | 2026-11-12 |
