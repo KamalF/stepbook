@@ -9,17 +9,15 @@ cargo-dist-version = "0.33.1"
 ci = "github"
 # No installers: mise installs stepbook from the archives (spec 14.4)
 installers = []
-# Linux only, static with musl (spec 14.4)
+# Linux only, static with musl (spec 14.4). about.toml lists the same targets.
 targets = ["aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
 # Where to host releases
 hosting = "github"
-# Files for the archives, beside LICENSE and README.md, which dist finds
+# Files for the archives, beside those that dist finds, such as LICENSE
 include = ["THIRD-PARTY-LICENSES-RUST.txt"]
 # Steps before each build, from .github/build-setup.yml: they write the
 # licence texts of the Rust crates
 github-build-setup = "../build-setup.yml"
-# Whether to install an updater program
-install-updater = false
 # Provenance for the release archives: `gh attestation verify` checks it
 github-attestations = true
 

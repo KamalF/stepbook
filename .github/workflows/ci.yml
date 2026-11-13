@@ -19,3 +19,5 @@ jobs:
       - run: mise run test
       # A new crate under a licence that about.toml does not accept would stop the release.
       - run: mise run licenses
+      # Fails if release.yml is not what dist writes from dist-workspace.toml.
+      - run: dist plan

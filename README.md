@@ -173,8 +173,8 @@ while :; do
 done
 ```
 
-My runbook skill for Claude Code runs it in the background, and reads the
-section of each block that ends.
+My runbook skill for Claude Code runs a script like this one in the
+background, and reads the section of each block that ends.
 
 ## How stepbook was built
 

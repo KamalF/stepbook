@@ -455,7 +455,7 @@ mise manages the repository. `mise.toml` pins the Rust toolchain, `cargo-insta`,
 | `test` | `cargo test --no-fail-fast` |
 | `licenses` | `cargo about generate`: writes the licence texts of the Rust crates to `THIRD-PARTY-LICENSES-RUST.txt`, from `about.hbs`. A crate under a licence that `about.toml` does not accept stops it |
 
-CI on GitHub Actions runs on Linux: `cargo fmt --check`, then `mise run lint`, `mise run test` and `mise run licenses`. So a new crate under a licence that `about.toml` does not accept fails CI before it can stop a release. The actions are pinned by SHA.
+CI on GitHub Actions runs on Linux: `cargo fmt --check`, then `mise run lint`, `mise run test` and `mise run licenses`. So a new crate under a licence that `about.toml` does not accept fails CI before it can stop a release. Then `dist plan` fails if `release.yml` is not what dist writes from `dist-workspace.toml`. The actions are pinned by SHA.
 
 ### 14.2 Rules
 

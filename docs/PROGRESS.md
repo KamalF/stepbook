@@ -385,8 +385,9 @@ Kamal signed off the plan, with dist and cargo-about as new tools, on 2026-11-13
 
 Commits 2 to 5 are in, with one more of Claude's choice after the README: the crate on crates.io holds only its source, `LICENSE` and `README.md`, and declares Rust 1.92 (spec 14.4). The dependencies need 1.88, and 1.92 is the oldest toolchain at hand. `cargo package`, in a clone, builds the crate from its files.
 
-- `dist plan` lists two archives, each with the binary, `LICENSE`, `README.md` and `THIRD-PARTY-LICENSES-RUST.txt`. dist builds aarch64 on the runner `ubuntu-22.04-arm`, and x86_64 on `ubuntu-22.04`, both with musl-tools.
+- `dist plan` lists two archives, each with the binary, `CHANGELOG.md`, `LICENSE`, `README.md` and `THIRD-PARTY-LICENSES-RUST.txt`. dist builds aarch64 on the runner `ubuntu-22.04-arm`, and x86_64 on `ubuntu-22.04`, both with musl-tools.
 - `dist plan --tag=v0.1.0` takes the title `0.1.0 - 2026-11-13` and the notes of the release from `CHANGELOG.md`. If the release comes on a later day, the date changes with it.
+- `/simplify`, with 4 cleanup agents, on 2026-11-13. Fixed: `about.toml` accepts only the 4 licences that the crates use; `install-updater`, a default, left `dist-workspace.toml`; CI runs `dist plan`, which fails if `release.yml` is stale; each target list points to the other. Skipped, with the reasons in the log of the review loop: cargo-about from a prebuilt binary or through mise on the release runners, and a CI check on Rust 1.92.
 - The README shows a capture of stepbook in tmux, and a watch script with grep in place of rg: grep is on every system. The script passed a check on a real log.
 
 Notes for the session that builds it:
@@ -396,7 +397,7 @@ Notes for the session that builds it:
   - mise checks the attestation of dist through sigstore, so the sandbox needs `tuf-repo-cdn.sigstore.dev`.
   - `dist init` keeps its default targets, so the targets go into `dist-workspace.toml` by hand.
   - `dist generate` writes the workflow again after each change of the config.
-- The mdame files to start from: `dist-workspace.toml`, `.github/build-setup.yml`, `.github/check-release.sh`, `.github/workflows/check-release.yml`, `about.toml`, `about.hbs`, and the paragraph "Distribution" of its spec.
+- The mdame files to start from: `dist-workspace.toml`, `.github/build-setup.yml`, `about.toml`, `about.hbs`, and the paragraph "Distribution" of its spec. Its release check installs mdame with Homebrew, which stepbook does not use.
 - The crate builds for musl: syntect runs with `regex-fancy`, in pure Rust, and no crate of the build compiles C. Checked on 2026-11-13 with the musl `rust-std` of Rust 1.99.0, unpacked as a sysroot in `~/.cache/stepbook-musl`. The sandbox cannot write `~/.rustup`, and the proxy cut the downloads of rustup. In tmux, the static binary ran two blocks with `export`, `cd`, input mode and the log.
 - cargo-about accepts `Zlib` too, beside the licences of mdame: foldhash, which ratatui uses, has no other licence.
 - The name `stepbook` was still free on crates.io on 2026-11-13.
