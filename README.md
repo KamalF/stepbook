@@ -112,7 +112,9 @@ file, from 1. Other code blocks show dimmed and do not run.
 - stepbook shows a control character of the file as vim does, such as `^[`
   for ESC, so that a runbook cannot hide part of a command. The output of a
   program goes through a terminal screen of stepbook, never raw to your
-  terminal.
+  terminal. This needs a terminal that draws characters of ambiguous width,
+  such as `·`, 1 column wide, which is the default: drawn 2 columns wide, they
+  shift the rest of the line, and a space can vanish.
 - If blocks are running, stepbook asks before it stops them and quits.
 
 ### Keys

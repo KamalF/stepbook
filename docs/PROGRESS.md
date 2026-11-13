@@ -384,6 +384,7 @@ The plan, one commit per line, on the branch `m5-migration`:
    - He turns on immutable releases with `gh api -X PUT repos/KamalF/stepbook/immutable-releases`. Then `gh api repos/KamalF/stepbook/immutable-releases --jq .enabled` must print `true`.
    - He pushes `main`, and waits for CI to pass on it.
    - He pushes the tag `v0.1.0`, and the workflow publishes the archives. `gh release view v0.1.0 --json isImmutable --jq .isImmutable` must print `true`.
+   - `gh release download v0.1.0 --pattern '*.tar.xz'` gets both archives, and the `gh attestation verify` command of the README must pass on each. If it fails, Claude fixes the command of the README or the workflow for 0.1.1: the archives of 0.1.0 stay as they are.
    - Then `mise use -g github:KamalF/stepbook` installs it, and `stepbook --version` prints 0.1.0.
 7. The runbook skill moves to stepbook, outside this repository (15): no logging header in the block format, `stepbook <file>` in place of `upmd <file>`, and no `ctrl-r` instruction. The log path and `watch.sh` stay.
 
