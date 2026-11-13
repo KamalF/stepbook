@@ -115,10 +115,12 @@ file, from 1. Other code blocks show dimmed and do not run.
   terminal. Two kinds of terminals can still draw code in another way than
   bash reads it:
   - A terminal that draws characters of ambiguous width, such as `·`, 2
-    columns wide. They shift the rest of the line, and a space can vanish.
-    The default is 1 column.
+    columns wide. They shift the rest of the line, and the next text covers
+    its end: a space, or a whole command, can vanish. The default is 1
+    column.
   - A terminal that reorders right-to-left text on its own, such as VTE or
-    Konsole. Code with Hebrew or Arabic letters can show in another order.
+    Konsole. Code with right-to-left text, such as Hebrew or Arabic, can
+    show in another order.
 - If blocks are running, stepbook asks before it stops them and quits.
 
 ### Keys
@@ -207,5 +209,5 @@ and paste.
 
 ## License
 
-MIT. See `LICENSE`. Each release archive carries the licence texts of the Rust
-crates in the binary, in `THIRD-PARTY-LICENSES-RUST.txt`.
+MIT. See `LICENSE`. The release archive of each system carries the licence
+texts of the Rust crates in the binary, in `THIRD-PARTY-LICENSES-RUST.txt`.
