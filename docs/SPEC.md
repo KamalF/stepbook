@@ -495,7 +495,7 @@ dist (formerly cargo-dist) builds the release archives on GitHub Actions when a 
 - Each archive carries the licence texts of the Rust crates, which cargo-about writes at the release.
 - The release notes are the section of the version in `CHANGELOG.md`.
 - No install script: in `~/.local/bin`, the script of dist 0.33 takes over the PATH setup of other tools that dist built, such as uv.
-- The crate goes to crates.io too. Kamal runs `cargo publish`: it needs his token.
+- The crate goes to crates.io too, with only its source, `LICENSE` and `README.md`. It needs Rust 1.92, the oldest toolchain checked. Kamal runs `cargo publish`: it needs his token.
 
 ## 15. Migration
 
