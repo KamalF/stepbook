@@ -6,8 +6,8 @@ one at a time, with the output of each block under its code.
 A runbook is a list of steps: a line that says why, then a bash block. You
 select a block and press Enter to run it. `export` and `cd` carry over from
 one block to the next, as in a terminal. When the file changes on disk,
-stepbook reloads it, and each block keeps its output. Each run goes to a log,
-so that the coding agent that wrote the runbook can follow your runs.
+stepbook reloads it. Each run goes to a log, so that the coding agent that
+wrote the runbook can follow your runs.
 
 I built stepbook to replace [upmd](https://github.com/rezigned/upmd) for the
 runbooks that Claude Code writes for me: the commands that its sandbox cannot
@@ -64,7 +64,9 @@ Each archive has an attestation: a record, signed by GitHub, that the release
 workflow of this repository built it. To check an archive:
 
 ```sh
-gh attestation verify stepbook-x86_64-unknown-linux-musl.tar.xz --repo KamalF/stepbook
+gh attestation verify stepbook-x86_64-unknown-linux-musl.tar.xz \
+  --repo KamalF/stepbook \
+  --signer-workflow KamalF/stepbook/.github/workflows/release.yml
 ```
 
 In fish, an abbreviation gives a shorter command, which expands to `stepbook`
@@ -103,11 +105,14 @@ file, from 1. Other code blocks show dimmed and do not run.
   `kubectl port-forward … &`, runs until stepbook ends.
 - A block gets `STEPBOOK_FILE`, `STEPBOOK_LOG` and `STEPBOOK_BLOCK`: the path
   of the runbook, the path of the log, and the name of the block.
-- When the file changes on disk, stepbook reloads it, and each block keeps its
-  output. A block whose code changed after its run shows `~` and
-  `changed since run`.
-- stepbook shows a control character of the file or of the output as vim does,
-  such as `^[` for ESC, so that a runbook cannot hide part of a command.
+- When the file changes on disk, stepbook reloads it. A block keeps its
+  output if it has a name, or if its code did not change. A named block whose
+  code changed after its run shows `~` and `changed since run`. An unnamed
+  block whose code changed is a new block, which has not run.
+- stepbook shows a control character of the file as vim does, such as `^[`
+  for ESC, so that a runbook cannot hide part of a command. The output of a
+  program goes through a terminal screen of stepbook, never raw to your
+  terminal.
 - If blocks are running, stepbook asks before it stops them and quits.
 
 ### Keys
@@ -154,21 +159,24 @@ app.log  db.log
   with a log that links to your `~/.bashrc`.
 
 A script, or a coding agent, can wait for a block with its `END` line. This
-script prints each new `END` line, and exits after the `END` line of the block
-that you name:
+script prints each `END` line that the log gets after the script starts, and
+exits after the `END` line of the block that you name. The `END` lines of
+earlier runs do not count:
 
 ```bash
 #!/usr/bin/env bash
 # Usage: watch.sh LOG BLOCK
-log=$1 last=$2 seen=0
+log=$1
+# A dot in a block name must not match any character.
+block=${2//./[.]}
+seen=$(grep -ac '^=== END ' "$log" 2>/dev/null)
 while :; do
-  ends=$(grep -a '^=== END ' "$log" 2>/dev/null)
-  count=$(printf '%s' "$ends" | grep -c '^')
-  if [ "$count" -gt "$seen" ]; then
-    printf '%s\n' "$ends" | tail -n +$((seen + 1))
-    seen=$count
+  new=$(grep -a '^=== END ' "$log" 2>/dev/null | tail -n +$((seen + 1)))
+  if [ -n "$new" ]; then
+    printf '%s\n' "$new"
+    seen=$((seen + $(printf '%s\n' "$new" | wc -l)))
+    printf '%s\n' "$new" | grep -q "^=== END $block rc=" && exit 0
   fi
-  printf '%s\n' "$ends" | grep -q "^=== END $last rc=" && exit 0
   sleep 1
 done
 ```
@@ -183,12 +191,12 @@ tests and the commit messages, on its own. It works from a spec,
 `docs/SPEC.md`, which changes in the same commit as each decision.
 `docs/PROGRESS.md` tells how each milestone went.
 
-stepbook was built in five milestones. Each one ended with `cargo mutants`,
-which changes the code to find the rules that no test checks. Then fresh
-Claude Code sessions reviewed the milestone, in rounds, until a round found
-nothing to fix. The tests run real bash in a real terminal, with no mocks.
-Claude checked each feature in tmux, and a manual checklist in my terminal
-closed each milestone.
+stepbook was built in five milestones. At the end of each one, fresh Claude
+Code sessions reviewed it, in rounds, until a round found nothing to fix.
+In a milestone that changed the code, `cargo mutants` ran before and after
+the review: it changes the code to find the rules that no test checks. The tests run real bash in a PTY, with no mocks.
+Claude checked each feature in tmux, and I checked in my own terminal what
+tmux cannot show, such as copy and paste.
 
 ## License
 

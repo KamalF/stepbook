@@ -20,7 +20,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 | 2 | Running blocks | Done, merged into `main` on 2026-11-11 |
 | 3 | Input and full-screen view | Done, merged into `main` on 2026-11-11 |
 | 4 | Log and reload | Done, merged into `main` on 2026-11-12 |
-| 5 | Migration | In progress on the branch `m5-migration`, signed off on 2026-11-13 |
+| 5 | Migration | In progress on the branch `m5-migration`. Kamal signed off the plan on 2026-11-13 |
 
 Kamal signed off the build order and the new dependencies on 2026-11-09.
 

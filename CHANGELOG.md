@@ -14,16 +14,17 @@ The first release.
 - Input mode (`i`) sends the keys to a running program, such as a password
   prompt. The full-screen view (`o`) shows the terminal of a block at full
   size, for programs such as `less`.
-- When the file changes on disk, stepbook reloads it. Each block keeps its
-  output, and a block whose code changed after its run shows
-  `changed since run`.
+- When the file changes on disk, stepbook reloads it. A block keeps its output
+  if it has a name, or if its code did not change. A named block whose code
+  changed after its run shows `changed since run`.
 - A log with one section per run, between `=== START <name>` and
   `=== END <name> rc=<N>` lines, which a script can follow.
 - The runbooks of upmd open unchanged: stepbook reads their `[name:…]`
-  attributes, and a block that starts with their old logging header writes no
-  second section to the log.
+  attributes. A block that starts with an `exec > >(tee -a …)` logging header
+  writes no second section to the log.
 - A control character of the file or of the output never reaches the
-  terminal: stepbook shows it as vim does, such as `^[` for ESC.
+  terminal raw. stepbook shows one of the file as vim does, such as `^[` for
+  ESC.
 
 ### Release
 
