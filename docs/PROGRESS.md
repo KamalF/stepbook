@@ -383,6 +383,12 @@ Done when (spec 16): the runbook skill opens its runbooks with stepbook, and Kam
 
 Kamal signed off the plan, with dist and cargo-about as new tools, on 2026-11-13.
 
+Commits 2 to 5 are in, with one more of Claude's choice after the README: the crate on crates.io holds only its source, `LICENSE` and `README.md`, and declares Rust 1.92 (spec 14.4). The dependencies need 1.88, and 1.92 is the oldest toolchain at hand. `cargo package`, in a clone, builds the crate from its files.
+
+- `dist plan` lists two archives, each with the binary, `LICENSE`, `README.md` and `THIRD-PARTY-LICENSES-RUST.txt`. dist builds aarch64 on the runner `ubuntu-22.04-arm`, and x86_64 on `ubuntu-22.04`, both with musl-tools.
+- `dist plan --tag=v0.1.0` takes the title `0.1.0 - 2026-11-13` and the notes of the release from `CHANGELOG.md`. If the release comes on a later day, the date changes with it.
+- The README shows a capture of stepbook in tmux, and a watch script with grep in place of rg: grep is on every system. The script passed a check on a real log.
+
 Notes for the session that builds it:
 
 - mdame made the same release setup in its milestones 10 and 11. Its local logbook, `~/dev/github/mdame/docs/runbook.md`, lines 246 to 297, gives each command and its pitfalls:
@@ -399,7 +405,7 @@ Notes for the session that builds it:
 
 ## Next
 
-1. Milestone 5, on the branch `m5-migration`, from commit 5 of the plan. A new session reads this file and spec 14.4, 15 and 16 first.
+1. Milestone 5, on the branch `m5-migration`, at the end of the milestone: `cargo mutants` has no Rust code to change, so the review loop comes next, then the merge into `main`. Then commit 6 of the plan, the release, which Kamal runs. A new session reads this file and spec 14.4, 15 and 16 first.
 
 ## Open points
 
