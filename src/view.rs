@@ -183,8 +183,6 @@ impl View {
         frame.render_widget(self.document_block(), document);
         let (shown, text, scroll) = self.shown(frame.area());
         for (y, row) in (text.y..text.bottom()).zip(scroll..shown.len()) {
-            let line = self.line(&shown, row, self.selected);
-            frame.buffer_mut().set_line(text.x, y, &line, text.width);
             let shaded = match shown.row(row) {
                 Row::Page(_) => None,
                 Row::Output(block, _) => Some((block, OUTPUT_SHADE)),
@@ -197,17 +195,17 @@ impl View {
                 && let Some((block, step)) = shaded
             {
                 // From the column after "▐" or "╎", to the right edge of the
-                // text: the bar is the left edge of the block. A cell that
-                // the program gave a background keeps it.
-                let left = text.x + text_width(&shown.page.prefixes[block]) as u16 + 1;
-                let color = shade(background, step);
-                for x in left..text.right() {
-                    let cell = &mut frame.buffer_mut()[(x, y)];
-                    if cell.bg == Color::Reset {
-                        cell.set_bg(color);
-                    }
-                }
+                // text: the bar is the left edge of the block. The line comes
+                // over the shade, so a cell that the program gave a
+                // background keeps it.
+                let x = text.x + text_width(&shown.page.prefixes[block]) as u16 + 1;
+                let width = text.right().saturating_sub(x);
+                let area = Rect::new(x, y, width, 1);
+                let style = Style::new().bg(shade(background, step));
+                frame.buffer_mut().set_style(area, style);
             }
+            let line = self.line(&shown, row, self.selected);
+            frame.buffer_mut().set_line(text.x, y, &line, text.width);
         }
         // In input mode, the cursor of the program shows in its output.
         if let Mode::Input(i) = self.mode
