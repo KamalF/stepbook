@@ -341,7 +341,7 @@ The review loop ran in night mode, and Claude made these choices alone. The spec
 3. A line of output that starts with `=== START `, `=== END ` or `=== CONTINUE ` gets a space first in the log (12.1).
 4. After a reload that moves the selection or changes the code of the selected block, keys pause for 1 s, unless they go to a program (10). A Re-run question ends if the reload changes the code of its block.
 5. Writes to the log that fail show in the footer at most once every 10 s (12.1).
-6. Open, a choice of look: the NORMAL footer does not show `^r reload`, which the example of spec 6.1 shows.
+6. A choice of look: the NORMAL footer does not show `^r reload`, which the example of spec 6.1 showed. Kamal chose on 2026-11-13 to keep the footer as it is: the example lost the hint.
 
 ### Kamal's manual checklist of milestone 4
 

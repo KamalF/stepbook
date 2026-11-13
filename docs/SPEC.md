@@ -132,7 +132,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 │                │                                                 │
 │                │ ## Check the logs                               │
 └────────────────┴─────────────────────────────────────────────────┘
- NORMAL  ↑↓ move  ↵ run  i input  o output  ^r reload  q quit
+ NORMAL  ↑↓ move  ↵ run  i input  o output  q quit
 ```
 
 - **Sidebar:** one row per block, with a status glyph and the name. An unnamed block shows `#<n>`, where n is its position among all the blocks of the file, from 1. Its width, with its left border, is the longest name plus 4, between 12 and 30 columns. A longer name ends with `…`. The sidebar scrolls to keep the selected row visible, and it is hidden on terminals under 80 columns.
@@ -636,6 +636,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | Through a link, the watcher watches the file that the link names (10): a write through the link never reloaded | 2026-11-12 |
 | A FIFO or a lease never blocks the read of a reload: the runbook is checked by its path, opened with O_NONBLOCK, then checked again (10): a FIFO renamed onto it, or a lease on it, stopped stepbook in raw mode | 2026-11-12 |
 | The log reads the switches of the alternate screen as vt100 does: modes 47 and 1049, and `ESC c` leaves it (12.1): with mode 1047, the log left out output that the view showed, and after a reset on the alternate screen, the rest of the run | 2026-11-12 |
+| The footer shows no hint of `ctrl-r` (6.1), at Kamal's choice: the watcher reloads on its own, the footer names `ctrl-r` when the watch fails at startup, and the hint would cut `q quit` from a narrow footer first | 2026-11-13 |
 | The key of an unnamed block is its code, not a hash of it (3): it is exact, and needs no hash function | 2026-11-12 |
 | A block that a reload removes while it runs stays at the end of the document too, not only in the sidebar (10): `i` and the output under the block need a place in the document view | 2026-11-12 |
 | A changed block shows `~` in the sidebar, and keeps the mark while its code differs from the code of its last run (6.2, 10) | 2026-11-12 |
