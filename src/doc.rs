@@ -705,9 +705,12 @@ pub fn needs_escape(c: char) -> bool {
 /// comment, and runs curl. It escapes the format characters that join the
 /// next character, such as U+070F, U+2D7F and the regional indicators: a
 /// terminal may count their columns otherwise than ratatui, and the text
-/// after them would shift. It escapes "␣" and "⇥", which would pass for
-/// the marks of a space and a tab. Prose keeps them all, for emoji, scripts
-/// and no-break spaces.
+/// after them would shift. It escapes U+3248 to U+324F, the circled
+/// numbers on a black square: their East Asian width is ambiguous, and
+/// glibc and tmux draw them 2 columns wide by default, where ratatui counts
+/// 1, so the text after them would cover the end of the line. It escapes
+/// "␣" and "⇥", which would pass for the marks of a space and a tab. Prose
+/// keeps them all, for emoji, scripts and no-break spaces.
 pub fn needs_escape_in_code(c: char) -> bool {
     needs_escape(c)
         || matches!(
@@ -743,6 +746,7 @@ pub fn needs_escape_in_code(c: char) -> bool {
                 | '\u{21e5}'
                 | '\u{2423}'
                 | '\u{3000}'
+                | '\u{3248}'..='\u{324f}'
                 | '\u{ad}'
                 | '\u{34f}'
                 | '\u{115f}'..='\u{1160}'
@@ -1684,6 +1688,21 @@ mod tests {
         }
         assert!(!needs_escape_in_code(' '));
         assert_eq!(warnings("true\u{a0}#; ls\n"), ["hidden characters in code"]);
+    }
+
+    #[test]
+    fn code_escapes_the_circled_numbers_that_terminals_draw_wide() {
+        // East Asian width A: ratatui counts 1 column, and glibc's wcwidth
+        // and tmux give 2 in every locale.
+        for c in ['\u{3248}', '\u{324f}'] {
+            assert!(needs_escape_in_code(c) && !needs_escape(c), "{c:?}");
+        }
+        // Their neighbours are wide for ratatui too.
+        assert!(!needs_escape_in_code('\u{3247}') && !needs_escape_in_code('\u{3250}'));
+        assert_eq!(
+            warnings("echo ok \u{3248};reboot x\n"),
+            ["hidden characters in code"]
+        );
     }
 
     #[test]
