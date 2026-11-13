@@ -38,9 +38,11 @@ const SIDEBAR_SCREEN_WIDTH: u16 = 80;
 
 /// How much darker than the background of the terminal a block that
 /// runs is, on each of red, green and blue, so that blocks stand apart
-/// from the prose; and the selected block (spec 5.3).
+/// from the prose; the selected block; and the output of a block, which
+/// stands apart from both (spec 5.3).
 const BLOCK_SHADE: u8 = 12;
 const SELECTED_SHADE: u8 = 20;
+const OUTPUT_SHADE: u8 = 6;
 
 /// The background of `background` darker by `step`, or lighter on a
 /// background so dark that a darker shade would not show.
@@ -183,20 +185,28 @@ impl View {
         for (y, row) in (text.y..text.bottom()).zip(scroll..shown.len()) {
             let line = self.line(&shown, row, self.selected);
             frame.buffer_mut().set_line(text.x, y, &line, text.width);
+            let shaded = match shown.row(row) {
+                Row::Page(_) => None,
+                Row::Output(block, _) => Some((block, OUTPUT_SHADE)),
+                Row::Info(block, _) | Row::Code(block, _) if self.selected == Some(block) => {
+                    Some((block, SELECTED_SHADE))
+                }
+                Row::Info(block, _) | Row::Code(block, _) => Some((block, BLOCK_SHADE)),
+            };
             if let Some(background) = self.background
-                && let Row::Info(block, _) | Row::Code(block, _) = shown.row(row)
+                && let Some((block, step)) = shaded
             {
-                let step = match self.selected == Some(block) {
-                    true => SELECTED_SHADE,
-                    false => BLOCK_SHADE,
-                };
-                // From the column after "▐", to the right edge of the text:
-                // the bar is the left edge of the block.
-                let x = text.x + text_width(&shown.page.prefixes[block]) as u16 + 1;
-                let width = text.right().saturating_sub(x);
-                let area = Rect::new(x, y, width, 1);
-                let style = Style::new().bg(shade(background, step));
-                frame.buffer_mut().set_style(area, style);
+                // From the column after "▐" or "╎", to the right edge of the
+                // text: the bar is the left edge of the block. A cell that
+                // the program gave a background keeps it.
+                let left = text.x + text_width(&shown.page.prefixes[block]) as u16 + 1;
+                let color = shade(background, step);
+                for x in left..text.right() {
+                    let cell = &mut frame.buffer_mut()[(x, y)];
+                    if cell.bg == Color::Reset {
+                        cell.set_bg(color);
+                    }
+                }
             }
         }
         // In input mode, the cursor of the program shows in its output.
@@ -2202,9 +2212,16 @@ pub(crate) mod tests {
         let text = "- item\n\n  ```bash\n  ls\n  ```\n\n```bash\nls\n```\n\n```text\nx\n```\n";
         let mut view = view(text);
         view.background = Some((40, 40, 40));
-        view.set_output(1, output(&["out"]), SMALL);
-        // The selected block is darker. Output and other code keep the
-        // background of the terminal.
+        let red = Span::styled("red", Style::new().bg(Color::Red));
+        let lines = vec![Line::from(vec![Span::raw("out "), red])];
+        let rows = Rows {
+            lines,
+            ..Rows::default()
+        };
+        view.set_output(1, rows, SMALL);
+        // The selected block is darker. The output is lighter than the
+        // block, and a cell with a background of its own keeps it. Other
+        // code keeps the background of the terminal.
         assert_snapshot!(screen(&view, 40, 14), @"
         ┌ run.md ──────────────────────────────┐
         │ • item                               │
@@ -2214,7 +2231,7 @@ pub(crate) mod tests {
         │                                      │
         │ ▐«bg=#1c1c1c: »«bg=#1c1c1c,b:#2»«bg=#1c1c1c:                                » │
         │ ▐«bg=#1c1c1c: »«blue,bg=#1c1c1c:ls»«bg=#1c1c1c:                                » │
-        │ «d:╎ »out                                │
+        │ «d:╎»«bg=#222222,d: »«bg=#222222:out »«bg=red:red»«bg=#222222:                           » │
         │                                      │
         │ «d:▐ x»                                  │
         │                                      │
