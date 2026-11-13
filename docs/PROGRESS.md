@@ -353,10 +353,12 @@ What tmux cannot show, in herdr in Ghostty: open `~/dev/claude/runbooks/2026-11-
 4. A notification in input mode, in place of the keys, for 3 s.
 5. A forged END line gets a space first in the log.
 
+Kamal ran the checklist on 2026-11-13: the five checks pass.
+
 ## Next
 
 1. Kamal pushes `main`.
-2. Kamal runs the manual checklist of milestone 4, and confirms or changes the choices made during the night (above).
+2. Kamal confirms or changes the choices made during the night (above).
 3. Milestone 5: migration.
 
 Kamal pushes later: the repository has no remote yet (see the first open point).
