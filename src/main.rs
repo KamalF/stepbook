@@ -2518,14 +2518,21 @@ mod tests {
         }
     }
 
-    /// Makes the rows of the full-screen view until `done`. While the
-    /// reader of the run holds its terminal, the rows come later.
+    /// Reads the output of the runs and makes the rows of the full-screen
+    /// view until `done`. On a slow machine, the output that the test
+    /// waits for can come after the key that opened the view. While the
+    /// reader of the run holds its terminal, the rows come later, with
+    /// no new output.
     fn until_full_rows(app: &mut App, done: impl Fn(&[Line]) -> bool) {
+        let (_sender, control) = crossbeam_channel::unbounded();
         let deadline = Instant::now() + Duration::from_secs(10);
         while !done(&full(app).rows.lines) {
             assert!(Instant::now() < deadline, "no rows");
+            let wait = Instant::now() + Duration::from_millis(10);
+            if let Some(Ok(Incoming::Run(i, event))) = app.next(&control, Some(wait)) {
+                app.read(i, event);
+            }
             app.refresh(SIZE);
-            std::thread::sleep(Duration::from_millis(10));
         }
     }
 
