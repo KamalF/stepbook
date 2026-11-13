@@ -380,7 +380,7 @@ The plan, one commit per line, on the branch `m5-migration`:
    - If the release comes after 2026-11-13, Claude first changes the date in the heading of 0.1.0 in `CHANGELOG.md`.
    - Kamal pushes the branch `m5-migration`, and CI must pass on it: the new steps of CI run on GitHub there for the first time. A failure is fixed on the branch.
    - Claude merges the branch into `main`, with the same tree.
-   - Kamal runs `cargo publish` from `main` before he pushes it, so that the name is his before the README sends readers to crates.io.
+   - Kamal runs `cargo publish` from `main` before he pushes it, so that the name is his before the README sends readers to crates.io. If someone took the name meanwhile, the publish fails: Kamal deletes the remote branch, whose README names the crate, and the release stops before `main`.
    - He turns on immutable releases with `gh api -X PUT repos/KamalF/stepbook/immutable-releases`. Then `gh api repos/KamalF/stepbook/immutable-releases --jq .enabled` must print `true`.
    - He pushes `main`, and waits for CI to pass on it.
    - He pushes the tag `v0.1.0`, and the workflow publishes the archives. `gh release view v0.1.0 --json isImmutable --jq .isImmutable` must print `true`.
@@ -414,7 +414,7 @@ Notes for the session that builds it:
 
 ## Next
 
-1. Milestone 5, on the branch `m5-migration`, at the end of the milestone: `cargo mutants` has no Rust code to change, so the review loop comes next, then the merge into `main`. Then commit 6 of the plan, the release, which Kamal runs. A new session reads this file and spec 14.4, 15 and 16 first.
+1. Milestone 5, on the branch `m5-migration`, at the end of the milestone: `cargo mutants` has no Rust code to change, so the review loop comes next. Then step 6 of the plan, the release, in its order: the push of the branch comes before the merge into `main`. A new session reads this file and spec 14.4, 15 and 16 first.
 
 ## Open points
 
