@@ -17,3 +17,5 @@ jobs:
       - run: cargo fmt --check
       - run: mise run lint
       - run: mise run test
+      # A new crate under a licence that about.toml does not accept would stop the release.
+      - run: mise run licenses

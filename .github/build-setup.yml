@@ -1,0 +1,6 @@
+# Steps that dist runs before each build of the release: the archives carry
+# the licence texts of the Rust crates. Same version as in mise.toml.
+- name: Install cargo-about
+  run: cargo install --locked --features cli cargo-about@0.9.3
+- name: Write the licence texts of the Rust crates
+  run: cargo about generate --locked --fail --output-file THIRD-PARTY-LICENSES-RUST.txt about.hbs

@@ -1,0 +1,23 @@
+# cargo-about: the licence texts of the Rust crates in the release binaries.
+# Where a crate offers a choice, the first accepted licence wins. Any other
+# licence stops the task.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "MPL-2.0",
+    "ISC",
+    "BSD-3-Clause",
+    "BSD-2-Clause",
+    "CC0-1.0",
+    "BSL-1.0",
+    "Zlib",
+]
+# Every target of the release, so that each archive gets the same file.
+targets = [
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true

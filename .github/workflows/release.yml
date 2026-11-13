@@ -131,6 +131,10 @@ jobs:
             curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
             echo "$HOME/.cargo/bin" >> $GITHUB_PATH
           fi
+      - name: "Install cargo-about"
+        run: "cargo install --locked --features cli cargo-about@0.9.3"
+      - name: "Write the licence texts of the Rust crates"
+        run: "cargo about generate --locked --fail --output-file THIRD-PARTY-LICENSES-RUST.txt about.hbs"
       - name: Install dist
         run: ${{ matrix.install_dist.run }}
       # Get the dist-manifest

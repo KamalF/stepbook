@@ -392,13 +392,14 @@ Notes for the session that builds it:
   - `dist generate` writes the workflow again after each change of the config.
 - The mdame files to start from: `dist-workspace.toml`, `.github/build-setup.yml`, `.github/check-release.sh`, `.github/workflows/check-release.yml`, `about.toml`, `about.hbs`, and the paragraph "Distribution" of its spec.
 - The crate builds for musl: syntect runs with `regex-fancy`, in pure Rust, and no crate of the build compiles C. Checked on 2026-11-13 with the musl `rust-std` of Rust 1.99.0, unpacked as a sysroot in `~/.cache/stepbook-musl`. The sandbox cannot write `~/.rustup`, and the proxy cut the downloads of rustup. In tmux, the static binary ran two blocks with `export`, `cd`, input mode and the log.
+- cargo-about accepts `Zlib` too, beside the licences of mdame: foldhash, which ratatui uses, has no other licence.
 - The name `stepbook` was still free on crates.io on 2026-11-13.
 - `~/.claude/skills/runbook` is a link to `~/.config/dotstate/storage/Personal/.agents/skills/runbook/`. The Bash sandbox cannot write there.
 - Only Kamal can push a tag: the sandbox has no SSH.
 
 ## Next
 
-1. Milestone 5, on the branch `m5-migration`, from commit 3 of the plan. A new session reads this file and spec 14.4, 15 and 16 first.
+1. Milestone 5, on the branch `m5-migration`, from commit 4 of the plan. A new session reads this file and spec 14.4, 15 and 16 first.
 
 ## Open points
 

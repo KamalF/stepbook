@@ -446,15 +446,16 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 
 ### 14.1 Tooling
 
-mise manages the repository. `mise.toml` pins the Rust toolchain, `cargo-insta`, `cargo-mutants` and dist (14.4), and defines the tasks:
+mise manages the repository. `mise.toml` pins the Rust toolchain, `cargo-insta`, `cargo-mutants`, dist and cargo-about (14.4), and defines the tasks:
 
 | Task | Does |
 |---|---|
 | `fmt` | `cargo fmt` |
 | `lint` | `cargo clippy --all-targets -- -D warnings` |
 | `test` | `cargo test --no-fail-fast` |
+| `licenses` | `cargo about generate`: writes the licence texts of the Rust crates to `THIRD-PARTY-LICENSES-RUST.txt`, from `about.hbs`. A crate under a licence that `about.toml` does not accept stops it |
 
-CI on GitHub Actions runs on Linux: `cargo fmt --check`, then `mise run lint` and `mise run test`. The actions are pinned by SHA.
+CI on GitHub Actions runs on Linux: `cargo fmt --check`, then `mise run lint`, `mise run test` and `mise run licenses`. So a new crate under a licence that `about.toml` does not accept fails CI before it can stop a release. The actions are pinned by SHA.
 
 ### 14.2 Rules
 
