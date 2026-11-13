@@ -705,10 +705,11 @@ pub fn needs_escape(c: char) -> bool {
 /// comment, and runs curl. It escapes the format characters that join the
 /// next character, such as U+070F, U+2D7F and the regional indicators: a
 /// terminal may count their columns otherwise than ratatui, and the text
-/// after them would shift. It escapes U+3248 to U+324F, the circled
-/// numbers on a black square: their East Asian width is ambiguous, and
-/// glibc and tmux draw them 2 columns wide by default, where ratatui counts
-/// 1, so the text after them would cover the end of the line. It escapes
+/// after them would shift. It escapes the characters that a terminal
+/// draws 2 columns wide by default, where ratatui counts 1, since the text
+/// after them would cover the end of the line: U+3248 to U+324F, the
+/// circled numbers on a black square, which glibc and tmux draw wide, and
+/// the 9 that tmux forces wide, such as U+261D. It escapes
 /// "␣" and "⇥", which would pass for the marks of a space and a tab. Prose
 /// keeps them all, for emoji, scripts and no-break spaces.
 pub fn needs_escape_in_code(c: char) -> bool {
@@ -747,6 +748,12 @@ pub fn needs_escape_in_code(c: char) -> bool {
                 | '\u{2423}'
                 | '\u{3000}'
                 | '\u{3248}'..='\u{324f}'
+                | '\u{261d}'
+                | '\u{26f9}'
+                | '\u{270c}'..='\u{270d}'
+                | '\u{1f3cb}'..='\u{1f3cc}'
+                | '\u{1f574}'..='\u{1f575}'
+                | '\u{1f590}'
                 | '\u{ad}'
                 | '\u{34f}'
                 | '\u{115f}'..='\u{1160}'
@@ -1691,10 +1698,24 @@ mod tests {
     }
 
     #[test]
-    fn code_escapes_the_circled_numbers_that_terminals_draw_wide() {
-        // East Asian width A: ratatui counts 1 column, and glibc's wcwidth
-        // and tmux give 2 in every locale.
-        for c in ['\u{3248}', '\u{324f}'] {
+    fn code_escapes_the_characters_that_terminals_draw_wider_than_ratatui() {
+        // ratatui counts 1 column. glibc's wcwidth and tmux give 2 to the
+        // circled numbers in every locale, and tmux 3.8 forces the others
+        // wide.
+        let wide = [
+            '\u{3248}',
+            '\u{324f}',
+            '\u{261d}',
+            '\u{26f9}',
+            '\u{270c}',
+            '\u{270d}',
+            '\u{1f3cb}',
+            '\u{1f3cc}',
+            '\u{1f574}',
+            '\u{1f575}',
+            '\u{1f590}',
+        ];
+        for c in wide {
             assert!(needs_escape_in_code(c) && !needs_escape(c), "{c:?}");
         }
         // Their neighbours are wide for ratatui too.

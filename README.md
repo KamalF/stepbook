@@ -112,7 +112,7 @@ file, from 1. Other code blocks show dimmed and do not run.
 - stepbook shows a control character of the file as vim does, such as `^[`
   for ESC, so that a runbook cannot hide part of a command. The output of a
   program goes through a terminal screen of stepbook, never raw to your
-  terminal. Two kinds of terminals can still draw code in another way than
+  terminal. Three kinds of terminals can still draw code in another way than
   bash reads it:
   - A terminal that draws characters of ambiguous width, such as `·`, 2
     columns wide. They shift the rest of the line, and the next text covers
@@ -121,6 +121,9 @@ file, from 1. Other code blocks show dimmed and do not run.
   - A terminal that reorders right-to-left text on its own, such as VTE or
     Konsole. Code with right-to-left text, such as Hebrew or Arabic, can
     show in another order.
+  - A terminal that draws other characters wider than stepbook counts them,
+    such as one with a later version of Unicode. stepbook escapes in code
+    those that glibc and tmux draw wider.
 - If blocks are running, stepbook asks before it stops them and quits.
 
 ### Keys
