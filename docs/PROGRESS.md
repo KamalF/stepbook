@@ -20,7 +20,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 | 2 | Running blocks | Done, merged into `main` on 2026-11-11 |
 | 3 | Input and full-screen view | Done, merged into `main` on 2026-11-11 |
 | 4 | Log and reload | Done, merged into `main` on 2026-11-12 |
-| 5 | Migration | On the branch `m5-migration`: the review loop converged on 2026-11-13, and the release comes next. Kamal signed off the plan on 2026-11-13 |
+| 5 | Migration | Merged into `main` and released as 0.1.0 on 2026-11-13; the move of the runbook skill comes next. Kamal signed off the plan on 2026-11-13 |
 
 Kamal signed off the build order and the new dependencies on 2026-11-09.
 
@@ -417,6 +417,15 @@ Commits 2 to 5 are in, with one more of Claude's choice after the README: the cr
   - cargo-about builds and runs in the release job that can write attestations.
   - The archives carry the licence texts of the crates, not those of musl and of the standard library of Rust. mdame does the same.
 
+### The release of 0.1.0
+
+Kamal ran step 6 on 2026-11-13, from `~/dev/claude/runbooks/2026-11-13-stepbook-release-0.1.0.md`:
+
+- CI passed on the pushed branch, with its new steps, and Claude merged it into `main` (cc308e3).
+- `cargo publish` put stepbook 0.1.0 on crates.io: 14 files. Immutable releases are on.
+- CI passed on `main`, then the tag `v0.1.0` started the release workflow: both musl builds took under 3 minutes. The release is immutable, its notes come from `CHANGELOG.md`, and both archives pass the attestation check of the README.
+- `mise use -g github:KamalF/stepbook` failed at first: Kamal's global mise config sets `minimum_release_age = 24h`, which hides a release for its first day. `mise use -g github:KamalF/stepbook@0.1.0` installed it, and pins 0.1.0 in that config. The binary is static, stripped, and prints `stepbook 0.1.0`.
+
 Notes for the session that builds it:
 
 - mdame made the same release setup in its milestones 10 and 11. Its local logbook, `~/dev/github/mdame/docs/runbook.md`, lines 246 to 297, gives each command and its pitfalls:
@@ -433,8 +442,8 @@ Notes for the session that builds it:
 
 ## Next
 
-1. Step 6 of the plan of milestone 5, the release of 0.1.0, in its order: Kamal pushes the branch `m5-migration` first, and CI must pass on it before the merge into `main`. A new session reads this file and spec 14.4, 15 and 16 first.
-2. Step 7: the runbook skill moves to stepbook. A draft of its new `SKILL.md` waits for the release.
+1. Step 7 of the plan of milestone 5: the runbook skill moves to stepbook. Then Kamal runs a real runbook with it, the done-when of the milestone, and `mise unuse -g github:rezigned/upmd` (spec 15). A new session reads this file and spec 15 and 16 first.
+2. After 2026-11-14, `mise use -g github:KamalF/stepbook@latest`, if Kamal wants mise to follow new releases.
 
 ## Open points
 
