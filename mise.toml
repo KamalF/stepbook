@@ -1,5 +1,7 @@
 [tools]
+cargo-dist = "0.33.1"
 cargo-insta = "1.49.0"
+"github:EmbarkStudios/cargo-about" = "0.9.3"
 "github:sourcefrog/cargo-mutants" = "27.1.0"
 rust = { version = "1.99.0", components = "rust-analyzer,clippy,rustfmt" }
 
@@ -11,3 +13,7 @@ run = "cargo clippy --all-targets -- -D warnings"
 
 [tasks.test]
 run = "cargo test --no-fail-fast"
+
+[tasks.licenses]
+description = "Write the licence texts of the Rust crates, as each release archive carries them"
+run = "cargo about generate --locked --fail --output-file THIRD-PARTY-LICENSES-RUST.txt about.hbs"

@@ -2,11 +2,15 @@
 name = "stepbook"
 version = "0.1.0"
 edition = "2024"
+# The dependencies need 1.88. stepbook is checked with 1.92, the oldest
+# toolchain at hand.
+rust-version = "1.92"
 license = "MIT"
 description = "Run the bash blocks of a Markdown runbook one at a time, in a terminal UI"
 repository = "https://github.com/KamalF/stepbook"
 keywords = ["runbook", "markdown", "tui", "bash", "terminal"]
 categories = ["command-line-utilities"]
+include = ["/src", "/LICENSE", "/README.md"]
 
 [dependencies]
 crossbeam-channel = "0.5.17"
@@ -22,3 +26,9 @@ vte = { version = "0.15.0", default-features = false }
 insta = "1.49.0"
 proptest = "1.12.0"
 tempfile = "3.27.0"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
+strip = true

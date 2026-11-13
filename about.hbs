@@ -1,0 +1,11 @@
+The licence texts of the Rust crates that the stepbook binary holds.
+{{#each licenses}}
+
+================================================================================
+{{{name}}} ({{{id}}}), for:
+{{#each used_by}}
+- {{{crate.name}}} {{{crate.version}}}{{#if crate.repository}}, {{{crate.repository}}}{{/if}}
+{{/each}}
+
+{{{text}}}
+{{/each}}

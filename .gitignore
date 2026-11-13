@@ -1,3 +1,4 @@
 /target
 /mutants.out*
 *.pending-snap
+/THIRD-PARTY-LICENSES-RUST.txt

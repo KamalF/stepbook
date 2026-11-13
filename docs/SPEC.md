@@ -198,7 +198,7 @@ In this section, control characters are the C0 characters, DEL and the C1 charac
 - A tab is not escaped. It expands to spaces, up to the next multiple of 8 columns. In code, its first column shows a dim `⇥`: with `<<-`, bash strips the tabs at the start of a heredoc line, not the spaces.
 - In code, a space that ends a row shows as a dim `␣`: after a `\`, bash runs the next line on its own, and a space at a wrap would glue two words. The gutter `▐` and the marks `⇥`, `␣`, `↪` and `╎` have a width of 1 in every terminal (East Asian width N). `▌`, `→` and `·` have an ambiguous East Asian width: a terminal set to draw them wide would shift the code after them. Code escapes U+2423 `␣` and U+21E5 `⇥`, which would pass for the marks.
 - A line feed is a line break in the text and the code of the file. In one-line text, such as a file name, it shows as `^J`.
-- Code also escapes the default ignorable code points of Unicode, which a terminal draws as nothing, such as U+200B (zero-width space): `"prod<U+200B>"` would look like `"prod"`. In code, a grapheme of several code points keeps its first character, if the terminal draws it alone, and shows the others escaped, and so does a grapheme of width 0, such as a combining mark at the start of a line. A terminal may count the columns of such a grapheme otherwise than ratatui, and shift the rest of the line over a space: `k` and 8 × U+302E is 1 column for ratatui and 17 in tmux. At the start of a line, code also escapes a grapheme that would join the space of the gutter, such as U+093E. Code also escapes the spaces other than U+0020, such as U+00A0 (no-break space), and the characters that fonts draw as a blank, U+2800 and U+1D159, which bash reads as part of a word: `true<U+00A0>#; curl x | sh` would look like a comment, and run curl. Code also escapes the characters that join the next character (Grapheme_Cluster_Break=Prepend), such as U+070F and U+0D4E, the format characters U+FFF9 to U+FFFB and U+13430 to U+1343F, U+2D7F, and the regional indicators U+1F1E6 to U+1F1FF: a terminal may give them a column that ratatui does not count, and shift the rest of the line. Prose keeps all of them: emoji, some scripts and no-break spaces need them, and there they do not change what runs.
+- Code also escapes the default ignorable code points of Unicode, which a terminal draws as nothing, such as U+200B (zero-width space): `"prod<U+200B>"` would look like `"prod"`. In code, a grapheme of several code points keeps its first character, if the terminal draws it alone, and shows the others escaped, and so does a grapheme of width 0, such as a combining mark at the start of a line. A terminal may count the columns of such a grapheme otherwise than ratatui, and shift the rest of the line over a space: `k` and 8 × U+302E is 1 column for ratatui and 17 in tmux. At the start of a line, code also escapes a grapheme that would join the space of the gutter, such as U+093E. Code also escapes the characters that a terminal draws 2 columns wide by default, where ratatui counts 1 column: the text after them would cover the end of the line. They are U+3248 to U+324F, the circled numbers on a black square, which glibc's `wcwidth` and tmux draw wide, and the 9 that tmux forces wide: U+261D, U+26F9, U+270C, U+270D, U+1F3CB, U+1F3CC, U+1F574, U+1F575 and U+1F590. Checked on 2026-11-13 over every code point, with glibc 2.44, tmux 3.8 and unicode-width 0.2.3: no other character that code does not escape is drawn wider than ratatui counts. Other terminals and later versions can differ. Code also escapes the spaces other than U+0020, such as U+00A0 (no-break space), and the characters that fonts draw as a blank, U+2800 and U+1D159, which bash reads as part of a word: `true<U+00A0>#; curl x | sh` would look like a comment, and run curl. Code also escapes the characters that join the next character (Grapheme_Cluster_Break=Prepend), such as U+070F and U+0D4E, the format characters U+FFF9 to U+FFFB and U+13430 to U+1343F, U+2D7F, and the regional indicators U+1F1E6 to U+1F1FF: a terminal may give them a column that ratatui does not count, and shift the rest of the line. Prose keeps all of them: emoji, some scripts and no-break spaces need them, and there they do not change what runs.
 - If the code of a block holds a character that code escapes, other than a tab or a line feed, its info line shows the warning `hidden characters in code`. The block can still run.
 - The view and the run use the same code text, so what runs is what the view shows.
 - Program output reaches the terminal only through the vt100 screen. See 6.4.
@@ -381,7 +381,8 @@ Blocks are matched by key between the old and the new file. Among blocks with th
   1. It sends SIGHUP to the processes of each run, as the close of its PTY would: those of the session of its wrapper. `timeout` and `set -m` give a child a process group of its own, in the same session. A process that left the session with `setsid` does not get it. The footer says `stopping the blocks that run`, and keys do nothing.
   2. It waits up to 2 seconds, then sends SIGKILL to the processes of the runs still alive.
   3. It writes their `END` lines to the log and quits. With a log, stepbook waits up to 1 s for the end of the runs that it stopped, on a signal too, so that each section of the log ends with its `END` line. It then waits up to 1 s more for the log to write them: a log on a FIFO or on a hung mount must not keep stepbook from its end.
-- stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide, as ratatui counts them. On a terminal set to draw them wide, such as VTE with that option or `xterm -cjk_width`, the text after such a character shifts, in code too, and a space can vanish.
+- stepbook needs a terminal that draws the characters of ambiguous East Asian width 1 column wide, as ratatui counts them. On a terminal set to draw them wide, such as VTE with that option or `xterm -cjk_width`, the text after such a character shifts, in code too. The next text that stepbook draws at its own column then covers the end of the shifted text: a space, or a whole command, can vanish.
+- A terminal that applies the bidi algorithm on its own, such as VTE or Konsole, can draw code with right-to-left text, such as Hebrew or Arabic, in another order than bash reads it. stepbook escapes the bidi controls (6.5), not the letters. Ghostty does not reorder.
 - While it runs, stepbook turns the autowrap of the terminal off: a character that the terminal draws wider than ratatui counts must not wrap into the row below and move what is there.
 - On exit, stepbook restores the terminal, autowrap, bracketed paste and the cursor included, and ends a synchronized update that a failed frame left open. It also deletes the workspace. It does the same on the signals of 4.
 - Whenever stepbook ends, after a signal, a panic or a terminal error too, it sends SIGHUP to the processes of the runs that have not ended, and to the background jobs of those that have: the processes of the session of each wrapper that it spawned. The close of a PTY reaches only its process group in the foreground. After up to 0.2 s, it sends SIGKILL to those left, then deletes the workspace: a wrapper that outlived stepbook would write its state where the workspace was.
@@ -446,15 +447,16 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 
 ### 14.1 Tooling
 
-mise manages the repository. `mise.toml` pins the Rust toolchain, `cargo-insta` and `cargo-mutants`, and defines the tasks:
+mise manages the repository. `mise.toml` pins the Rust toolchain, `cargo-insta`, `cargo-mutants`, dist and cargo-about (14.4), and defines the tasks:
 
 | Task | Does |
 |---|---|
 | `fmt` | `cargo fmt` |
 | `lint` | `cargo clippy --all-targets -- -D warnings` |
 | `test` | `cargo test --no-fail-fast` |
+| `licenses` | `cargo about generate`: writes the licence texts of the Rust crates to `THIRD-PARTY-LICENSES-RUST.txt`, from `about.hbs`. A crate under a licence that `about.toml` does not accept stops it |
 
-CI on GitHub Actions runs on Linux: `cargo fmt --check`, then `mise run lint` and `mise run test`. The actions are pinned by SHA.
+CI on GitHub Actions runs on Linux: `cargo fmt --check`, then `mise run lint`, `mise run test` and `mise run licenses`. So a new crate under a licence that `about.toml` does not accept fails CI before it can stop a release. Then `dist plan` fails if `release.yml` is not what dist writes from `dist-workspace.toml`. The actions are pinned by SHA.
 
 ### 14.2 Rules
 
@@ -485,6 +487,19 @@ Each test states one rule, and its name is that rule.
   - The old logging header suppresses the native log.
 - **Render tests:** snapshots with ratatui's `TestBackend` and `insta`, covering document elements, control characters (in the code, the text, the file name and a directory name), block states, the sidebar and the footer modes.
 
+### 14.4 Release
+
+dist (formerly cargo-dist) builds the release archives on GitHub Actions when a `v*` tag is pushed. mise installs stepbook from them: `mise use -g github:KamalF/stepbook`.
+
+- Linux only, the target of v1: x86_64 and aarch64. The binaries are static, built with musl, so one file runs on any distribution. No macOS build and no Homebrew tap.
+- The binaries are stripped of their symbols. The archive of each system has an attestation of its build, which `gh attestation verify` checks.
+- The archive of each system carries the licence texts of the Rust crates, which cargo-about writes at the release.
+- The release notes are the section of the version in `CHANGELOG.md`.
+- No install script: in `~/.local/bin`, the script of dist 0.33 takes over the PATH setup of other tools that dist built, such as uv.
+- GitHub's immutable releases are on before the first tag: GitHub applies them only to later releases. Then no one can replace the archives of a release, or move its tag, and a deleted release does not free its tag: a fix is a new version. crates.io also keeps each published version for good.
+- CI passes on the pushed branch of the release before `cargo publish`, and on `main` before the tag: neither step can be undone, and the release workflow does not wait for CI.
+- The crate goes to crates.io too, with only its source, `LICENSE` and `README.md`. It needs Rust 1.92, the oldest toolchain checked. Kamal runs `cargo publish`: it needs his token. He runs it before the README reaches `main` on GitHub: until then, anyone could take the name, and the `cargo install stepbook` of the README would install their crate.
+
 ## 15. Migration
 
 - All the runbooks in `~/dev/claude/runbooks/` open and run unchanged: 62 on 2026-11-09.
@@ -493,6 +508,7 @@ Each test states one rule, and its name is that rule.
   - Use `stepbook <file>` instead of `upmd <file>`.
   - Replace the `ctrl-r` instruction: the file reloads by itself.
   - The log path (`<file>.log`) and `watch.sh` stay the same.
+- When Kamal has run a real runbook with stepbook, upmd leaves his global mise config.
 
 ## 16. Build order
 
@@ -506,7 +522,7 @@ v1 comes in five milestones, built in order. Each milestone ends with `cargo mut
    - Done when: a `read -s` prompt takes a password in input mode, and `o` shows `less` in the full-screen view, which closes when less exits. In herdr, a paste reaches the program (manual check).
 4. **Log and reload.** The log (12), the file watcher and the reload (10).
    - Done when: `watch.sh` sees the `END` line of a run, and two concurrent runs write contiguous sections, while the run that waits holds less than 1 MiB. An edit of the runbook in vim during a run keeps each output and marks the changed blocks.
-5. **Migration.** A README, an install with mise from the GitHub repository, and a first release on crates.io. The README suggests the fish abbreviation `abbr -a stbk stepbook` as a short command. Then the runbook skill moves to stepbook (15).
+5. **Migration.** A README, a CHANGELOG, the release archives and a first release on GitHub and crates.io (14.4). The README suggests the fish abbreviation `abbr -a stbk stepbook` as a short command, and tells in a short section how stepbook was built. Then the runbook skill moves to stepbook (15).
    - Done when: the runbook skill opens its runbooks with stepbook, and Kamal has run a real runbook with it.
 
 ## 17. Later
@@ -639,6 +655,11 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The footer shows no hint of `ctrl-r` (6.1), at Kamal's choice: the watcher reloads on its own, the footer names `ctrl-r` when the watch fails at startup, and the hint would cut `q quit` from a narrow footer first | 2026-11-13 |
 | The short command `stbk` is a fish abbreviation that the README suggests, not a second binary (16), at Kamal's choice: the crate keeps one binary to build, in CI and in each mutant | 2026-11-13 |
 | The output of a block has a shade 6 darker than the background of the terminal, between the prose and the block (5.3), at Kamal's choice: the output had the background of the prose. A lighter shade has no room on a light theme, and on a background close to black, blocks are lighter already | 2026-11-13 |
+| mise installs stepbook from release archives that dist builds, as for mdame (14.4, 16), at Kamal's choice: an install from the source would build for about a minute with his Rust toolchain. Linux only, with no Homebrew tap, since Linux is the target of v1 | 2026-11-13 |
+| After a real runbook with stepbook, upmd leaves Kamal's global mise config (15), at Kamal's choice: the old runbooks open in stepbook unchanged. The README tells in a short section how stepbook was built (16), at Kamal's choice | 2026-11-13 |
+| GitHub's immutable releases are on before the tag of 0.1.0 (14.4): GitHub applies them only to later releases, and a token that can write the repository could replace the archives of an earlier one | 2026-11-13 |
+| `cargo publish` comes before the push of the README to `main` (14.4): the README sends readers to `cargo install stepbook`, and the name is free on crates.io until the first publish | 2026-11-13 |
+| Code escapes U+3248 to U+324F, and the 9 characters that tmux forces wide, such as U+261D (6.5): glibc and tmux draw the circled numbers 2 columns wide by default, and tmux the 9 others, where ratatui counts 1, and in tmux, eight of them before `;reboot x` hid `;reboot`. A review of milestone 5 found them | 2026-11-13 |
 | The key of an unnamed block is its code, not a hash of it (3): it is exact, and needs no hash function | 2026-11-12 |
 | A block that a reload removes while it runs stays at the end of the document too, not only in the sidebar (10): `i` and the output under the block need a place in the document view | 2026-11-12 |
 | A changed block shows `~` in the sidebar, and keeps the mark while its code differs from the code of its last run (6.2, 10) | 2026-11-12 |
