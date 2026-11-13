@@ -60,8 +60,8 @@ You can also download the archive for your system from the
 `stepbook` in a folder of your `PATH`, such as `~/.local/bin`. The binaries
 are static, so they run on any distribution.
 
-The archive of each system has an attestation: a record, signed by GitHub, that the release
-workflow of this repository built it. To check an archive:
+The archive of each system has an attestation: a record, signed by GitHub,
+that the release workflow of this repository built it. To check an archive:
 
 ```sh
 gh attestation verify stepbook-x86_64-unknown-linux-musl.tar.xz \
@@ -194,9 +194,10 @@ tests and the commit messages, on its own. It works from a spec,
 stepbook was built in five milestones. At the end of each one, fresh Claude
 Code sessions reviewed it, in rounds, until a round found nothing to fix.
 In a milestone that changed the code, `cargo mutants` ran before and after
-the review: it changes the code to find the rules that no test checks. The tests run real bash in a PTY, with no mocks.
-Claude checked each feature in tmux, and I checked in my own terminal what
-tmux cannot show, such as copy and paste.
+the review: it changes the code to find the rules that no test checks. The
+tests run real bash in a PTY, with no mocks. Claude checked each feature in
+tmux, and I checked in my own terminal what tmux cannot show, such as copy
+and paste.
 
 ## License
 

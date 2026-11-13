@@ -33,5 +33,5 @@ The first release.
 - Static binaries for x86_64 and aarch64 Linux, built with musl, and stripped
   of their symbols.
 - The archive of each system has an attestation of its build, which
-  `gh attestation verify` checks. It carries the licence texts of the Rust crates in
-  `THIRD-PARTY-LICENSES-RUST.txt`.
+  `gh attestation verify` checks. It carries the licence texts of the Rust
+  crates in `THIRD-PARTY-LICENSES-RUST.txt`.
