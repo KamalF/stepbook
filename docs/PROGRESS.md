@@ -20,7 +20,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 | 2 | Running blocks | Done, merged into `main` on 2026-11-11 |
 | 3 | Input and full-screen view | Done, merged into `main` on 2026-11-11 |
 | 4 | Log and reload | Done, merged into `main` on 2026-11-12 |
-| 5 | Migration | Planned on the branch `m5-migration`, to sign off |
+| 5 | Migration | Planned on the branch `m5-migration`, signed off on 2026-11-13 |
 
 Kamal signed off the build order and the new dependencies on 2026-11-09.
 
@@ -343,6 +343,8 @@ The review loop ran in night mode, and Claude made these choices alone. The spec
 5. Writes to the log that fail show in the footer at most once every 10 s (12.1).
 6. A choice of look: the NORMAL footer does not show `^r reload`, which the example of spec 6.1 showed. Kamal chose on 2026-11-13 to keep the footer as it is: the example lost the hint.
 
+Kamal confirmed choices 1 to 5 on 2026-11-13.
+
 ### Kamal's manual checklist of milestone 4
 
 What tmux cannot show, in herdr in Ghostty: open `~/dev/claude/runbooks/2026-11-12-stepbook-log-reload.md` with `stepbook` (with its log), keep a second pane for vim and `tail -f` of the log, and follow its five sections:
@@ -367,17 +369,19 @@ On `main`, on 2026-11-13:
 
 Kamal's choice on 2026-11-13: mise installs stepbook from release archives that dist builds, as for mdame (spec 14.4).
 
-The plan, one commit per line, on the branch `m5-migration`. Kamal has not signed it off yet.
+The plan, one commit per line, on the branch `m5-migration`:
 
 1. `docs`: this plan, and the choice of the release archives (spec 14.4, 16).
 2. `chore`: dist and its release workflow: static musl binaries for x86_64 and aarch64 Linux, stripped, with attestations, and no install script or Homebrew tap (14.1, 14.4).
 3. `chore`: cargo-about writes the licence texts of the Rust crates, in CI and in each build of the release (14.1, 14.4).
-4. `docs`: the README: what stepbook does, the install with mise and with cargo, the usage and the keys, the log and `watch.sh`, and the fish abbreviation `abbr -a stbk stepbook` (16).
+4. `docs`: the README: what stepbook does, the install with mise and with cargo, the usage and the keys, the log and `watch.sh`, the fish abbreviation `abbr -a stbk stepbook`, and a short section on how stepbook was built (16).
 5. `docs`: `CHANGELOG.md`, with the section of 0.1.0 (14.4).
 6. The release of 0.1.0: Kamal pushes the tag `v0.1.0`, the workflow publishes the archives, and Kamal runs `cargo publish`. Then `mise use -g github:KamalF/stepbook` installs it, and `stepbook --version` prints 0.1.0.
 7. The runbook skill moves to stepbook, outside this repository (15): no logging header in the block format, `stepbook <file>` in place of `upmd <file>`, and no `ctrl-r` instruction. The log path and `watch.sh` stay.
 
-Done when (spec 16): the runbook skill opens its runbooks with stepbook, and Kamal has run a real runbook with it.
+Done when (spec 16): the runbook skill opens its runbooks with stepbook, and Kamal has run a real runbook with it. Then Kamal runs `mise unuse -g github:rezigned/upmd` (15).
+
+Kamal signed off the plan, with dist and cargo-about as new tools, on 2026-11-13.
 
 Notes for the session that builds it:
 
@@ -387,23 +391,14 @@ Notes for the session that builds it:
   - `dist init` keeps its default targets, so the targets go into `dist-workspace.toml` by hand.
   - `dist generate` writes the workflow again after each change of the config.
 - The mdame files to start from: `dist-workspace.toml`, `.github/build-setup.yml`, `.github/check-release.sh`, `.github/workflows/check-release.yml`, `about.toml`, `about.hbs`, and the paragraph "Distribution" of its spec.
-- dist and cargo-about are new tools in `mise.toml`: Kamal approves them with the plan.
 - Not checked yet: that the crate builds for musl. syntect runs with `regex-fancy`, in pure Rust, not with the C library onig.
 - The name `stepbook` was still free on crates.io on 2026-11-13.
 - `~/.claude/skills/runbook` is a link to `~/.config/dotstate/storage/Personal/.agents/skills/runbook/`. The Bash sandbox cannot write there.
 - Only Kamal can push a tag: the sandbox has no SSH.
 
-Choices for Kamal, before the work starts:
-
-1. Sign off the plan and the two new tools.
-2. After the real runbook, does upmd leave `~/.config/mise/config.toml` (`github:rezigned/upmd`)?
-3. Does the README tell how stepbook was built (milestones, reviews, mutants), as the README of mdame does?
-
 ## Next
 
-1. A new session reads this file and spec 14.4, 15 and 16, then asks Kamal the choices of milestone 5 (above).
-2. Kamal confirms or changes the choices made during the night of milestone 4 (items 1 to 5 above).
-3. Milestone 5, on the branch `m5-migration`.
+1. Milestone 5, on the branch `m5-migration`, from commit 2 of the plan. A new session reads this file and spec 14.4, 15 and 16 first.
 
 ## Open points
 

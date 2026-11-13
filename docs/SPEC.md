@@ -504,6 +504,7 @@ dist (formerly cargo-dist) builds the release archives on GitHub Actions when a 
   - Use `stepbook <file>` instead of `upmd <file>`.
   - Replace the `ctrl-r` instruction: the file reloads by itself.
   - The log path (`<file>.log`) and `watch.sh` stay the same.
+- When Kamal has run a real runbook with stepbook, upmd leaves his global mise config.
 
 ## 16. Build order
 
@@ -517,7 +518,7 @@ v1 comes in five milestones, built in order. Each milestone ends with `cargo mut
    - Done when: a `read -s` prompt takes a password in input mode, and `o` shows `less` in the full-screen view, which closes when less exits. In herdr, a paste reaches the program (manual check).
 4. **Log and reload.** The log (12), the file watcher and the reload (10).
    - Done when: `watch.sh` sees the `END` line of a run, and two concurrent runs write contiguous sections, while the run that waits holds less than 1 MiB. An edit of the runbook in vim during a run keeps each output and marks the changed blocks.
-5. **Migration.** A README, a CHANGELOG, the release archives and a first release on GitHub and crates.io (14.4). The README suggests the fish abbreviation `abbr -a stbk stepbook` as a short command. Then the runbook skill moves to stepbook (15).
+5. **Migration.** A README, a CHANGELOG, the release archives and a first release on GitHub and crates.io (14.4). The README suggests the fish abbreviation `abbr -a stbk stepbook` as a short command, and tells in a short section how stepbook was built. Then the runbook skill moves to stepbook (15).
    - Done when: the runbook skill opens its runbooks with stepbook, and Kamal has run a real runbook with it.
 
 ## 17. Later
@@ -651,6 +652,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The short command `stbk` is a fish abbreviation that the README suggests, not a second binary (16), at Kamal's choice: the crate keeps one binary to build, in CI and in each mutant | 2026-11-13 |
 | The output of a block has a shade 6 darker than the background of the terminal, between the prose and the block (5.3), at Kamal's choice: the output had the background of the prose. A lighter shade has no room on a light theme, and on a background close to black, blocks are lighter already | 2026-11-13 |
 | mise installs stepbook from release archives that dist builds, as for mdame (14.4, 16), at Kamal's choice: an install from the source would build for about a minute with his Rust toolchain. Linux only, with no Homebrew tap, since Linux is the target of v1 | 2026-11-13 |
+| After a real runbook with stepbook, upmd leaves Kamal's global mise config (15), at Kamal's choice: the old runbooks open in stepbook unchanged. The README tells in a short section how stepbook was built (16), at Kamal's choice | 2026-11-13 |
 | The key of an unnamed block is its code, not a hash of it (3): it is exact, and needs no hash function | 2026-11-12 |
 | A block that a reload removes while it runs stays at the end of the document too, not only in the sidebar (10): `i` and the output under the block need a place in the document view | 2026-11-12 |
 | A changed block shows `~` in the sidebar, and keeps the mark while its code differs from the code of its last run (6.2, 10) | 2026-11-12 |
