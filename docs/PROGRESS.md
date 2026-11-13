@@ -399,7 +399,7 @@ Notes for the session that builds it:
 
 ## Next
 
-1. Milestone 5, on the branch `m5-migration`, from commit 4 of the plan. A new session reads this file and spec 14.4, 15 and 16 first.
+1. Milestone 5, on the branch `m5-migration`, from commit 5 of the plan. A new session reads this file and spec 14.4, 15 and 16 first.
 
 ## Open points
 
