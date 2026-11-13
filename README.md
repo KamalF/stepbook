@@ -100,15 +100,15 @@ A block without a name is `#<n>`, where n is its place among the blocks of the
 file, from 1. Other code blocks show dimmed and do not run.
 
 - Each run has a terminal of its own. Several blocks can run at the same time.
-- A block starts with the exported variables and the working directory that
-  the last block ended with. A background job, such as
+- The exports and the `cd` of a block carry over to the blocks that start
+  after it ends. A background job, such as
   `kubectl port-forward … &`, runs until stepbook ends.
 - A block gets `STEPBOOK_FILE`, `STEPBOOK_LOG` and `STEPBOOK_BLOCK`: the path
   of the runbook, the path of the log, and the name of the block.
 - When the file changes on disk, stepbook reloads it. A block keeps its
-  output if it has a name, or if its code did not change. A named block whose
-  code changed after its run shows `~` and `changed since run`. An unnamed
-  block whose code changed is a new block, which has not run.
+  output if its name stays the same, or, for an unnamed block, if its code
+  did not change. A named block whose code changed after its run shows `~`
+  and `changed since run`. Any other block is a new block, which has not run.
 - stepbook shows a control character of the file as vim does, such as `^[`
   for ESC, so that a runbook cannot hide part of a command. The output of a
   program goes through a terminal screen of stepbook, never raw to your
@@ -152,8 +152,8 @@ app.log  db.log
   only its last state. The output of a full-screen program, such as `less`,
   stays out of the log, and one line marks it.
 - The lines of two runs never mix. If a run ends while another one writes to
-  the log, it writes its whole section at once. The section of the other run
-  then goes on after a `=== CONTINUE <name>` line.
+  the log, the run that ends writes its whole section at once. The section of
+  the other run then goes on after a `=== CONTINUE <name>` line.
 - stepbook creates the log with mode 0600. It does not start if the log is a
   link, or a file of another user: a runbook from someone else could come
   with a log that links to your `~/.bashrc`.
