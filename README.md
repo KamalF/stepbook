@@ -112,9 +112,13 @@ file, from 1. Other code blocks show dimmed and do not run.
 - stepbook shows a control character of the file as vim does, such as `^[`
   for ESC, so that a runbook cannot hide part of a command. The output of a
   program goes through a terminal screen of stepbook, never raw to your
-  terminal. This needs a terminal that draws characters of ambiguous width,
-  such as `·`, 1 column wide, which is the default: drawn 2 columns wide, they
-  shift the rest of the line, and a space can vanish.
+  terminal. Two kinds of terminals can still draw code in another way than
+  bash reads it:
+  - A terminal that draws characters of ambiguous width, such as `·`, 2
+    columns wide. They shift the rest of the line, and a space can vanish.
+    The default is 1 column.
+  - A terminal that reorders right-to-left text on its own, such as VTE or
+    Konsole. Code with Hebrew or Arabic letters can show in another order.
 - If blocks are running, stepbook asks before it stops them and quits.
 
 ### Keys
