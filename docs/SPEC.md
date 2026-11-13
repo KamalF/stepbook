@@ -496,7 +496,7 @@ dist (formerly cargo-dist) builds the release archives on GitHub Actions when a 
 - The release notes are the section of the version in `CHANGELOG.md`.
 - No install script: in `~/.local/bin`, the script of dist 0.33 takes over the PATH setup of other tools that dist built, such as uv.
 - GitHub's immutable releases are on before the first tag: GitHub applies them only to later releases. Then no one can replace the archives of a release, or move its tag, and a deleted release does not free its tag: a fix is a new version. crates.io also keeps each published version for good.
-- The tag goes on a commit of `main` that passed CI: the release workflow does not wait for CI.
+- CI passes on the pushed branch of the release before `cargo publish`, and on `main` before the tag: neither step can be undone, and the release workflow does not wait for CI.
 - The crate goes to crates.io too, with only its source, `LICENSE` and `README.md`. It needs Rust 1.92, the oldest toolchain checked. Kamal runs `cargo publish`: it needs his token. He runs it before the README reaches `main` on GitHub: until then, anyone could take the name, and the `cargo install stepbook` of the README would install their crate.
 
 ## 15. Migration
