@@ -446,7 +446,7 @@ Old runbooks start each block with the skill's logging header: `exec > >(tee -a 
 
 ### 14.1 Tooling
 
-mise manages the repository. `mise.toml` pins the Rust toolchain, `cargo-insta` and `cargo-mutants`, and defines the tasks:
+mise manages the repository. `mise.toml` pins the Rust toolchain, `cargo-insta`, `cargo-mutants` and dist (14.4), and defines the tasks:
 
 | Task | Does |
 |---|---|

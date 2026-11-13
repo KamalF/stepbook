@@ -20,7 +20,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 | 2 | Running blocks | Done, merged into `main` on 2026-11-11 |
 | 3 | Input and full-screen view | Done, merged into `main` on 2026-11-11 |
 | 4 | Log and reload | Done, merged into `main` on 2026-11-12 |
-| 5 | Migration | Planned on the branch `m5-migration`, signed off on 2026-11-13 |
+| 5 | Migration | In progress on the branch `m5-migration`, signed off on 2026-11-13 |
 
 Kamal signed off the build order and the new dependencies on 2026-11-09.
 
@@ -391,14 +391,14 @@ Notes for the session that builds it:
   - `dist init` keeps its default targets, so the targets go into `dist-workspace.toml` by hand.
   - `dist generate` writes the workflow again after each change of the config.
 - The mdame files to start from: `dist-workspace.toml`, `.github/build-setup.yml`, `.github/check-release.sh`, `.github/workflows/check-release.yml`, `about.toml`, `about.hbs`, and the paragraph "Distribution" of its spec.
-- Not checked yet: that the crate builds for musl. syntect runs with `regex-fancy`, in pure Rust, not with the C library onig.
+- The crate builds for musl: syntect runs with `regex-fancy`, in pure Rust, and no crate of the build compiles C. Checked on 2026-11-13 with the musl `rust-std` of Rust 1.99.0, unpacked as a sysroot in `~/.cache/stepbook-musl`. The sandbox cannot write `~/.rustup`, and the proxy cut the downloads of rustup. In tmux, the static binary ran two blocks with `export`, `cd`, input mode and the log.
 - The name `stepbook` was still free on crates.io on 2026-11-13.
 - `~/.claude/skills/runbook` is a link to `~/.config/dotstate/storage/Personal/.agents/skills/runbook/`. The Bash sandbox cannot write there.
 - Only Kamal can push a tag: the sandbox has no SSH.
 
 ## Next
 
-1. Milestone 5, on the branch `m5-migration`, from commit 2 of the plan. A new session reads this file and spec 14.4, 15 and 16 first.
+1. Milestone 5, on the branch `m5-migration`, from commit 3 of the plan. A new session reads this file and spec 14.4, 15 and 16 first.
 
 ## Open points
 
