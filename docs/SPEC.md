@@ -485,6 +485,17 @@ Each test states one rule, and its name is that rule.
   - The old logging header suppresses the native log.
 - **Render tests:** snapshots with ratatui's `TestBackend` and `insta`, covering document elements, control characters (in the code, the text, the file name and a directory name), block states, the sidebar and the footer modes.
 
+### 14.4 Release
+
+dist (formerly cargo-dist) builds the release archives on GitHub Actions when a `v*` tag is pushed. mise installs stepbook from them: `mise use -g github:KamalF/stepbook`.
+
+- Linux only, the target of v1: x86_64 and aarch64. The binaries are static, built with musl, so one file runs on any distribution. No macOS build and no Homebrew tap.
+- The binaries are stripped of their symbols. Each archive has an attestation of its build, which `gh attestation verify` checks.
+- Each archive carries the licence texts of the Rust crates, which cargo-about writes at the release.
+- The release notes are the section of the version in `CHANGELOG.md`.
+- No install script: in `~/.local/bin`, the script of dist 0.33 takes over the PATH setup of other tools that dist built, such as uv.
+- The crate goes to crates.io too. Kamal runs `cargo publish`: it needs his token.
+
 ## 15. Migration
 
 - All the runbooks in `~/dev/claude/runbooks/` open and run unchanged: 62 on 2026-11-09.
@@ -506,7 +517,7 @@ v1 comes in five milestones, built in order. Each milestone ends with `cargo mut
    - Done when: a `read -s` prompt takes a password in input mode, and `o` shows `less` in the full-screen view, which closes when less exits. In herdr, a paste reaches the program (manual check).
 4. **Log and reload.** The log (12), the file watcher and the reload (10).
    - Done when: `watch.sh` sees the `END` line of a run, and two concurrent runs write contiguous sections, while the run that waits holds less than 1 MiB. An edit of the runbook in vim during a run keeps each output and marks the changed blocks.
-5. **Migration.** A README, an install with mise from the GitHub repository, and a first release on crates.io. The README suggests the fish abbreviation `abbr -a stbk stepbook` as a short command. Then the runbook skill moves to stepbook (15).
+5. **Migration.** A README, a CHANGELOG, the release archives and a first release on GitHub and crates.io (14.4). The README suggests the fish abbreviation `abbr -a stbk stepbook` as a short command. Then the runbook skill moves to stepbook (15).
    - Done when: the runbook skill opens its runbooks with stepbook, and Kamal has run a real runbook with it.
 
 ## 17. Later
@@ -639,6 +650,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | The footer shows no hint of `ctrl-r` (6.1), at Kamal's choice: the watcher reloads on its own, the footer names `ctrl-r` when the watch fails at startup, and the hint would cut `q quit` from a narrow footer first | 2026-11-13 |
 | The short command `stbk` is a fish abbreviation that the README suggests, not a second binary (16), at Kamal's choice: the crate keeps one binary to build, in CI and in each mutant | 2026-11-13 |
 | The output of a block has a shade 6 darker than the background of the terminal, between the prose and the block (5.3), at Kamal's choice: the output had the background of the prose. A lighter shade has no room on a light theme, and on a background close to black, blocks are lighter already | 2026-11-13 |
+| mise installs stepbook from release archives that dist builds, as for mdame (14.4, 16), at Kamal's choice: an install from the source would build for about a minute with his Rust toolchain. Linux only, with no Homebrew tap, since Linux is the target of v1 | 2026-11-13 |
 | The key of an unnamed block is its code, not a hash of it (3): it is exact, and needs no hash function | 2026-11-12 |
 | A block that a reload removes while it runs stays at the end of the document too, not only in the sidebar (10): `i` and the output under the block need a place in the document view | 2026-11-12 |
 | A changed block shows `~` in the sidebar, and keeps the mark while its code differs from the code of its last run (6.2, 10) | 2026-11-12 |

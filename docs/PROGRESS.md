@@ -20,7 +20,7 @@ Claude works on its own. It writes the code, the tests and the commit messages, 
 | 2 | Running blocks | Done, merged into `main` on 2026-11-11 |
 | 3 | Input and full-screen view | Done, merged into `main` on 2026-11-11 |
 | 4 | Log and reload | Done, merged into `main` on 2026-11-12 |
-| 5 | Migration | — |
+| 5 | Migration | Planned on the branch `m5-migration`, to sign off |
 
 Kamal signed off the build order and the new dependencies on 2026-11-09.
 
@@ -355,20 +355,61 @@ What tmux cannot show, in herdr in Ghostty: open `~/dev/claude/runbooks/2026-11-
 
 Kamal ran the checklist on 2026-11-13: the five checks pass.
 
+## After milestone 4
+
+On `main`, on 2026-11-13:
+
+- Kamal created `KamalF/stepbook` on GitHub, added the remote and pushed `main`.
+- The output of a block got a shade of its own, at Kamal's choice (spec 5.3): 49372e0, then 8fbf6e3 from `/simplify`. `cargo mutants` on its diff: 10 mutants, 9 caught, 1 unviable. The review loop converged in one round. Its log is `~/.cache/stepbook-review/output-shade/review-loop-log.md`.
+- The first CI run on GitHub failed: the test helper `until_full_rows` never read the output that came after the key `o`, and a slow runner sent `inside` in a later read (a484637). CI passes on 8fbf6e3.
+
+## Milestone 5: migration
+
+Kamal's choice on 2026-11-13: mise installs stepbook from release archives that dist builds, as for mdame (spec 14.4).
+
+The plan, one commit per line, on the branch `m5-migration`. Kamal has not signed it off yet.
+
+1. `docs`: this plan, and the choice of the release archives (spec 14.4, 16).
+2. `chore`: dist and its release workflow: static musl binaries for x86_64 and aarch64 Linux, stripped, with attestations, and no install script or Homebrew tap (14.1, 14.4).
+3. `chore`: cargo-about writes the licence texts of the Rust crates, in CI and in each build of the release (14.1, 14.4).
+4. `docs`: the README: what stepbook does, the install with mise and with cargo, the usage and the keys, the log and `watch.sh`, and the fish abbreviation `abbr -a stbk stepbook` (16).
+5. `docs`: `CHANGELOG.md`, with the section of 0.1.0 (14.4).
+6. The release of 0.1.0: Kamal pushes the tag `v0.1.0`, the workflow publishes the archives, and Kamal runs `cargo publish`. Then `mise use -g github:KamalF/stepbook` installs it, and `stepbook --version` prints 0.1.0.
+7. The runbook skill moves to stepbook, outside this repository (15): no logging header in the block format, `stepbook <file>` in place of `upmd <file>`, and no `ctrl-r` instruction. The log path and `watch.sh` stay.
+
+Done when (spec 16): the runbook skill opens its runbooks with stepbook, and Kamal has run a real runbook with it.
+
+Notes for the session that builds it:
+
+- mdame made the same release setup in its milestones 10 and 11. Its local logbook, `~/dev/github/mdame/docs/runbook.md`, lines 246 to 297, gives each command and its pitfalls:
+  - dist 0.33.1, not 0.34.0.
+  - mise checks the attestation of dist through sigstore, so the sandbox needs `tuf-repo-cdn.sigstore.dev`.
+  - `dist init` keeps its default targets, so the targets go into `dist-workspace.toml` by hand.
+  - `dist generate` writes the workflow again after each change of the config.
+- The mdame files to start from: `dist-workspace.toml`, `.github/build-setup.yml`, `.github/check-release.sh`, `.github/workflows/check-release.yml`, `about.toml`, `about.hbs`, and the paragraph "Distribution" of its spec.
+- dist and cargo-about are new tools in `mise.toml`: Kamal approves them with the plan.
+- Not checked yet: that the crate builds for musl. syntect runs with `regex-fancy`, in pure Rust, not with the C library onig.
+- The name `stepbook` was still free on crates.io on 2026-11-13.
+- `~/.claude/skills/runbook` is a link to `~/.config/dotstate/storage/Personal/.agents/skills/runbook/`. The Bash sandbox cannot write there.
+- Only Kamal can push a tag: the sandbox has no SSH.
+
+Choices for Kamal, before the work starts:
+
+1. Sign off the plan and the two new tools.
+2. After the real runbook, does upmd leave `~/.config/mise/config.toml` (`github:rezigned/upmd`)?
+3. Does the README tell how stepbook was built (milestones, reviews, mutants), as the README of mdame does?
+
 ## Next
 
-1. Kamal pushes `main`.
-2. Kamal confirms or changes the choices made during the night (above).
-3. Milestone 5: migration.
-
-Kamal pushes later: the repository has no remote yet (see the first open point).
+1. A new session reads this file and spec 14.4, 15 and 16, then asks Kamal the choices of milestone 5 (above).
+2. Kamal confirms or changes the choices made during the night of milestone 4 (items 1 to 5 above).
+3. Milestone 5, on the branch `m5-migration`.
 
 ## Open points
 
 - Follow-ups of the review loop of milestone 4: invisible format characters (U+200B, the bidi controls) reach the log, where a human could take a forged line for an END line; a hung network mount can still block the read of a reload on the main thread; an existing log keeps its mode, such as 0644 from the old tee header; a reload shifts the `#<n>` labels, so two open sections can share a name; a block with the old logging header writes raw output into the same log, and one NUL makes `rg` in watch.sh skip the whole file (`rg -a` would fix it; milestone 5 drops the header).
 
-- Before the first push, Kamal creates `KamalF/stepbook` on GitHub and adds the remote. The sandbox cannot write `.git/config`.
-- Kamal runs `cargo publish`: it needs his crates.io token. The name `stepbook` was free on crates.io on 2026-11-09. mdame held its name early with a 0.0.1 release; stepbook can do the same after milestone 1.
+- Follow-ups of the review of the output shade: no test covers the shade of the output under the selected block; `read_until` and `until_full_rows` are two wait loops of the tests, and a `read_until` that polls would make the second a one-line wrapper.
 - Follow-ups of the review loop of milestone 3: the input channel of a run holds up to 256 writes, pastes included, while a program reads no input; the full-screen view of an ended block makes the spans of its whole scrollback when it opens, 380 ms with crafted output that changes color on each cell at 180 columns; the answer to DSR 6 ignores origin mode, which vt100 does not expose.
 - Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal). Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
 - `run::tests::a_program_gets_the_position_of_its_cursor_from_the_terminal` failed under load too, once, during milestone 4, and passed alone.
