@@ -491,11 +491,12 @@ Each test states one rule, and its name is that rule.
 dist (formerly cargo-dist) builds the release archives on GitHub Actions when a `v*` tag is pushed. mise installs stepbook from them: `mise use -g github:KamalF/stepbook`.
 
 - Linux only, the target of v1: x86_64 and aarch64. The binaries are static, built with musl, so one file runs on any distribution. No macOS build and no Homebrew tap.
-- The binaries are stripped of their symbols. Each archive has an attestation of its build, which `gh attestation verify` checks.
+- The binaries are stripped of their symbols. The archive of each system has an attestation of its build, which `gh attestation verify` checks.
 - Each archive carries the licence texts of the Rust crates, which cargo-about writes at the release.
 - The release notes are the section of the version in `CHANGELOG.md`.
 - No install script: in `~/.local/bin`, the script of dist 0.33 takes over the PATH setup of other tools that dist built, such as uv.
-- GitHub's immutable releases are on before the first tag: GitHub applies them only to later releases. Then no one can replace the archives of a release, or move its tag.
+- GitHub's immutable releases are on before the first tag: GitHub applies them only to later releases. Then no one can replace the archives of a release, or move its tag, and a deleted release does not free its tag: a fix is a new version. crates.io also keeps each published version for good.
+- The tag goes on a commit of `main` that passed CI: the release workflow does not wait for CI.
 - The crate goes to crates.io too, with only its source, `LICENSE` and `README.md`. It needs Rust 1.92, the oldest toolchain checked. Kamal runs `cargo publish`: it needs his token. He runs it before the README reaches `main` on GitHub: until then, anyone could take the name, and the `cargo install stepbook` of the README would install their crate.
 
 ## 15. Migration

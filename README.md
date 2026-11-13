@@ -1,7 +1,7 @@
 # stepbook
 
 stepbook shows a Markdown runbook in a terminal UI, and runs its bash blocks
-one at a time, with the output of each block under its code.
+one by one, as you start them, with the output of each block under its code.
 
 A runbook is a list of steps: a line that says why, then a bash block. You
 select a block and press Enter to run it. `export` and `cd` carry over from
@@ -60,7 +60,7 @@ You can also download the archive for your system from the
 `stepbook` in a folder of your `PATH`, such as `~/.local/bin`. The binaries
 are static, so they run on any distribution.
 
-Each archive has an attestation: a record, signed by GitHub, that the release
+The archive of each system has an attestation: a record, signed by GitHub, that the release
 workflow of this repository built it. To check an archive:
 
 ```sh

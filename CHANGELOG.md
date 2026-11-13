@@ -7,7 +7,8 @@ The first release.
 ### Added
 
 - A terminal UI that shows a Markdown runbook and runs its `bash` and `sh`
-  blocks one at a time, with the output of each block under its code. Each
+  blocks one by one, as you start them, with the output of each block under
+  its code. Each
   run has a terminal of its own, and several blocks can run at the same time.
 - Exported variables and the working directory carry over from one block to
   the next.
@@ -31,6 +32,6 @@ The first release.
 
 - Static binaries for x86_64 and aarch64 Linux, built with musl, and stripped
   of their symbols.
-- Each archive has an attestation of its build, which `gh attestation verify`
-  checks. It carries the licence texts of the Rust crates in
+- The archive of each system has an attestation of its build, which
+  `gh attestation verify` checks. It carries the licence texts of the Rust crates in
   `THIRD-PARTY-LICENSES-RUST.txt`.

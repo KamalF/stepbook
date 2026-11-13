@@ -376,7 +376,13 @@ The plan, one commit per line, on the branch `m5-migration`:
 3. `chore`: cargo-about writes the licence texts of the Rust crates, in CI and in each build of the release (14.1, 14.4).
 4. `docs`: the README: what stepbook does, the install with mise and with cargo, the usage and the keys, the log and `watch.sh`, the fish abbreviation `abbr -a stbk stepbook`, and a short section on how stepbook was built (16).
 5. `docs`: `CHANGELOG.md`, with the section of 0.1.0 (14.4).
-6. The release of 0.1.0, after the merge into `main`, in this order (spec 14.4). If the release comes after 2026-11-13, Claude first changes the date in the heading of 0.1.0 in `CHANGELOG.md`. Kamal runs `cargo publish` from `main` before he pushes it, so that the name is his before the README sends readers to crates.io. He turns on immutable releases in the settings of the repository. Then he pushes `main` and the tag `v0.1.0`, and the workflow publishes the archives. Then `mise use -g github:KamalF/stepbook` installs it, and `stepbook --version` prints 0.1.0.
+6. The release of 0.1.0, after the merge into `main`, in this order (spec 14.4). The publish and the tag cannot be undone: crates.io keeps 0.1.0 for good, and GitHub never reuses the tag of an immutable release. A fix after them is 0.1.1.
+   - If the release comes after 2026-11-13, Claude first changes the date in the heading of 0.1.0 in `CHANGELOG.md`.
+   - Kamal runs `cargo publish` from `main` before he pushes it, so that the name is his before the README sends readers to crates.io.
+   - He turns on immutable releases with `gh api -X PUT repos/KamalF/stepbook/immutable-releases`. Then `gh api repos/KamalF/stepbook/immutable-releases --jq .enabled` must print `true`.
+   - He pushes `main`, and waits for CI to pass on it.
+   - He pushes the tag `v0.1.0`, and the workflow publishes the archives. `gh release view v0.1.0 --json isImmutable --jq .isImmutable` must print `true`.
+   - Then `mise use -g github:KamalF/stepbook` installs it, and `stepbook --version` prints 0.1.0.
 7. The runbook skill moves to stepbook, outside this repository (15): no logging header in the block format, `stepbook <file>` in place of `upmd <file>`, and no `ctrl-r` instruction. The log path and `watch.sh` stay.
 
 Done when (spec 16): the runbook skill opens its runbooks with stepbook, and Kamal has run a real runbook with it. Then Kamal runs `mise unuse -g github:rezigned/upmd` (15).
