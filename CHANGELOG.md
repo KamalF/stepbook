@@ -24,8 +24,8 @@ The first release.
   attributes. A block that starts with an `exec > >(tee -a …)` logging header
   writes no second section to the log.
 - A control character of the file or of the output never reaches the
-  terminal raw. stepbook shows one of the file as vim does, such as `^[` for
-  ESC.
+  terminal raw. stepbook shows a control character of the file as vim does,
+  such as `^[` for ESC.
 
 ### Release
 

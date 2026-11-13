@@ -376,7 +376,7 @@ The plan, one commit per line, on the branch `m5-migration`:
 3. `chore`: cargo-about writes the licence texts of the Rust crates, in CI and in each build of the release (14.1, 14.4).
 4. `docs`: the README: what stepbook does, the install with mise and with cargo, the usage and the keys, the log and `watch.sh`, the fish abbreviation `abbr -a stbk stepbook`, and a short section on how stepbook was built (16).
 5. `docs`: `CHANGELOG.md`, with the section of 0.1.0 (14.4).
-6. The release of 0.1.0: Kamal turns on immutable releases in the settings of the repository (spec 14.4), then pushes the tag `v0.1.0`, the workflow publishes the archives, and Kamal runs `cargo publish`. Then `mise use -g github:KamalF/stepbook` installs it, and `stepbook --version` prints 0.1.0.
+6. The release of 0.1.0, after the merge into `main`, in this order (spec 14.4). If the release comes after 2026-11-13, Claude first changes the date in the heading of 0.1.0 in `CHANGELOG.md`. Kamal runs `cargo publish` from `main` before he pushes it, so that the name is his before the README sends readers to crates.io. He turns on immutable releases in the settings of the repository. Then he pushes `main` and the tag `v0.1.0`, and the workflow publishes the archives. Then `mise use -g github:KamalF/stepbook` installs it, and `stepbook --version` prints 0.1.0.
 7. The runbook skill moves to stepbook, outside this repository (15): no logging header in the block format, `stepbook <file>` in place of `upmd <file>`, and no `ctrl-r` instruction. The log path and `watch.sh` stay.
 
 Done when (spec 16): the runbook skill opens its runbooks with stepbook, and Kamal has run a real runbook with it. Then Kamal runs `mise unuse -g github:rezigned/upmd` (15).
@@ -386,7 +386,7 @@ Kamal signed off the plan, with dist and cargo-about as new tools, on 2026-11-13
 Commits 2 to 5 are in, with one more of Claude's choice after the README: the crate on crates.io holds only its source, `LICENSE` and `README.md`, and declares Rust 1.92 (spec 14.4). The dependencies need 1.88, and 1.92 is the oldest toolchain at hand. `cargo package`, in a clone, builds the crate from its files.
 
 - `dist plan` lists two archives, each with the binary, `CHANGELOG.md`, `LICENSE`, `README.md` and `THIRD-PARTY-LICENSES-RUST.txt`. dist builds aarch64 on the runner `ubuntu-22.04-arm`, and x86_64 on `ubuntu-22.04`, both with musl-tools.
-- `dist plan --tag=v0.1.0` takes the title `0.1.0 - 2026-11-13` and the notes of the release from `CHANGELOG.md`. If the release comes on a later day, the date changes with it.
+- `dist plan --tag=v0.1.0` takes the title `0.1.0 - 2026-11-13` and the notes of the release from `CHANGELOG.md`. dist copies the heading as it is: plan step 6 changes the date by hand if the release comes on a later day.
 - `/simplify`, with 4 cleanup agents, on 2026-11-13. Fixed: `about.toml` accepts only the 4 licences that the crates use; `install-updater`, a default, left `dist-workspace.toml`; CI runs `dist plan`, which fails if `release.yml` is stale; each target list points to the other. Skipped, with the reasons in the log of the review loop: cargo-about from a prebuilt binary or through mise on the release runners, and a CI check on Rust 1.92.
 - The README shows a capture of stepbook in tmux, and a watch script with grep in place of rg: grep is on every system. The script passed a check on a real log.
 

@@ -496,7 +496,7 @@ dist (formerly cargo-dist) builds the release archives on GitHub Actions when a 
 - The release notes are the section of the version in `CHANGELOG.md`.
 - No install script: in `~/.local/bin`, the script of dist 0.33 takes over the PATH setup of other tools that dist built, such as uv.
 - GitHub's immutable releases are on before the first tag: GitHub applies them only to later releases. Then no one can replace the archives of a release, or move its tag.
-- The crate goes to crates.io too, with only its source, `LICENSE` and `README.md`. It needs Rust 1.92, the oldest toolchain checked. Kamal runs `cargo publish`: it needs his token.
+- The crate goes to crates.io too, with only its source, `LICENSE` and `README.md`. It needs Rust 1.92, the oldest toolchain checked. Kamal runs `cargo publish`: it needs his token. He runs it before the README reaches `main` on GitHub: until then, anyone could take the name, and the `cargo install stepbook` of the README would install their crate.
 
 ## 15. Migration
 
@@ -656,6 +656,7 @@ This spec is the source of truth. A change of decision updates it in the same co
 | mise installs stepbook from release archives that dist builds, as for mdame (14.4, 16), at Kamal's choice: an install from the source would build for about a minute with his Rust toolchain. Linux only, with no Homebrew tap, since Linux is the target of v1 | 2026-11-13 |
 | After a real runbook with stepbook, upmd leaves Kamal's global mise config (15), at Kamal's choice: the old runbooks open in stepbook unchanged. The README tells in a short section how stepbook was built (16), at Kamal's choice | 2026-11-13 |
 | GitHub's immutable releases are on before the tag of 0.1.0 (14.4): GitHub applies them only to later releases, and a token that can write the repository could replace the archives of an earlier one | 2026-11-13 |
+| `cargo publish` comes before the push of the README to `main` (14.4): the README sends readers to `cargo install stepbook`, and the name is free on crates.io until the first publish | 2026-11-13 |
 | The key of an unnamed block is its code, not a hash of it (3): it is exact, and needs no hash function | 2026-11-12 |
 | A block that a reload removes while it runs stays at the end of the document too, not only in the sidebar (10): `i` and the output under the block need a place in the document view | 2026-11-12 |
 | A changed block shows `~` in the sidebar, and keeps the mark while its code differs from the code of its last run (6.2, 10) | 2026-11-12 |
