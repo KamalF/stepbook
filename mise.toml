@@ -3,6 +3,9 @@ cargo-dist = "0.33.1"
 cargo-insta = "1.49.0"
 "github:EmbarkStudios/cargo-about" = "0.9.3"
 "github:sourcefrog/cargo-mutants" = "27.1.0"
+# The demo GIF of the README: mise run demo.
+"github:charmbracelet/vhs" = "0.12.1"
+"github:tsl0922/ttyd" = { version = "1.7.7", bin = "ttyd" }
 rust = { version = "1.99.0", components = "rust-analyzer,clippy,rustfmt" }
 
 [tasks.fmt]
@@ -13,6 +16,10 @@ run = "cargo clippy --all-targets -- -D warnings"
 
 [tasks.test]
 run = "cargo test --no-fail-fast"
+
+[tasks.demo]
+description = "Record docs/demo.gif, the demo of the README. VHS downloads a Chromium if none is in PATH"
+run = ["cargo build --release", "vhs docs/demo/demo.tape"]
 
 [tasks.licenses]
 description = "Write the licence texts of the Rust crates, as each release archive carries them"

@@ -1,7 +1,7 @@
 # stepbook
 
-stepbook shows a Markdown runbook in a terminal UI, and runs its bash blocks
-one by one, as you start them, with the output of each block under its code.
+stepbook runs the bash blocks of a Markdown runbook one by one, in a terminal
+UI that shows the output of each block under its code.
 
 A runbook is a list of steps: a line that says why, then a bash block. You
 select a block and press Enter to run it. `export` and `cd` carry over from
@@ -10,36 +10,18 @@ stepbook reloads it. Each run goes to a log, so that the coding agent that
 wrote the runbook can follow your runs.
 
 I built stepbook to replace [upmd](https://github.com/rezigned/upmd) for the
-runbooks that Claude Code writes for me: the commands that its sandbox cannot
-run, such as `git push`, or a `kubectl` with my credentials. stepbook keeps
-only what those runbooks use, and opens upmd runbooks unchanged.
+runbooks that Claude Code writes for me. They hold the commands that its
+sandbox cannot run, such as `git push`, or a `kubectl` with my credentials.
+stepbook keeps only what those runbooks use, and opens upmd runbooks
+unchanged.
 
-```text
-┌ blocks ───┬ clean-logs.md ───────────────────────────────────────────────────────┐
-│ ✔ setup   │ Clean the old logs                                                   │
-│▶✔ list    │ ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ │
-│   clean   │                                                                      │
-│           │ Why: make a folder with a few files.                                 │
-│           │                                                                      │
-│           │ ▐ setup  ✔ rc=0 0:00                                                 │
-│           │ ▐ export DEMO=$(mktemp -d)                                           │
-│           │ ▐ cd "$DEMO" && touch app.log db.log notes.txt                       │
-│           │                                                                      │
-│           │ Why: list the logs that the next step removes.                       │
-│           │                                                                      │
-│           │ ▐ list  ✔ rc=0 0:00                                                  │
-│           │ ▐ ls *.log                                                           │
-│           │ ╎ app.log  db.log                                                    │
-│           │                                                                      │
-│           │ Why: Destructive: remove them.                                       │
-│           │                                                                      │
-│           │ ▐ clean                                                              │
-│           │ ▐ rm -v *.log                                                        │
-└───────────┴──────────────────────────────────────────────────────────────────────┘
- NORMAL   ↑↓ move  ↵ run  o output  q quit
-```
+![stepbook runs the blocks of a runbook one by one, and shows the output of
+each block under its code. While it runs, an agent adds a step to the file,
+and stepbook reloads it.](docs/demo.gif)
 
-0.1.0 is the first release. stepbook runs on Linux, on x86_64 and aarch64.
+0.1.0 is the first release. stepbook is a Rust binary for Linux, on x86_64
+and aarch64. macOS is not a target: there is no release for it, and no test
+runs on it. stepbook does not build on Windows.
 
 ## Install
 
@@ -76,6 +58,15 @@ as you type. To keep it, put it in `~/.config/fish/config.fish`:
 abbr -a stbk stepbook
 ```
 
+## With a coding agent
+
+My runbook skill tells Claude Code to write the commands that its sandbox
+blocks to a runbook file. I no longer copy and paste them. I open the file
+with stepbook in a pane beside Claude Code, and run the blocks one by one.
+Claude Code reads [the log](#the-log), so it sees the exit code and the output
+of each block. If a step fails, Claude Code fixes the runbook. stepbook
+reloads the file, and the blocks that ran keep their output.
+
 ## Usage
 
 ```text
@@ -110,20 +101,10 @@ file, from 1. Other code blocks show dimmed and do not run.
   did not change. A named block whose code changed after its run shows `~`
   and `changed since run`. Any other block is a new block, which has not run.
 - stepbook shows a control character of the file as vim does, such as `^[`
-  for ESC, so that a runbook cannot hide part of a command. The output of a
+  for ESC. This way, a runbook cannot hide part of a command. The output of a
   program goes through a terminal screen of stepbook, never raw to your
-  terminal. Three kinds of terminals can still draw code in another way than
-  bash reads it:
-  - A terminal that draws characters of ambiguous width, such as `·`, 2
-    columns wide. They shift the rest of the line, and the next text covers
-    its end: a space, or a whole command, can vanish. The default is 1
-    column.
-  - A terminal that reorders right-to-left text on its own, such as VTE or
-    Konsole. Code with right-to-left text, such as Hebrew or Arabic, can
-    show in another order.
-  - A terminal that draws other characters wider than stepbook counts them,
-    such as one with a later version of Unicode. stepbook escapes in code
-    those that glibc and tmux draw wider.
+  terminal. Some terminals can still show code differently from how bash
+  reads it. Sections 6.5 and 11 of [the spec](docs/SPEC.md) say which ones.
 - If blocks are running, stepbook asks before it stops them and quits.
 
 ### Keys
@@ -165,12 +146,12 @@ app.log  db.log
 - The lines of two runs never mix. If a run ends while another one writes to
   the log, the run that ends writes its whole section at once. The section of
   the other run then goes on after a `=== CONTINUE <name>` line.
-- stepbook creates the log with mode 0600. It does not start if the log is a
-  link, or a file of another user: a runbook from someone else could come
-  with a log that links to your `~/.bashrc`.
+- stepbook creates the log with mode 0600. If the log is a link, or a file of
+  another user, stepbook does not start. A runbook from someone else could
+  come with a log that links to your `~/.bashrc`.
 
 A script, or a coding agent, can wait for a block with its `END` line. This
-script prints each `END` line that the log gets after the script starts, and
+script prints each `END` line that the log gets after the script starts. It
 exits after the `END` line of the block that you name. The `END` lines of
 earlier runs do not count:
 
@@ -195,6 +176,22 @@ done
 My runbook skill for Claude Code runs a script like this one in the
 background, and reads the section of each block that ends.
 
+## Similar projects
+
+stepbook does less than these tools: one Markdown file in a terminal, bash
+only, and no configuration. I checked these facts on 14 November 2026.
+
+- [upmd](https://github.com/rezigned/upmd) runs blocks in 15 languages, with
+  dependencies between blocks. It also has a CLI mode for CI, and builds for
+  macOS and Windows. Its in-app copy does not work on Wayland
+  ([#55](https://github.com/rezigned/upmd/issues/55)). stepbook leaves copy
+  to the terminal.
+- [Runme](https://github.com/runmedev/runme) runs the code blocks of the
+  Markdown files of a project, from its CLI or as notebooks. It runs many
+  languages, and keeps the environment variables from one block to the next.
+- [Atuin Desktop](https://github.com/atuinsh/desktop) is a desktop app that
+  edits and runs runbooks. Its GitHub repository is archived.
+
 ## How stepbook was built
 
 I made the design and product choices, and Claude Code wrote all the code, the
@@ -205,7 +202,7 @@ tests and the commit messages, on its own. It works from a spec,
 stepbook was built in five milestones. At the end of each one, fresh Claude
 Code sessions reviewed it, in rounds, until a round found nothing to fix.
 In a milestone that changed the code, `cargo mutants` ran before and after
-the review: it changes the code to find the rules that no test checks. The
+the review. It changes the code to find the rules that no test checks. The
 tests run real bash in a PTY, with no mocks. Claude checked each feature in
 tmux, and I checked in my own terminal what tmux cannot show, such as copy
 and paste.
