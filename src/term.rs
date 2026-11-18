@@ -341,21 +341,17 @@ fn all_rows(screen: &mut vt100::Screen) -> Vec<Line<'static>> {
     lines
 }
 
-/// The last `count` lines of the scrollback, at most its length. With an
-/// offset of n, row r of the screen shows the n-th line above the screen,
-/// plus r. Each change of the offset walks the scrollback, so the offset
-/// moves by a screen at a time: 5,000 changes took 50 ms.
+/// The last `count` lines of the scrollback. `count` must be at most its
+/// length: vt100 clamps the offset, and the first line would repeat. With
+/// an offset of n, the first row of the screen shows the n-th line above
+/// the screen.
 fn scrollback(screen: &mut vt100::Screen, count: usize) -> Vec<Line<'static>> {
-    let (rows, columns) = screen.size();
-    let (rows, columns) = (usize::from(rows.get()), columns.get());
-    let mut lines = Vec::with_capacity(count);
-    let mut offset = count;
-    while offset > 0 {
+    let columns = screen.size().1.get();
+    let lines = (1..=count).rev().map(|offset| {
         screen.set_scrollback(offset);
-        let shown = rows.min(offset);
-        lines.extend((0..shown).map(|row| line(screen, row as u16, columns)));
-        offset -= shown;
-    }
+        line(screen, 0, columns)
+    });
+    let lines = lines.collect();
     screen.set_scrollback(0);
     lines
 }
