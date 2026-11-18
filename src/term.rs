@@ -225,8 +225,8 @@ impl vt100::Callbacks for Answers {
                 let answer = format!("\x1b[{};{}R", row + 1, column + 1);
                 self.0.extend(answer.as_bytes());
             }
-            // A VT100 with the advanced video option, as tmux and screen
-            // answer.
+            // A VT100 with the advanced video option, as screen answers, and
+            // tmux built without sixel.
             ('c', [] | [[0]]) => self.0.extend(b"\x1b[?1;2c"),
             _ => {}
         }
@@ -243,10 +243,10 @@ impl Terminal {
         }
     }
 
-    /// Runs `f` on the parser. vt100 can panic on the output of a run: 18
-    /// crafted bytes made it unwrap a None. The panic must not end stepbook
-    /// and the other runs: the terminal starts again, with a row that says
-    /// so, and `f` gives nothing.
+    /// Runs `f` on the parser. vt100 can panic on the output of a run:
+    /// crafted bytes made 0.18.1 unwrap a None. The panic must not end
+    /// stepbook and the other runs: the terminal starts again, with a row
+    /// that says so, and `f` gives nothing.
     fn guarded<T>(&mut self, f: impl FnOnce(&mut Parser) -> T) -> Option<T> {
         IN_VT100.set(true);
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| f(&mut self.parser)));
@@ -372,7 +372,8 @@ fn last_rows(screen: &mut vt100::Screen, cursor: bool) -> Lines {
         end = end.max(cursor_row + 1);
     }
     let start = end.saturating_sub(OUTPUT_ROWS as u16);
-    // The cursor can be above the last rows, under the text that ends them.
+    // Text under the cursor can end the rows: the cursor is then above
+    // the last rows, and does not show.
     let shown = cursor && !screen.hide_cursor() && cursor_row >= start;
     let mut cursor = shown.then(|| (usize::from(cursor_row - start), cursor_column));
     let mut lines: Vec<_> = (start..end).map(|row| line(screen, row, columns)).collect();
@@ -744,8 +745,8 @@ mod tests {
         // After the last column, the cursor stays in it.
         let mut narrow = Terminal::new(10, 3);
         assert_eq!(narrow.process(b"0123456789\x1b[6n"), b"\x1b[1;10R");
-        // Other queries get no answer: DA2, DECXCPR, the colors, the
-        // window title.
+        // Other queries get no answer: DA2, DECXCPR, DA with a parameter
+        // other than 0, DSR 7, the colors, the window title.
         let other = terminal.process(b"\x1b[>c\x1b[?6n\x1b[1c\x1b[7n\x1b]11;?\x07\x1b[21t");
         assert_eq!(other, b"");
     }
@@ -972,7 +973,7 @@ mod tests {
 
     #[test]
     fn a_failure_of_vt100_loses_the_output_and_ends_nothing() {
-        // vt100 0.18.1 unwraps a None on these 18 bytes, at any size.
+        // vt100 0.18.1 unwraps a None on these 24 bytes, at any size.
         let mut terminal = after(b"a\r\n", 80, 24);
         terminal.process(b"\x1b[999;999H8\xef\xb8\x8f\x1b[A\x1b[999Gx");
         terminal.process(b"b");

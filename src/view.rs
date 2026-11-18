@@ -36,16 +36,16 @@ const WRAP_MARK: &str = "↪";
 /// The sidebar shows on terminals at least this wide.
 const SIDEBAR_SCREEN_WIDTH: u16 = 80;
 
-/// How much darker than the background of the terminal a block that
-/// runs is, on each of red, green and blue, so that blocks stand apart
-/// from the prose; the selected block; and the output of a block, which
-/// stands apart from both (spec 5.3).
+/// How much darker than the background of the terminal a block is, on
+/// each of red, green and blue, so that blocks stand apart from the prose;
+/// the selected block; and the output of a block, which stands apart from
+/// both (spec 5.3).
 const BLOCK_SHADE: u8 = 12;
 const SELECTED_SHADE: u8 = 20;
 const OUTPUT_SHADE: u8 = 6;
 
-/// The background of `background` darker by `step`, or lighter on a
-/// background so dark that a darker shade would not show.
+/// The color `(red, green, blue)` of the background darker by `step`, or
+/// lighter on a background so dark that a darker shade would not show.
 fn shade((red, green, blue): (u8, u8, u8), step: u8) -> Color {
     let lighter = red.max(green).max(blue) < SELECTED_SHADE;
     let value = |v: u8| match lighter {
@@ -285,7 +285,8 @@ impl View {
         };
         let (mode, text, end) = match state {
             (Some(question), ..) => (" CONFIRM ", escaped(question, Style::new()), " (y/N)"),
-            // In every mode: a failed write to the log says so only once.
+            // In every mode: a failed write to the log says so at most once
+            // every 10 s.
             (None, _, _, Some(notice)) => (label, escaped(notice, WARNING), ""),
             (None, Some(i), ..) => {
                 let keys = format!("keys go to {}  ^o leave", self.doc.label(i));
@@ -707,7 +708,7 @@ fn sidebar_width(doc: &Document) -> u16 {
 
 /// The smallest screen that stepbook lays the document out on. Below it,
 /// code under a list marker has no room, and the layout costs too much: a
-/// file of 1 MB of tabs in code took 2.5 GB per frame at 6 columns.
+/// file of 1 MB of tabs in code took 2.5 GB to lay out at 6 columns.
 const MIN_WIDTH: u16 = 40;
 const MIN_HEIGHT: u16 = 8;
 
@@ -1646,6 +1647,8 @@ pub(crate) mod tests {
         assert_eq!(code, expected.replace("▐", &format!("{}▐", " ".repeat(22))));
     }
 
+    // The test above checks the rule through the layout; this one checks
+    // its bounds: the innermost level, and exactly half the view.
     #[test]
     fn fitted_prefixes_keep_the_innermost_level_and_half_the_view() {
         let item = |levels: usize| Item {
@@ -2139,7 +2142,7 @@ pub(crate) mod tests {
         markup(&lines)
     }
 
-    /// The screen without its footer, which changes with each milestone.
+    /// The screen without its footer, which has tests of its own.
     fn screen(view: &View, width: u16, height: u16) -> String {
         let screen = screen_with_footer(view, width, height);
         screen.rsplit_once('\n').unwrap().0.to_string()

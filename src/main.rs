@@ -556,8 +556,8 @@ struct Ran {
 struct App {
     view: view::View,
     session: run::Session,
-    /// The blocks that have run, by index. A crafted runbook can hold 80,000
-    /// blocks, and the terminal of a run takes about 700 bytes.
+    /// The blocks that have run, by index. A map: a crafted runbook can
+    /// hold 80,000 blocks, and few of them run.
     ran: BTreeMap<usize, Ran>,
     /// The blocks whose output changed since the last frame: their rows are
     /// made once a frame, not once a read of the PTY.
@@ -568,8 +568,9 @@ struct App {
     question: Option<Question>,
     /// When the notification in the footer ends.
     notice_until: Option<Instant>,
-    /// Until when keys do nothing, after stepbook stopped sending them to
-    /// a program on its own (spec 7.2).
+    /// Until when keys do nothing: after stepbook stopped sending them to
+    /// a program on its own (spec 7.2), or after a reload that moved the
+    /// selection or changed its code (spec 10).
     paused_until: Option<Instant>,
     /// While stepbook stops the runs to quit: when it kills those left.
     stopping: Option<Instant>,
@@ -594,8 +595,8 @@ enum Question {
     Rerun(usize),
     /// Stop the runs and quit.
     Quit,
-    /// Send a paste of several lines to the program of a block, which did
-    /// not turn on bracketed paste (spec 7.2).
+    /// Send a paste of lines, or with a control character, to the program
+    /// of a block, which did not turn on bracketed paste (spec 7.2).
     Paste {
         block: usize,
         bytes: Vec<u8>,
@@ -615,11 +616,12 @@ const STOP_WAIT: Duration = Duration::from_secs(2);
 const NOTICE: Duration = Duration::from_secs(3);
 
 /// How long keys do nothing after stepbook stopped sending them to a
-/// program on its own (spec 7.2).
+/// program on its own (spec 7.2), or after a reload that moved the
+/// selection or changed its code (spec 10).
 const PAUSE: Duration = Duration::from_secs(1);
 
-/// An event of the loop: a control event, or a message from the run of a
-/// block.
+/// An event of the loop: a control event, the tick, or a message from the
+/// run of a block.
 enum Incoming {
     Control(Control),
     Tick,
@@ -676,7 +678,7 @@ impl App {
             let mut select = Select::new();
             select.recv(control);
             // Without runs, the tick would only wake the loop. With runs, it
-            // comes right after the control channel.
+            // is operation 1 of the select, after the control channel.
             let running = self.ran.values().any(|ran| ran.run.is_some());
             if running {
                 select.recv(&self.ticks);
@@ -1457,11 +1459,11 @@ fn event_loop(
         terminal.swap_buffers();
         terminal.draw(|frame| app.view.draw(frame))?;
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
-        // The events of one frame: after a key, those that wait; after
-        // output, those of the next FRAME. A deadline of the app also ends
-        // the frame. crossbeam returns a ready event even after the
-        // deadline, so the loop checks the end of the frame itself: else a
-        // block that prints without a pause would let no frame end.
+        // The events of one frame: if output starts it, those of the next
+        // FRAME; if another event starts it, no other. A deadline of the app
+        // also ends the frame. crossbeam returns a ready event even after
+        // the deadline, so the loop checks the end of the frame itself: else
+        // a block that prints without a pause would let no frame end.
         let mut frame = None;
         if let Some(event) = waiting.take() {
             if let Some(exit) = app.handle(&event, size) {
@@ -2131,7 +2133,7 @@ mod tests {
         let notice = app.view.notice.as_deref();
         assert_eq!(notice, Some("reloaded: 1 new; keys off for 1 s"));
         app.paused_until = None;
-        // A runbook that cannot be read keeps the view as it is.
+        // A runbook that cannot be read: the footer says why.
         std::fs::remove_file(app.session.file()).unwrap();
         app.handle(&ctrl('r'), SIZE);
         let notice = app.view.notice.as_deref().unwrap();
@@ -2593,7 +2595,8 @@ mod tests {
         key(&mut app, KeyCode::Char('o'));
         app.refresh(SIZE);
         assert_eq!(full(&app).rows.lines.len(), 100);
-        // The screen shows 23 lines: the scroll stops at line 1.
+        // The scroll counts the lines under the screen: 0 at the end, and
+        // at most 77, as the screen shows 23 of the 100 lines.
         assert_eq!(scroll(&mut app, KeyCode::Up), 1);
         assert_eq!(scroll(&mut app, KeyCode::Char('k')), 2);
         assert_eq!(scroll(&mut app, KeyCode::Char('j')), 1);
@@ -2705,8 +2708,8 @@ echo \"got $x\"
         // Keys do nothing for a moment, until the pause ends.
         assert!(app.paused_until.is_some());
         app.paused_until = None;
-        // Opened on the main screen, the view stays when the program
-        // enters and leaves the alternate screen.
+        // Opened on the main screen, the view has no mode to go back to: it
+        // stays at the end of the run.
         key(&mut app, KeyCode::Char('o'));
         assert_eq!(full(&app).back, None);
         app.ran[&0].run.as_ref().unwrap().write(b"y\n");

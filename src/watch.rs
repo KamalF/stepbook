@@ -14,12 +14,11 @@ use rustix::fs::inotify::{self, CreateFlags, ReadFlags, WatchFlags};
 /// an editor can write it in several steps.
 pub const SETTLE: Duration = Duration::from_millis(300);
 
-/// Watches the directory of `file`, an absolute path, and calls `changed`
-/// once the file has stayed as it is for `SETTLE` after a change. The
-/// watch is on the directory, because editors often replace a file with a
-/// rename. Through a link, the watch is on the file that it names, which
-/// a write through the link changes. The thread ends when `changed`
-/// returns false.
+/// Watches the directory of `file`, and calls `changed` once the file has
+/// stayed as it is for `SETTLE` after a change. The watch is on the
+/// directory, because editors often replace a file with a rename. Through
+/// a link, the watch is on the file that it names, which a write through
+/// the link changes. The thread ends when `changed` returns false.
 ///
 /// `pending` merges the changes that the main thread has not taken yet:
 /// the watcher sets it before it calls `changed`, and calls it again only

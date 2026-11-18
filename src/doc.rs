@@ -554,7 +554,8 @@ impl Builder {
 }
 
 /// The dimmed lines of verbatim text, such as an HTML block. `lines` also
-/// ends a line at a CRLF, which pulldown-cmark leaves in the frontmatter.
+/// ends a line at a CRLF, which the frontmatter keeps: pulldown-cmark never
+/// sees it.
 fn source_lines(text: &str) -> Vec<Vec<Span<'static>>> {
     text.lines().map(|line| escaped(line, DIM)).collect()
 }
@@ -702,8 +703,8 @@ pub fn needs_escape(c: char) -> bool {
 /// like `"prod"`. It escapes the spaces other than U+0020, and the
 /// characters that fonts draw as a blank, U+2800 and U+1D159, which bash
 /// reads as part of a word: `true<U+00A0>#; curl x | sh` looks like a
-/// comment, and runs curl. It escapes the format characters that join the
-/// next character, such as U+070F, U+2D7F and the regional indicators: a
+/// comment, and runs curl. It escapes the characters that join the next
+/// character, such as U+070F, U+2D7F and the regional indicators: a
 /// terminal may count their columns otherwise than ratatui, and the text
 /// after them would shift. It escapes the characters that a terminal
 /// draws 2 columns wide by default, where ratatui counts 1, since the text
@@ -1054,9 +1055,10 @@ fn scope_style(stack: &ScopeStack) -> Style {
     Style::new()
 }
 
-/// Warnings never quote free text of the info string: the info line wraps,
-/// and a quoted value with spaces could make a wrapped line that passes
-/// for code. Keys hold no space, and show at most 20 characters.
+/// Warnings never quote free text of the info string, except one
+/// character: the info line wraps, and a quoted value with spaces could
+/// make a wrapped line that passes for code. Keys hold no space, and show
+/// at most 20 characters.
 const INVALID_NAME: &str = "invalid name: use [A-Za-z0-9_.-]";
 
 fn short(key: &str) -> String {

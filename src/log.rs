@@ -122,8 +122,8 @@ fn due(reported: &mut Option<Instant>, now: Instant) -> bool {
 }
 
 /// Waits up to `wait` for the end of the thread of the log, and returns
-/// whether it ended. A write that blocks, on a FIFO or a hung mount, must
-/// not keep stepbook from its end (spec 11).
+/// whether it ended. A write that blocks, on a hung mount, must not keep
+/// stepbook from its end (spec 11).
 pub fn wait(thread: &JoinHandle<()>, wait: Duration) -> bool {
     let deadline = Instant::now() + wait;
     while !thread.is_finished() {
@@ -137,7 +137,7 @@ pub fn wait(thread: &JoinHandle<()>, wait: Duration) -> bool {
 
 /// The sections of the runs, as the log holds them (spec 12.1). One run
 /// writes to the log at a time, so that lines of two runs never mix: the
-/// others hold their text, and write their whole section when they end
+/// others hold their text, and write it when they end or hold MAX_HELD
 /// (spec 12.2).
 struct Sections<W> {
     out: W,
@@ -257,10 +257,12 @@ fn clock(time: SystemTime) -> String {
 
 /// Turns the output of a run into the lines of its log (spec 12.1): no
 /// escape sequences, LF for CRLF, and U+FFFD for bytes that are not
-/// UTF-8. A carriage return alone drops the partial line, as a terminal
-/// overwrites it: a progress bar logs only its last state. The parser
-/// keeps its state from one read to the next, so a character or a
-/// sequence split across two reads comes out whole.
+/// UTF-8, except a lone byte from 0x80 to 0x9F: vte 0.15.0 takes it for a
+/// C1 control character, which the log drops. A carriage return alone
+/// drops the partial line, as a terminal overwrites it: a progress bar
+/// logs only its last state. The parser keeps its state from one read to
+/// the next, so a character or a sequence split across two reads comes out
+/// whole.
 #[derive(Default)]
 pub struct Cleaner {
     parser: vte::Parser,
@@ -309,8 +311,8 @@ impl Lines {
 
 impl vte::Perform for Lines {
     fn print(&mut self, c: char) {
-        // A C1 control character encoded in UTF-8, which some terminals
-        // still act on.
+        // vte 0.15.0 prints DEL, and a C1 control character whose 2 bytes
+        // of UTF-8 come in two reads. Some terminals still act on C1.
         if self.alternate || c.is_control() && c != '\t' {
             return;
         }
@@ -813,6 +815,7 @@ b3
         assert!(!target.exists());
         std::fs::write(&target, "key\n").unwrap();
         assert_eq!(error(&link), "it is a link");
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "key\n");
         // A hard link to another file of the user.
         let other = tmp.path().join("bashrc");
         std::fs::write(&other, "alias\n").unwrap();
@@ -848,6 +851,9 @@ b3
     }
 
     proptest! {
+        // escape_sequences_vanish and
+        // tabs_stay_and_other_control_characters_vanish pin known
+        // sequences; this one tries any bytes, cut into any reads.
         #[test]
         fn the_log_holds_no_control_character_but_tab_and_line_feed(
             reads in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..64), 0..8),
@@ -859,6 +865,9 @@ b3
             prop_assert!(text.is_empty() || text.ends_with('\n'));
         }
 
+        // a_line_of_output_cannot_pass_for_a_line_of_stepbook pins the
+        // forms of a marker; this one mixes the markers with the carriage
+        // returns, line feeds and escapes that could rebuild one.
         #[test]
         fn no_line_of_output_starts_as_a_line_of_stepbook(
             pieces in proptest::collection::vec(

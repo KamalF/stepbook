@@ -717,7 +717,8 @@ fn read_run(
     let exit = rustix::process::pidfd_open(Pid::from_child(&child), PidfdFlags::empty()).ok();
     let mut buffer = vec![0; READ_SIZE];
     // The reads after the exit: a job that writes without a pause must
-    // not hold the end back.
+    // not hold the end back. 16 reads of READ_SIZE drain a full PTY, which
+    // held about 18 KB on Linux 7.2: smaller reads would lose its end.
     let mut left = None;
     while left != Some(0) {
         let now = Timespec::default();
@@ -1539,9 +1540,9 @@ mod tests {
 
     #[test]
     fn the_output_of_a_process_substitution_ends_before_the_run() {
-        // The logging header of the old runbooks (spec 12.3): when the
-        // wrapper exits, the kernel sends SIGHUP to its tee. Under set -f
-        // too, and with a handler that ends with exit.
+        // The logging header of the old runbooks (spec 12.3): the run ends
+        // when the wrapper exits, and the output of its tee after that is
+        // lost. Under set -f too, and with a handler that ends with exit.
         let handlers = [
             "trap 'echo \"=== END b rc=$?\"' EXIT",
             "set -f\ntrap 'echo \"=== END b rc=$?\"' EXIT",
@@ -1858,8 +1859,9 @@ mod tests {
     fn a_run_ends_when_the_terminal_is_in_the_hands_of_another_group() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
-        // A bash with job control that dies leaves the PTY to its group: the
-        // wrapper must not wait for its turn.
+        // A bash with job control that dies leaves the PTY to its group,
+        // which is gone. The wrapper must skip its own hand-off: its bash
+        // would find no job control, and say so in the output.
         let code = "(exec -c /proc/self/exe -m -c 'kill -KILL $$') 2>/dev/tty\n\
             sleep 30 &\necho started\n";
         let run = session.start(code, "check", 80, 24).unwrap();
@@ -1902,8 +1904,6 @@ mod tests {
         }
     }
 
-    /// The processes of a run, without the zombies that wait for their
-    /// parent.
     #[test]
     fn a_job_that_writes_without_a_pause_never_holds_the_end_of_its_run() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1965,6 +1965,8 @@ mod tests {
         }
     }
 
+    /// The processes of a run, without the zombies that wait for their
+    /// parent.
     fn session_of(run: &Run) -> Vec<Pid> {
         let session = |p: &Process| p.session == run.pid.as_raw_pid() && !p.zombie;
         processes()
