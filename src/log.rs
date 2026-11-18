@@ -133,8 +133,9 @@ pub fn wait(thread: &JoinHandle<()>, wait: Duration) -> bool {
 
 /// The sections of the runs, as the log holds them (spec 12.1). One run
 /// writes to the log at a time, so that lines of two runs never mix: the
-/// others hold their text, and write it when they end or hold MAX_HELD
-/// (spec 12.2).
+/// others hold their text, and write it when they end, or when they hold
+/// MAX_HELD. When the run that writes ends, the run that has waited longest
+/// writes what it holds (spec 12.2).
 struct Sections<W> {
     out: W,
     /// The sections of the runs that have not ended, by ID. The IDs grow in
@@ -892,12 +893,9 @@ b3
         }
     }
 
-    /// A piece of output that can change the screen. Beside the modes of
-    /// the alternate screen, it holds near misses that the log must treat
-    /// as vt100 0.18.1 does: mode 1047, which vt100 ignores, a
-    /// sub-parameter, a mode with no `?`, ESC c (a reset, which leaves the
-    /// alternate screen), ESC ( c and ESC # c (no reset), and an OSC that
-    /// holds ?1049h.
+    /// A piece of output that can change the screen, or nearly: the log
+    /// must treat each as vt100 0.18.1 does. vt100 ignores mode 1047, and
+    /// ESC c resets the screen, while ESC ( c and ESC # c do not.
     fn piece() -> impl Strategy<Value = Vec<u8>> {
         let select = |items: &[&'static str]| prop::sample::select(items.to_vec());
         let params =

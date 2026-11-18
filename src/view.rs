@@ -1231,7 +1231,8 @@ struct Glyph<'a> {
     width: usize,
     /// The index of the span that the glyph comes from. Glyphs of two
     /// spans never merge: the merged text could form other graphemes, of
-    /// another width, when the buffer splits it again.
+    /// another width, when the buffer of ratatui-core 0.1.2 splits it
+    /// again.
     source: usize,
 }
 

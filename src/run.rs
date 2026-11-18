@@ -372,10 +372,11 @@ const INPUT_MESSAGES: usize = 256;
 /// (MAX_ARG_STRLEN) fails the start of every run.
 const LARGE: usize = 4096;
 
-/// The wrappers not reaped yet, which lead the sessions of the runs: those
-/// that have not ended, and those whose background jobs go on. Children of
-/// stepbook that came with an exec, such as a process that a launcher
-/// started before "exec stepbook", are not runs.
+/// The wrappers that lead the sessions of the runs: those that have not
+/// ended, and those whose background jobs go on. None is reaped yet, so no
+/// other session can have its pid. Children of stepbook that came with an
+/// exec, such as a process that a launcher started before "exec stepbook",
+/// are not runs.
 static RUNS: Mutex<Vec<Pid>> = Mutex::new(Vec::new());
 
 impl Session {
@@ -708,8 +709,8 @@ fn read_run(
     let exit = rustix::process::pidfd_open(Pid::from_child(&child), PidfdFlags::empty()).ok();
     let mut buffer = vec![0; READ_SIZE];
     // The reads after the exit: a job that writes without a pause must
-    // not hold the end back. 16 reads of READ_SIZE drain a full PTY, which
-    // held about 18 KB on Linux 7.2: smaller reads would lose its end.
+    // not hold the end back. A full PTY held about 18 KB on Linux 7.2: 16
+    // reads drain it only if READ_SIZE is over 1.2 KB.
     let mut left = None;
     while left != Some(0) {
         let now = Timespec::default();
@@ -741,6 +742,8 @@ fn read_run(
                     return;
                 }
             }
+            // A guard: the handlers of signal-hook-registry 1.4.8 have
+            // SA_RESTART, so a read does not fail with EINTR.
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => break,
         }
@@ -816,7 +819,8 @@ fn wait_for_jobs(reader: &File, wrapper: Pid, buffer: &mut [u8]) {
             match rustix::event::poll(&mut fds, Some(&timeout)) {
                 Ok(0) | Err(rustix::io::Errno::INTR) => {}
                 // Once the jobs close the PTY, a read fails with EIO. It never
-                // fails with EINTR: the signal handlers have SA_RESTART.
+                // fails with EINTR: the signal handlers of
+                // signal-hook-registry 1.4.8 have SA_RESTART.
                 Ok(_) => match (&*reader).read(buffer) {
                     Ok(0) | Err(_) => open = false,
                     Ok(_) => {}
@@ -1817,9 +1821,9 @@ mod tests {
     #[test]
     fn a_background_job_outlives_its_run_until_stepbook_ends() {
         // A child of the wrapper, and a job that its parent left. Both are
-        // in the process group of the wrapper, which the kernel hangs up
-        // when the wrapper exits. The job writes after the run, more than
-        // the buffer of a PTY holds.
+        // in the process group of the wrapper, which the kernel would hang
+        // up when the wrapper exits, without its hand-off of the PTY. The
+        // job writes after the run, more than the buffer of a PTY holds.
         let job = "(sleep 1.2; seq 1 200000; echo $? > \"$PWD/seq\"; sleep 30)";
         for code in [format!("{job} &\n"), format!("({job} &)\n")] {
             let tmp = tempfile::tempdir().unwrap();

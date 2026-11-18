@@ -43,11 +43,11 @@ pub struct Terminal {
     last_screen: Option<Vec<Line<'static>>>,
 }
 
-/// The terminal of a run, between the reader thread of the run, which
-/// feeds it, and the main thread, which shows it. vt100 can take seconds on
-/// crafted output, such as a repeat of a character 65,535 times or a
-/// scroll of the whole screen: only the run that prints it waits, since
-/// the main thread only tries the lock.
+/// The terminal of a run, between the reader thread of the run, which feeds
+/// it, and the main thread, which shows it. vt100 0.18.1 can take seconds on
+/// crafted output, such as a repeat of a character 65,535 times or a scroll
+/// of the whole screen: only the run that prints it waits, since the main
+/// thread only tries the lock.
 pub struct Shared {
     terminal: Mutex<Terminal>,
     /// The size for the terminal, as columns << 16 | rows. The thread that
@@ -213,8 +213,8 @@ impl vt100::Callbacks for Answers {
         match (c, params) {
             ('n', [[5]]) => self.0.extend(b"\x1b[0n"),
             ('n', [[6]]) => {
-                // After a character in the last column, vt100 keeps the
-                // cursor past it, until the next character wraps.
+                // After a character in the last column, vt100 0.18.1 keeps
+                // the cursor past it, until the next character wraps.
                 let (row, column) = screen.cursor_position();
                 let column = column.min(screen.size().1.get() - 1);
                 let answer = format!("\x1b[{};{}R", row + 1, column + 1);
@@ -297,9 +297,10 @@ impl Terminal {
     }
 
     /// Leaves the alternate screen at the end of a run, as `reset` would:
-    /// vt100 gives no access to the main screen and its scrollback while
-    /// the alternate screen shows. The last screen of the program, where a
-    /// crash may have left its message, comes after them in `Want::All`.
+    /// vt100 0.18.1 gives no access to the main screen and its scrollback
+    /// while the alternate screen shows. The last screen of the program,
+    /// where a crash may have left its message, comes after them in
+    /// `Want::All`.
     pub fn end(&mut self) {
         if !self.parser.screen().alternate_screen() {
             return;
@@ -367,8 +368,8 @@ fn last_rows(screen: &mut vt100::Screen, cursor: bool) -> Lines {
         end = end.max(cursor_row + 1);
     }
     let start = end.saturating_sub(OUTPUT_ROWS as u16);
-    // Text under the cursor can end the rows: the cursor is then above
-    // the last rows, and does not show.
+    // The cursor can be above the last rows, when text far under it ends
+    // them: it then does not show.
     let shown = cursor && !screen.hide_cursor() && cursor_row >= start;
     let mut cursor = shown.then(|| (usize::from(cursor_row - start), cursor_column));
     let mut lines: Vec<_> = (start..end).map(|row| line(screen, row, columns)).collect();
@@ -963,7 +964,7 @@ mod tests {
 
     #[test]
     fn a_failure_of_vt100_loses_the_output_and_ends_nothing() {
-        // vt100 0.18.1 unwraps a None on these 24 bytes, at any size.
+        // vt100 0.18.1 unwraps a None on these bytes, at any size.
         let mut terminal = after(b"a\r\n", 80, 24);
         terminal.process(b"\x1b[999;999H8\xef\xb8\x8f\x1b[A\x1b[999Gx");
         terminal.process(b"b");

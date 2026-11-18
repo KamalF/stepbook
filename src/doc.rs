@@ -149,8 +149,8 @@ pub fn parse(text: &str) -> Document {
 }
 
 fn parse_with(mut builder: Builder, text: &str) -> Document {
-    // CommonMark replaces U+0000 with U+FFFD, but pulldown-cmark keeps it.
-    // bash drops it: "r<U+0000>m" would show "r^@m" and run "rm".
+    // CommonMark replaces U+0000 with U+FFFD, but pulldown-cmark 0.13.6
+    // keeps it. bash drops it: "r<U+0000>m" would show "r^@m" and run "rm".
     let text = &text.replace('\0', "\u{fffd}");
     let (frontmatter, body) = split_frontmatter(text);
     if let Some(frontmatter) = frontmatter {
@@ -337,10 +337,10 @@ impl Builder {
             }
             TagEnd::TableHead | TagEnd::TableRow => {
                 if let Some(table) = &mut self.table {
-                    // pulldown-cmark pads a short row with empty cells, up
-                    // to the columns of the header: a few bytes of input
-                    // can make thousands. The view shows a missing cell as
-                    // an empty one.
+                    // pulldown-cmark 0.13.6 pads a short row with empty
+                    // cells, up to the columns of the header: a few bytes
+                    // of input can make thousands. The view shows a missing
+                    // cell as an empty one.
                     if tag == TagEnd::TableRow {
                         while table.row.last().is_some_and(Vec::is_empty) {
                             table.row.pop();
@@ -553,10 +553,10 @@ fn source_lines(text: &str) -> Vec<Vec<Span<'static>>> {
     text.lines().map(|line| escaped(line, DIM)).collect()
 }
 
-/// pulldown-cmark rescans every open quote and list on each line: a file
-/// that opens 100,000 quotes, then has 200,000 lazy lines, took 30 s. At
-/// 1,000 levels, 1 MB of lazy lines takes 1 s. The lines of a runbook nest
-/// a few levels.
+/// pulldown-cmark 0.13.6 rescans every open quote and list on each line: a
+/// file that opens 100,000 quotes, then has 200,000 lazy lines, took 30 s.
+/// At 1,000 levels, 1 MB of lazy lines takes 1 s. The lines of a runbook
+/// nest a few levels.
 pub const MAX_NESTING: usize = 1_000;
 
 /// The deepest nesting at the start of a line of `text`: its quote and
@@ -601,8 +601,8 @@ fn line_nesting(line: &str) -> usize {
     }
 }
 
-/// pulldown-cmark pads each short row of a table with empty cells, up to
-/// the columns of its header, and keeps them all: 1 MB of crafted tables
+/// pulldown-cmark 0.13.6 pads each short row of a table with empty cells, up
+/// to the columns of its header, and keeps them all: 1 MB of crafted tables
 /// takes gigabytes. A file that could make more cells than this shows its
 /// tables as text.
 const MAX_TABLE_CELLS: usize = 200_000;
@@ -641,7 +641,7 @@ fn split_frontmatter(text: &str) -> (Option<&str>, &str) {
     (None, text)
 }
 
-/// The info string as written in the file. pulldown-cmark decodes
+/// The info string as written in the file. pulldown-cmark 0.13.6 decodes
 /// backslash escapes and entities in it, which would change quoted values.
 fn raw_info(source: &str) -> &str {
     let fence = source.lines().next().unwrap_or("").trim_start();
@@ -697,14 +697,14 @@ pub fn needs_escape(c: char) -> bool {
 /// characters that fonts draw as a blank, U+2800 and U+1D159, which bash
 /// reads as part of a word: `true<U+00A0>#; curl x | sh` looks like a
 /// comment, and runs curl. It escapes the characters that join the next
-/// character, such as U+070F, U+2D7F and the regional indicators: a
-/// terminal may count their columns otherwise than ratatui, and the text
-/// after them would shift. It escapes the characters that a terminal
-/// draws 2 columns wide by default, where ratatui counts 1, since the text
-/// after them would cover the end of the line: U+3248 to U+324F, the
-/// circled numbers on a black square, which glibc and tmux draw wide, and
-/// the 9 that tmux forces wide, such as U+261D. It escapes
-/// "␣" and "⇥", which would pass for the marks of a space and a tab. Prose
+/// character, such as U+070F, and others such as U+2D7F and the regional
+/// indicators: a terminal may count their columns otherwise than ratatui,
+/// and the text after them would shift. It escapes the characters that a
+/// terminal draws 2 columns wide by default, where ratatui counts 1, since
+/// the text after them would cover the end of the line: U+3248 to U+324F,
+/// the circled numbers on a black square, which glibc and tmux draw wide,
+/// and the 9 that tmux forces wide, such as U+261D. It escapes "␣" and
+/// "⇥", which would pass for the marks of a space and a tab. Prose
 /// keeps them all, for emoji, scripts and no-break spaces.
 pub fn needs_escape_in_code(c: char) -> bool {
     needs_escape(c)
@@ -948,15 +948,15 @@ pub fn code_line(spans: &[Span], hidden: &mut bool) -> Vec<Span<'static>> {
     out
 }
 
-/// syntect is slow on some bash. Its time grows with the bytes, and with
-/// the square of the length of each line: 32 KB of heredoc takes about
-/// 1 s, 32 lines of 1,000 spaces 10 s, and a line of 80 KB 10 s. So a
-/// block is highlighted only if its lines are at most `HIGHLIGHT_LINE`
-/// bytes long, and if the highlighted code of the file stays within
-/// `HIGHLIGHT_BYTES` and `HIGHLIGHT_SQUARES`, the sum of the squares of
-/// its line lengths. On 2026-11-09, the runbooks of ~/dev/claude/runbooks
-/// had at most 16 KB of bash, lines of at most 386 bytes, and a sum of
-/// squares of at most 2,000,000.
+/// syntect 5.3.0 is slow on some bash. Its time grows with the bytes, and
+/// with the square of the length of each line: 32 KB of heredoc takes
+/// about 1 s, 32 lines of 1,000 spaces 10 s, and a line of 80 KB 10 s. So a
+/// block is highlighted only if its lines are at most `HIGHLIGHT_LINE` bytes
+/// long, and if the highlighted code of the file stays within
+/// `HIGHLIGHT_BYTES` and `HIGHLIGHT_SQUARES`, the sum of the squares of its
+/// line lengths. On 2026-11-09, the runbooks of ~/dev/claude/runbooks had
+/// at most 16 KB of bash, lines of at most 386 bytes, and a sum of squares
+/// of at most 2,000,000.
 const HIGHLIGHT_LINE: usize = 1_000;
 const HIGHLIGHT_BYTES: usize = 32 * 1024;
 const HIGHLIGHT_SQUARES: usize = 4_000_000;
@@ -989,9 +989,9 @@ static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_ne
 /// The style of each kind of bash token, in the 16 terminal colors.
 static SCOPE_STYLES: LazyLock<Vec<(Scope, Style)>> = LazyLock::new(|| {
     [
-        // Not dim: the grammar works line by line, and marks as a comment
-        // code that bash runs, such as "#; curl x | sh" after a line that
-        // ends with "\". Dim code would look inert.
+        // Not dim: the Bash grammar of syntect 5.3.0 works line by line, and
+        // marks as a comment code that bash runs, such as "#; curl x | sh"
+        // after a line that ends with "\". Dim code would look inert.
         ("comment", Style::new().add_modifier(Modifier::ITALIC)),
         ("string.quoted", Style::new().fg(Color::Green)),
         ("keyword.control", Style::new().fg(Color::Magenta)),
@@ -1796,9 +1796,9 @@ mod tests {
             let doc = parse(&format!("```bash\n{code}\n```\n"));
             for item in &doc.items {
                 let Kind::Code { lines, block: Some(i) } = &item.kind else { continue };
-                // Without the spaces after a tab mark: syntect can split a
-                // grapheme in two spans, and each part then takes its own
-                // width, so the tab stops can differ.
+                // Without the spaces after a tab mark: syntect 5.3.0 can
+                // split a grapheme in two spans, and each part then takes its
+                // own width, so the tab stops can differ.
                 let text = |spans: &[Span]| -> String {
                     let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
                     let mut parts = text.split(TAB_MARK);

@@ -453,8 +453,8 @@ On 2026-11-18, five subagents sorted the 842 comments of the code and the config
 The plan, one commit per line, on the branch `comments`:
 
 1. This plan.
-2. The test of the reports of a log that fails makes three writes fail, as its comment says: only one failed, so nothing checked the rate of the reports.
-3. A test fills the PTY before the end of a run, and expects all its output: the 16 reads after the exit drain it only because a read takes 32 KiB. The exclusion of the mutant of `READ_SIZE` goes.
+2. In the test of the reports of a log that fails, each of the three runs writes, and each write fails: only one write failed, so nothing checked the rate of the reports.
+3. A test fills the PTY before the end of a run, and expects all its output: the 16 reads after the exit drain it only if a read takes more than 1.2 KB. The exclusion of the mutant of `READ_SIZE` goes.
 4. `read_run` removes the wrapper from `RUNS` before it reaps it: in between, a new session could take its pid, and `end_runs` would kill it.
 5. The scrollback of a full-screen view: measure one offset per line against one per screen. vt100 0.18.1 does not walk the scrollback at each offset, as the comment says.
 6. The stale and unclear comments say what the code does, and so do spec 11 (a log is never a FIFO) and the small errors of useful comments. Two pairs of tests get the comment of spec 14.2 that says what each one checks.
@@ -464,17 +464,34 @@ The plan, one commit per line, on the branch `comments`:
 
 Two steps changed from the plan:
 
-- Step 3 has no test. A test catches the mutant of `READ_SIZE` only if the PTY holds between 16.9 KB (16 reads of the mutant's 1,056 bytes) and its capacity at the exit: about 18 KB on Linux 7.2, a value that the kernel sets. On CI, such a test would fail at random. The exclusion stays, with that reason, and `read_run` says that 16 reads of `READ_SIZE` drain a full PTY.
+- Step 3 has no test. A test catches the mutant of `READ_SIZE` only if the PTY holds between 16.9 KB (16 reads of the mutant's 1,056 bytes) and its capacity at the exit: about 18 KB on Linux 7.2, a value that the kernel sets. On CI, such a test would fail at random. The exclusion stays, with that reason, and `read_run` says that 16 reads drain a full PTY only if `READ_SIZE` is over 1.2 KB.
 - Step 5 removed the workaround. A harness outside git read 5,000 lines of scrollback: 18.95 ms with one offset per line, 19.11 ms with one per screen, in a release build. The read of the cells takes the time, so the simple loop came back.
 
 Of the 123 redundant comments, 94 went, 12 now give the fact that they missed, and 17 stay: a reference to the spec, the end of the thread that reads the keys, the count of `NAMES`, the use of `escaped_text`, the cursor that `screen_rows` can leave out, and the rule of `Sections::place`. Each commit passed `cargo fmt --check`, clippy and the tests, and `cargo mutants` on its new lines found no surviving mutant. `dist plan` still passes.
 
-signal-hook went from 0.3.18 to 0.4.6, at Kamal's choice. Its changes (the ownership of the fd of `low_level::pipe`, flags of `'static` lifetime) remove no workaround of stepbook, and crossterm 0.29 still pulls in 0.3.18 through signal-hook-mio 0.2.5, so the build holds both. Both use signal-hook-registry 1.4.8, which installs the handlers with SA_RESTART.
+signal-hook went from 0.3.18 to 0.4.6, at Kamal's choice. Its changes (the ownership of the fd of `low_level::pipe`, flags of `'static` lifetime) remove no workaround of stepbook, and crossterm 0.29 still depends on 0.3.18, directly and through signal-hook-mio 0.2.5, so the build holds both. Both use signal-hook-registry 1.4.8, which installs the handlers with SA_RESTART.
+
+`read_run` retries a read that fails with EINTR, and `.cargo/mutants.toml` excludes that arm as dead: the signal handlers have SA_RESTART. `wait_for_jobs` has no such arm. Kamal chose to keep it, as a guard against a handler without SA_RESTART, and a comment there says so.
 
 Open points:
 
-- `read_run` retries a read that fails with EINTR, and `.cargo/mutants.toml` excludes that arm as dead: the signal handlers have SA_RESTART. `wait_for_jobs` has no such arm. Kamal chose to keep it, as a guard against a handler without SA_RESTART.
-- `the_output_of_a_process_substitution_ends_before_the_run` failed its 900 ms bound twice in the full suite on this branch, and passed 8 times out of 8 alone: the open point below still holds.
+- `the_output_of_a_process_substitution_ends_before_the_run` failed its 900 ms bound in 4 of 11 full runs on 2026-11-18, while the load average of the host was 3 to 12. Alone, it passed 8 times out of 8: its three cases, each bound to 900 ms, took 0.88 to 0.95 s together, on `main` and on this branch alike: the open point below still holds.
+
+### Review loop
+
+After a /simplify pass, the review loop ran 5 rounds, each with a code reviewer and a security reviewer, until a round found nothing to fix. It raised 9 should-fix and 12 nits, and no blocker. All were fixed but one should-fix, the version in comments that this branch does not touch, which became a follow-up. The fixes:
+
+- `scrollback()` clamps its count itself, and a test of the hand-off of the PTY has the name of its rule.
+- The comments of the workarounds of the audit name the version of the crate that they rely on. The header of `wrapper.sh` names bash 5.3.
+- One more stale comment, in `a_background_job_outlives_its_run_until_stepbook_ends`: the kernel hangs up the group of the wrapper only without its hand-off of the PTY.
+- The comments on the reads after the exit, the cursor of `last_rows`, the hand-over of the log, U+2D7F and `RUNS` say what the code does.
+
+Follow-ups of the review loop:
+
+- About 40 other comments name a crate with no version, such as the paste and ctrl bytes of crossterm, the buffer of ratatui and the modes of vt100. The audit classed them useful, and the rule of a version covered only new comments and workarounds. One pass could name the locked version in each.
+- `end_runs` releases `RUNS` before `end_sessions`, which can take 0.2 s, and `Run::signal` does not check `RUNS`. In those windows, a session whose wrapper was reaped can still get a signal by its pid, if the pids wrap around. Signalling a session only under the lock of `RUNS`, and only while its pid is in it, would close them.
+- The test `code_escapes_the_format_characters_that_join_the_next_one` keeps "format characters" and "join the next one", which the doc of `needs_escape_in_code` no longer says, for U+2D7F.
+- U+11A3A is no longer a Prepend character in unicode-segmentation 1.13.3, so code escapes it for nothing, and the list of joiners in that test holds it.
 
 ## Next
 

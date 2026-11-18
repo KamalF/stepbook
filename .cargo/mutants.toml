@@ -10,10 +10,10 @@ exclude_re = [
     "watch.rs:\\d+:\\d+: replace \\| with \\^ in spawn",
     "log.rs:\\d+:\\d+: replace \\| with \\^ in open",
     "main.rs:\\d+:\\d+: replace \\| with \\^ in read_runbook",
-    # The open flags of read_runbook matter only for a FIFO renamed onto
-    # the runbook between its stat and its open, which no test can time,
-    # or for a lease on the runbook, which no test can take: neither std
-    # nor rustix 1.1.6 has F_SETLEASE.
+    # The open flags of read_runbook matter only for a file that is not
+    # regular, such as a FIFO, renamed onto the runbook between its stat
+    # and its open, which no test can time, or for a lease on the runbook,
+    # which no test can take: neither std nor rustix 1.1.6 has F_SETLEASE.
     "main.rs:\\d+:\\d+: replace \\| with & in read_runbook",
     # A reload of the same text skips only the parse: apply then finds no
     # change either.
@@ -67,15 +67,17 @@ exclude_re = [
     # The thread that reads the keys: the check in tmux covers it.
     "replace read_terminal with \\(\\)",
     "in read_terminal$",
-    # The size of a read of the PTY: a smaller buffer gives the same
-    # output, unless the PTY is full when the wrapper exits. The 16 reads
-    # after the exit then lose its end. A test would depend on how much a
-    # PTY holds, which the kernel sets.
+    # The size of a read of the PTY: the buffer of the mutant, 1,056
+    # bytes, gives the same output, unless the PTY is full when the
+    # wrapper exits. Its 16 reads after the exit then take 16.9 KB of
+    # about 18 KB. A test would depend on how much a PTY holds, which the
+    # kernel sets.
     "run.rs:\\d+:\\d+: replace \\* with \\+$",
     # The flags of the PTY are distinct bits: ^ gives the same value as |.
     "replace \\| with \\^ in open_pty",
     # A read of the PTY never fails with EINTR: signal-hook and crossterm
-    # install their handlers with SA_RESTART.
+    # install their handlers through signal-hook-registry 1.4.8, with
+    # SA_RESTART.
     "replace match guard e.kind\\(\\) == std::io::ErrorKind::Interrupted with false in read_run",
     # The flags of waitid, and the halves of a size, are distinct bits: ^
     # gives the same value as |.

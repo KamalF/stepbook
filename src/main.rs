@@ -271,10 +271,10 @@ fn open(args: &Args) -> Result<Exit, String> {
     let result = event_loop(&mut terminal, &mut app, &control);
     run::end_runs();
     restore_terminal();
-    // The drop of a ratatui terminal shows the cursor, and reports a
-    // failure with eprintln, which panics when the terminal is gone, as
-    // after a SIGHUP: stepbook would end with 101, not die of the signal.
-    // restore_terminal shows the cursor.
+    // In ratatui-core 0.1.2, the drop of a terminal shows the cursor, and
+    // reports a failure with eprintln, which panics when the terminal is
+    // gone, as after a SIGHUP: stepbook would end with 101, not die of the
+    // signal. restore_terminal shows the cursor.
     std::mem::forget(terminal);
     // The runs that stepbook stopped send their last output and their end
     // now: their section in the log ends with its END line (spec 11).
@@ -296,8 +296,8 @@ fn open(args: &Args) -> Result<Exit, String> {
 /// stepbook: after a panic in another thread, the main thread would go on
 /// drawing on the restored terminal. A panic of vt100 is the exception:
 /// term.rs catches it. stepbook sets up the terminal itself:
-/// the panic hook of ratatui reports a failed restore with eprintln, which
-/// panics again when the terminal is gone, and the process aborts.
+/// the panic hook of ratatui 0.30.2 reports a failed restore with eprintln,
+/// which panics again when the terminal is gone, and the process aborts.
 fn set_up_terminal(workspace: &Path) -> std::io::Result<DefaultTerminal> {
     let default_hook = std::panic::take_hook();
     let workspace = workspace.to_owned();
@@ -562,9 +562,7 @@ struct App {
     /// The question in the footer, which the next key answers.
     question: Option<Question>,
     notice_until: Option<Instant>,
-    /// Until when keys do nothing: after stepbook stopped sending them to
-    /// a program on its own (spec 7.2), or after a reload that moved the
-    /// selection or changed its code (spec 10).
+    /// Until when keys do nothing: see `PAUSE`.
     paused_until: Option<Instant>,
     /// While stepbook stops the runs to quit: when it kills those left.
     stopping: Option<Instant>,
@@ -612,8 +610,6 @@ const NOTICE: Duration = Duration::from_secs(3);
 /// selection or changed its code (spec 10).
 const PAUSE: Duration = Duration::from_secs(1);
 
-/// An event of the loop: a control event, the tick, or a message from the
-/// run of a block.
 enum Incoming {
     Control(Control),
     Tick,
@@ -1428,10 +1424,11 @@ fn event_loop(
     loop {
         app.refresh(size);
         // A terminal can draw a grapheme of prose wider than ratatui counts
-        // it, and shift the rest of its row. ratatui sends only the cells
-        // that changed, so the shift would stay on later frames, where a
-        // line of code can take that row. Each frame clears the screen and
-        // draws every cell, in a synchronized update that does not flicker.
+        // it, and shift the rest of its row. ratatui-core 0.1.2 sends only
+        // the cells that changed, so the shift would stay on later frames,
+        // where a line of code can take that row. Each frame clears the
+        // screen and draws every cell, in a synchronized update that does
+        // not flicker.
         queue!(
             terminal.backend_mut(),
             BeginSynchronizedUpdate,
@@ -1442,9 +1439,10 @@ fn event_loop(
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
         // The events of one frame: if output starts it, those of the next
         // FRAME; if another event starts it, no other. A deadline of the app
-        // also ends the frame. crossbeam returns a ready event even after
-        // the deadline, so the loop checks the end of the frame itself: else
-        // a block that prints without a pause would let no frame end.
+        // also ends the frame. crossbeam-channel 0.5.17 returns a ready event
+        // even after the deadline, so the loop checks the end of the frame
+        // itself: else a block that prints without a pause would let no
+        // frame end.
         let mut frame = None;
         if let Some(event) = waiting.take() {
             if let Some(exit) = app.handle(&event, size) {
