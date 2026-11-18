@@ -687,19 +687,17 @@ b3
         }
         let (reports, received) = crossbeam_channel::unbounded();
         let (sender, thread) = spawn(Full, move |error| reports.send(error.to_string()).unwrap());
+        // Each run ends before the next starts, so that each has the log,
+        // and each of its writes fails: a run that waits only holds.
         for id in 1..=3 {
             let name = format!("r{id}");
-            sender
-                .send(Message::Start {
-                    id,
-                    name,
-                    time: time(id),
-                })
-                .unwrap();
+            let time = time(id);
+            sender.send(Message::Start { id, name, time }).unwrap();
+            sender.send(Message::End { id, rc: 0, time }).unwrap();
         }
         drop(sender);
         thread.join().unwrap();
-        // Three writes fail within 10 s: one report.
+        // Six writes fail within 10 s: one report.
         assert_eq!(received.try_iter().collect::<Vec<_>>(), ["disk full"]);
         // A disk that stays full shows again 10 s later.
         let (start, mut reported) = (Instant::now(), None);
