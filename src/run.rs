@@ -1845,7 +1845,7 @@ mod tests {
     }
 
     #[test]
-    fn a_run_ends_when_the_terminal_is_in_the_hands_of_another_group() {
+    fn the_wrapper_hands_off_the_terminal_only_while_its_group_has_it() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
         // A bash with job control that dies leaves the PTY to its group,
