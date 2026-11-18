@@ -334,11 +334,13 @@ fn all_rows(screen: &mut vt100::Screen) -> Vec<Line<'static>> {
     lines
 }
 
-/// The last `count` lines of the scrollback. `count` must be at most its
-/// length: vt100 clamps the offset, and the first line would repeat. With
-/// an offset of n, the first row of the screen shows the n-th line above
-/// the screen.
+/// The last `count` lines of the scrollback, or all of them if it holds
+/// fewer. With an offset of n, the first row of the screen shows the n-th
+/// line above the screen.
 fn scrollback(screen: &mut vt100::Screen, count: usize) -> Vec<Line<'static>> {
+    // vt100 0.18.1 clamps the offset: past the length, the first line would
+    // repeat.
+    let count = count.min(screen.scrollback_len());
     let columns = screen.size().1.get();
     let lines = (1..=count).rev().map(|offset| {
         screen.set_scrollback(offset);
@@ -371,8 +373,7 @@ fn last_rows(screen: &mut vt100::Screen, cursor: bool) -> Lines {
     let mut cursor = shown.then(|| (usize::from(cursor_row - start), cursor_column));
     let mut lines: Vec<_> = (start..end).map(|row| line(screen, row, columns)).collect();
     if lines.len() < OUTPUT_ROWS {
-        let above = (OUTPUT_ROWS - lines.len()).min(screen.scrollback_len());
-        let mut all = scrollback(screen, above);
+        let mut all = scrollback(screen, OUTPUT_ROWS - lines.len());
         if let Some((row, _)) = &mut cursor {
             *row += all.len();
         }
