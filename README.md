@@ -1,7 +1,7 @@
 # stepbook
 
 stepbook runs the bash blocks of a Markdown runbook one by one, in a terminal
-UI that shows the output of each block under its code.
+UI that shows the output under each block.
 
 A runbook is a list of steps: a line that says why, then a bash block. You
 select a block and press Enter to run it. `export` and `cd` carry over from
