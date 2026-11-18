@@ -446,6 +446,20 @@ Notes for the session that builds it:
 - `~/.claude/skills/runbook` is a link to `~/.config/dotstate/storage/Personal/.agents/skills/runbook/`. The Bash sandbox cannot write there.
 - Only Kamal can push a tag: the sandbox has no SSH.
 
+## Comment audit
+
+On 2026-11-18, five subagents sorted the 842 comments of the code and the config: 651 useful, 123 redundant, 45 workarounds, 16 stale and 7 unclear. Claude checked each stale comment, and each workaround whose reason looked gone, in the code, in the locked crate sources and with small experiments. Two comments hid a test that checks less than it says, and one states a contract that the code breaks for a moment. No workaround lost its reason at a dependency upgrade: each locked crate is its latest release, except signal-hook 0.3.18 (0.4.6 is out), and no workaround rests on what 0.4 changed.
+
+The plan, one commit per line, on the branch `comments`:
+
+1. This plan.
+2. The test of the reports of a log that fails makes three writes fail, as its comment says: only one failed, so nothing checked the rate of the reports.
+3. A test fills the PTY before the end of a run, and expects all its output: the 16 reads after the exit drain it only because a read takes 32 KiB. The exclusion of the mutant of `READ_SIZE` goes.
+4. `read_run` removes the wrapper from `RUNS` before it reaps it: in between, a new session could take its pid, and `end_runs` would kill it.
+5. The scrollback of a full-screen view: measure one offset per line against one per screen. vt100 0.18.1 does not walk the scrollback at each offset, as the comment says.
+6. The stale and unclear comments say what the code does, and so do spec 11 (a log is never a FIFO) and the small errors of useful comments. Two pairs of tests get the comment of spec 14.2 that says what each one checks.
+7. The redundant comments go, or give the one fact that they missed.
+
 ## Next
 
 v1 is done. What comes next is Kamal's choice: the ideas of spec 17, the follow-ups of milestone 5 (two of them are choices for Kamal), and the open points below.
