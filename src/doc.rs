@@ -93,7 +93,6 @@ impl Document {
         }
     }
 
-    /// The name of block `i`, or `#<n>` for the n-th block if it has no name.
     pub fn label(&self, i: usize) -> String {
         match &self.blocks[i].name {
             Some(name) => name.clone(),
@@ -184,17 +183,15 @@ struct Builder {
     /// A blank line goes before the next element.
     blank: bool,
     containers: Vec<Container>,
-    /// The number of open lists.
+    /// The number of open lists: its parity picks the bullet.
     lists: usize,
     /// The columns of text since the last line break, for tab stops.
     column: usize,
     table: Option<Table>,
-    /// The source of the HTML block being read.
     html: Option<String>,
     highlighted: Highlighted,
 }
 
-/// The table being read.
 struct Table {
     aligns: Vec<Alignment>,
     rows: Vec<Vec<Cell>>,
@@ -448,7 +445,6 @@ impl Builder {
         }
     }
 
-    /// The style of the inline text being read.
     fn style(&self) -> Style {
         self.styles.last().copied().unwrap_or_default()
     }
@@ -464,8 +460,6 @@ impl Builder {
         escape_into(&mut self.text, text, style, &mut self.column, Text::Prose);
     }
 
-    /// Ends the text before a new element, and adds the blank line that
-    /// separates them.
     fn start_element(&mut self) {
         self.flush_text();
         if std::mem::take(&mut self.blank) {
@@ -534,7 +528,6 @@ impl Builder {
         });
     }
 
-    /// Adds an item, with the prefixes of the containers around it.
     fn push_item(&mut self, kind: Kind) {
         // A code block always ends with a blank line, or with the end of
         // the file. Text right under it would look like more code: the
@@ -890,7 +883,6 @@ fn hides(grapheme: &str) -> bool {
     grapheme.chars().nth(1).is_some() || width(grapheme) == 0
 }
 
-/// Whether `text` after a space makes one grapheme with it.
 fn joins_a_space(text: &str) -> bool {
     let span = Span::raw(format!(" {text}"));
     span.styled_graphemes(Style::new()).count() == 1
@@ -936,8 +928,6 @@ pub fn code_line(spans: &[Span], hidden: &mut bool) -> Vec<Span<'static>> {
         let mut chars = grapheme.symbol.chars().peekable();
         if hides(grapheme.symbol) || (at_start && joins_a_space(grapheme.symbol)) {
             *hidden = true;
-            // The grapheme keeps its first character, if the terminal
-            // draws it alone, and shows the others escaped.
             let drawn_alone = |c: &char| {
                 let c = c.encode_utf8(&mut [0; 4]).to_string();
                 !hides(&c) && !(at_start && joins_a_space(&c))
@@ -1037,7 +1027,6 @@ fn highlight(code: &str, hidden: &mut bool) -> Vec<Vec<Span<'static>>> {
         for (region, op) in ScopeRegionIterator::new(&ops, line) {
             // An invalid operation only loses the colors of the rest.
             let _ = stack.apply(op);
-            // The newline is not part of the text of the line.
             let text = region.trim_end_matches('\n').to_string();
             spans.push(Span::styled(text, scope_style(&stack)));
         }
@@ -1180,7 +1169,6 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    /// The blocks of the new `markdown` matched against those of `old`.
     fn matches(old: &str, new: &str) -> Vec<Option<usize>> {
         match_blocks(&parse(old).blocks, &parse(new).blocks)
     }
@@ -1479,7 +1467,8 @@ mod tests {
         assert_eq!(shown("abc\t\tx"), format!("abc{}x", " ".repeat(13)));
     }
 
-    /// The warnings of a bash block of `code`.
+    /// The warnings of a bash block of `code`, which must end with a line
+    /// feed.
     fn warnings(code: &str) -> Vec<String> {
         parse(&format!("```bash\n{code}```\n"))
             .blocks

@@ -83,8 +83,6 @@ mod tests {
     use super::*;
     use crossbeam_channel::RecvTimeoutError;
 
-    /// A watch on `run.md` in a new directory, the channel of its
-    /// changes, and the flag of a change that waits.
     fn watched() -> (
         tempfile::TempDir,
         std::path::PathBuf,

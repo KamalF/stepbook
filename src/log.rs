@@ -9,7 +9,6 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crossbeam_channel::Sender;
 
-/// The line that stands for the output of a run on the alternate screen.
 const FULL_SCREEN: &str = "[full-screen program output not logged]\n";
 
 /// The starts of the lines that stepbook writes in the log.
@@ -31,9 +30,7 @@ const MAX_HELD: usize = 1024 * 1024;
 /// memory stays bounded (spec 13).
 const MESSAGES: usize = 64;
 
-/// What the main thread sends to the thread of the log.
 pub enum Message {
-    /// Run `id`, of the block named `name`, started at `time`.
     Start {
         id: u64,
         name: String,
@@ -43,7 +40,6 @@ pub enum Message {
         id: u64,
         bytes: Vec<u8>,
     },
-    /// Run `id` ended with exit code `rc` at `time`.
     End {
         id: u64,
         rc: i32,
@@ -153,7 +149,6 @@ struct Sections<W> {
 struct Section {
     name: String,
     cleaner: Cleaner,
-    /// The text that waits for the log.
     held: String,
     /// The log has a part of the section: the next part follows a
     /// CONTINUE line.
@@ -273,7 +268,6 @@ pub struct Cleaner {
 struct Lines {
     /// The lines that ended, each with its line feed.
     done: String,
-    /// The line that has not ended yet.
     line: String,
     /// A carriage return came last: the next character starts the line
     /// again, and a line feed ends it as it is.
@@ -299,8 +293,6 @@ impl Lines {
         self.line.clear();
     }
 
-    /// Ends the line that has not ended, unless a carriage return dropped
-    /// it.
     fn flush(&mut self) {
         match !std::mem::take(&mut self.carriage_return) && !self.line.is_empty() {
             true => self.end_line(),
@@ -333,8 +325,6 @@ impl vte::Perform for Lines {
             b'\n' => self.end_line(),
             b'\r' => self.carriage_return = true,
             b'\t' => self.print('\t'),
-            // Other control characters move the cursor or ring the bell:
-            // the log has no use for them.
             _ => {}
         }
     }
@@ -407,7 +397,6 @@ mod tests {
     fn crlf_is_a_line_feed_and_a_carriage_return_alone_drops_the_line() {
         assert_eq!(clean(&[b"a\r\nb\r\n"]), "a\nb\n");
         assert_eq!(clean(&[b" 10%\r 50%\r100%\n"]), "100%\n");
-        // Across two reads.
         assert_eq!(clean(&[b"a\r", b"\nb\n"]), "a\nb\n");
         assert_eq!(clean(&[b"old\r", b"new\n"]), "new\n");
     }
@@ -677,7 +666,6 @@ b3
 
     #[test]
     fn writes_that_fail_are_reported_at_most_once_every_ten_seconds() {
-        /// A disk that stays full.
         struct Full;
         impl Write for Full {
             fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
@@ -816,7 +804,6 @@ b3
         std::fs::write(&target, "key\n").unwrap();
         assert_eq!(error(&link), "it is a link");
         assert_eq!(std::fs::read_to_string(&target).unwrap(), "key\n");
-        // A hard link to another file of the user.
         let other = tmp.path().join("bashrc");
         std::fs::write(&other, "alias\n").unwrap();
         let hard = tmp.path().join("hard.log");
@@ -905,8 +892,12 @@ b3
         }
     }
 
-    /// A piece of output that can change the screen: a CSI sequence of a
-    /// mode, an escape sequence, or text.
+    /// A piece of output that can change the screen. Beside the modes of
+    /// the alternate screen, it holds near misses that the log must treat
+    /// as vt100 0.18.1 does: mode 1047, which vt100 ignores, a
+    /// sub-parameter, a mode with no `?`, ESC c (a reset, which leaves the
+    /// alternate screen), ESC ( c and ESC # c (no reset), and an OSC that
+    /// holds ?1049h.
     fn piece() -> impl Strategy<Value = Vec<u8>> {
         let select = |items: &[&'static str]| prop::sample::select(items.to_vec());
         let params =

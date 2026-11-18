@@ -105,10 +105,9 @@ pub enum Back {
     Input,
 }
 
-/// The state of the screen: the document, its file name, the selection,
-/// and the state and output of the blocks.
 pub struct View {
     pub doc: Document,
+    /// The file name.
     pub title: String,
     pub selected: Option<usize>,
     pub scroll: usize,
@@ -207,7 +206,6 @@ impl View {
             let line = self.line(&shown, row, self.selected);
             frame.buffer_mut().set_line(text.x, y, &line, text.width);
         }
-        // In input mode, the cursor of the program shows in its output.
         if let Mode::Input(i) = self.mode
             && let Some((line, column)) = self.outputs[i].cursor
         {
@@ -246,7 +244,6 @@ impl View {
         frame.render_widget(self.footer(footer.width), footer);
     }
 
-    /// Whether block `i` runs.
     pub fn running(&self, i: usize) -> bool {
         matches!(self.statuses[i], Some(Status::Running(_)))
     }
@@ -349,7 +346,6 @@ impl View {
         (shown, text, scroll)
     }
 
-    /// The rows of the document view at a width of text.
     fn shown_at(&self, width: usize) -> Shown {
         let mut cache = self.page.borrow_mut();
         let page = match &*cache {
@@ -485,7 +481,6 @@ impl View {
         self.doc = doc;
     }
 
-    /// Sets the state of block `i`.
     pub fn set_status(&mut self, i: usize, status: Status) {
         if self.statuses[i].as_ref() != Some(&status) {
             self.statuses[i] = Some(status);
@@ -698,8 +693,7 @@ impl View {
     }
 }
 
-/// The width of the sidebar with its left border: the longest label and 4
-/// columns, between 12 and 30.
+/// The width of the sidebar, with its left border.
 fn sidebar_width(doc: &Document) -> u16 {
     let labels = (0..doc.blocks.len()).map(|i| text_width(&[Span::raw(doc.label(i))]));
     let width = labels.max().unwrap_or(0) + 4;
@@ -722,7 +716,6 @@ fn screen(size: Size) -> Rect {
     Rect::from((Position::ORIGIN, size))
 }
 
-/// The area above the footer, and the footer.
 fn split(screen: Rect) -> (Rect, Rect) {
     let [main, footer] =
         Layout::vertical([Constraint::Fill(1), Constraint::Length(1)]).areas(screen);
@@ -733,25 +726,20 @@ fn split(screen: Rect) -> (Rect, Rect) {
 /// rows of each block above its code, and its output under it.
 struct Shown {
     page: Rc<Page>,
-    /// The info rows and the output rows of each block.
     infos: Vec<usize>,
     outputs: Vec<usize>,
     /// The rows of info and output above each block, then in all.
     above: Vec<usize>,
-    /// The first row of each block.
     starts: Vec<usize>,
 }
 
-/// A row of the document view.
 #[derive(Debug, PartialEq)]
 enum Row {
     /// A line of the page, out of the blocks.
     Page(usize),
     /// A line of the page, of the code of a block.
     Code(usize, usize),
-    /// An info row of a block.
     Info(usize, usize),
-    /// A row of the output of a block.
     Output(usize, usize),
 }
 
@@ -777,12 +765,10 @@ impl Shown {
         self.page.lines.len() + self.above[self.above.len() - 1]
     }
 
-    /// The largest scroll: the last row at the bottom of the view.
     fn max_scroll(&self, height: usize) -> usize {
         self.len().saturating_sub(height)
     }
 
-    /// The row after the output of block `i`.
     fn output_end(&self, i: usize) -> usize {
         self.block(i).end + self.outputs[i]
     }
@@ -800,7 +786,6 @@ impl Shown {
     }
 
     fn row(&self, row: usize) -> Row {
-        // The blocks that start at or above `row`.
         let started = self.starts.partition_point(|&start| start <= row);
         let Some(i) = started.checked_sub(1) else {
             return Row::Page(row);
@@ -842,7 +827,6 @@ fn scroll_to(scroll: usize, top: usize, block: &Range<usize>, height: usize) -> 
     }
 }
 
-/// The document laid out at a width.
 pub struct Page {
     pub width: usize,
     pub lines: Vec<Line<'static>>,
@@ -872,7 +856,6 @@ pub struct Page {
 /// character.
 const MAX_PROSE: usize = 100;
 
-/// The lines of the document view at `width` columns.
 pub fn layout(doc: &Document, width: usize) -> Page {
     let mut lines = Vec::new();
     let mut blocks = vec![0..0; doc.blocks.len()];
@@ -948,7 +931,6 @@ fn fitted_prefixes(item: &Item, width: usize) -> (&[Span<'static>], &[Span<'stat
     (&item.first[outer..], &item.rest[outer..])
 }
 
-/// Puts the prefixes before the lines of a body.
 fn prefixed<'a>(
     first: &'a [Span<'static>],
     rest: &'a [Span<'static>],
@@ -1030,7 +1012,7 @@ fn info_rows(
     rows.collect()
 }
 
-/// The glyph of a block that has run, in the sidebar (spec 6.2).
+/// The glyph of a block that has run (spec 6.2).
 fn status_glyph(status: &Status) -> Span<'static> {
     match status {
         Status::Running(_) => Span::styled("●", WARNING),
@@ -1079,7 +1061,6 @@ fn status_spans(status: &Status) -> Vec<Span<'static>> {
     }
 }
 
-/// The name of a signal, such as `SIGINT` for 2.
 fn signal_name(signal: i32) -> String {
     match signal_hook::low_level::signal_name(signal) {
         Some(name) => name.to_string(),
@@ -1272,7 +1253,6 @@ fn glyphs<'a>(text: &'a [Span<'a>]) -> impl Iterator<Item = Option<Glyph<'a>>> {
     })
 }
 
-/// The width of styled text on screen.
 fn text_width(text: &[Span]) -> usize {
     glyphs(text).flatten().map(|g| g.width).sum()
 }
@@ -1417,8 +1397,6 @@ pub(crate) mod tests {
         markup(&rows(markdown, width).0)
     }
 
-    /// The rows of the document view of `markdown` at a width of text, and
-    /// the rows of each block.
     fn rows(markdown: &str, width: usize) -> (Vec<Line<'static>>, Vec<Range<usize>>) {
         View::new(parse(markdown), String::new()).rows(width)
     }
@@ -2119,8 +2097,6 @@ pub(crate) mod tests {
         }
     }
 
-    /// The screen of `view` at `width` by `height`, in the format of
-    /// `markup`.
     fn screen_with_footer(view: &View, width: u16, height: u16) -> String {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal.draw(|frame| view.draw(frame)).unwrap();
@@ -2351,7 +2327,6 @@ pub(crate) mod tests {
 
     #[test]
     fn scroll_to_moves_as_little_as_possible() {
-        // (scroll, top, block, height) -> scroll
         let cases = [
             ((5, 6, 8..10, 10), 5),
             ((5, 2, 3..6, 10), 2),
@@ -2680,7 +2655,7 @@ pub(crate) mod tests {
         6
         7
         ");
-        // A screen too small shows only a message.
+        // As in the document view, a screen too small shows only a message.
         let small = screen(&view, 39, 8);
         assert!(small.starts_with("Enlarge the terminal"), "{small}");
     }

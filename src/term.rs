@@ -18,7 +18,6 @@ const SCROLLBACK: usize = 5_000;
 /// The rows of output under a block (spec 6.3).
 const OUTPUT_ROWS: usize = 15;
 
-/// What the terminal of a run shows after vt100 failed on its output.
 const LOST: &[u8] = b"[stepbook: the terminal of this run failed, and lost the output above]\r\n";
 
 thread_local! {
@@ -63,12 +62,9 @@ pub struct Shared {
     /// changes what the arrows send. The reader sets it after each read, so
     /// that a key never waits for the terminal.
     application_cursor: AtomicBool,
-    /// Whether the program turned on bracketed paste mode, which marks the
-    /// start and the end of a paste.
     bracketed_paste: AtomicBool,
 }
 
-/// Rows of a terminal, as lines of the view.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rows {
     pub lines: Vec<Line<'static>>,
@@ -82,7 +78,6 @@ pub struct Rows {
     pub ended_on_alternate: bool,
 }
 
-/// What the main thread takes of a terminal.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Want {
     /// The last rows, under the block. With `cursor`, they go down to the
@@ -330,8 +325,6 @@ fn screen_rows(screen: &vt100::Screen) -> Lines {
     (lines.collect(), cursor)
 }
 
-/// The lines of the scrollback, then the rows of the screen, without the
-/// blank rows at the end.
 fn all_rows(screen: &mut vt100::Screen) -> Vec<Line<'static>> {
     let mut lines = scrollback(screen, screen.scrollback_len());
     lines.extend(screen_rows(screen).0);
@@ -378,7 +371,6 @@ fn last_rows(screen: &mut vt100::Screen, cursor: bool) -> Lines {
     let mut cursor = shown.then(|| (usize::from(cursor_row - start), cursor_column));
     let mut lines: Vec<_> = (start..end).map(|row| line(screen, row, columns)).collect();
     if lines.len() < OUTPUT_ROWS {
-        // The scrollback shows above the screen.
         let above = (OUTPUT_ROWS - lines.len()).min(screen.scrollback_len());
         let mut all = scrollback(screen, above);
         if let Some((row, _)) = &mut cursor {
@@ -458,14 +450,11 @@ pub fn key_bytes(key: &KeyEvent, application_cursor: bool) -> Vec<u8> {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let modifiers = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
-    // A key that sends a letter after ESC [ or ESC O: ESC [ 1 ; m X with
-    // modifiers.
     let letter = |letter: char, prefix: &str| match modifiers {
         1 => format!("\x1b{prefix}{letter}"),
         m => format!("\x1b[1;{m}{letter}"),
     };
     let cursor = if application_cursor { "O" } else { "[" };
-    // A key that sends ESC [ n ~, with ESC [ n ; m ~ for modifiers.
     let tilde = |n: u8| match modifiers {
         1 => format!("\x1b[{n}~"),
         m => format!("\x1b[{n};{m}~"),
@@ -502,7 +491,8 @@ pub fn key_bytes(key: &KeyEvent, application_cursor: bool) -> Vec<u8> {
         _ => return Vec::new(),
     };
     let mut bytes = text.into_bytes();
-    // Alt before a key of one byte sends ESC first, as for a character.
+    // A key of several bytes that takes a parameter gives alt there. A key
+    // of one byte gets ESC first, as a character does.
     if alt && bytes.len() == 1 {
         bytes.insert(0, 0x1b);
     }
@@ -948,7 +938,6 @@ mod tests {
         drop(held);
     }
 
-    /// The length of the window title that vt100 gets.
     #[derive(Default)]
     struct TitleLength(usize);
 
@@ -981,7 +970,6 @@ mod tests {
         assert_eq!(rows(&mut terminal, false), format!("{lost}\nb"));
     }
 
-    /// A read of a run, or a resize of its PTY.
     #[derive(Clone, Debug)]
     enum Step {
         Read(Vec<u8>),

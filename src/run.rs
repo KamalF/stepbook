@@ -102,7 +102,6 @@ impl Workspace {
         )))
     }
 
-    /// The path of the workspace in `parent`, with the suffix `n`.
     fn dir_in(parent: &Path, n: u32) -> PathBuf {
         let pid = std::process::id();
         match n {
@@ -293,7 +292,6 @@ pub struct Session {
     next_id: u64,
 }
 
-/// Why a run did not start.
 #[derive(Debug, PartialEq)]
 pub enum StartError {
     /// The session directory no longer exists. The session went back to the
@@ -332,7 +330,6 @@ pub struct Run {
     master: File,
     /// The bytes for the writer thread of the run.
     input: Sender<Vec<u8>>,
-    /// The state that the run started with.
     start: State,
     script: PathBuf,
     state_file: PathBuf,
@@ -351,7 +348,7 @@ pub enum Status {
 }
 
 impl Status {
-    /// The exit code, as a shell reports it: 128 + N for signal N.
+    /// The exit code, as a shell reports it.
     pub fn rc(self) -> i32 {
         match self {
             Status::Code(code) => code,
@@ -499,8 +496,6 @@ impl Session {
         })
     }
 
-    /// Spawns the wrapper with the files of a run, on the run's side of its
-    /// PTY.
     fn spawn(
         &self,
         run_files: &[&PathBuf; 3],
@@ -601,15 +596,12 @@ fn winsize(columns: u16, rows: u16) -> Winsize {
     }
 }
 
-/// A process, from /proc.
 struct Process {
     pid: Pid,
     session: i32,
-    /// Ended, but not yet reaped by its parent.
     zombie: bool,
 }
 
-/// The processes of the system.
 fn processes() -> Vec<Process> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
@@ -619,7 +611,6 @@ fn processes() -> Vec<Process> {
     pids.filter_map(process).collect()
 }
 
-/// A process from its /proc/PID/stat.
 fn parse_stat(pid: i32, stat: &[u8]) -> Option<Process> {
     // The name of the program, in parentheses, can hold any byte, and the
     // kernel cuts it at 15 bytes, inside a UTF-8 character too. The fields
@@ -795,7 +786,6 @@ fn write_run(master: File, input: Receiver<Vec<u8>>) {
     }
 }
 
-/// How often `wait_for_jobs` checks the session of a run.
 const JOB_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Waits while the background jobs of a run go on: they outlive their
@@ -1710,7 +1700,6 @@ mod tests {
         );
     }
 
-    /// Waits for `text` in the output of a run, and returns the output.
     fn wait_for(run: &Run, text: &str) -> String {
         let mut output = Vec::new();
         while !String::from_utf8_lossy(&output).contains(text) {

@@ -1,17 +1,14 @@
 [workspace]
 members = ["cargo:."]
 
-# Config for 'dist'
 [dist]
-# The preferred dist version to use in CI (Cargo.toml SemVer syntax)
+# The version of dist in mise.toml
 cargo-dist-version = "0.33.1"
-# CI backends to support
 ci = "github"
 # No installers: mise installs stepbook from the archives (spec 14.4)
 installers = []
 # Linux only, static with musl (spec 14.4). about.toml lists the same targets.
 targets = ["aarch64-unknown-linux-musl", "x86_64-unknown-linux-musl"]
-# Where to host releases
 hosting = "github"
 # Files for the archives, beside those that dist finds, such as LICENSE
 include = ["THIRD-PARTY-LICENSES-RUST.txt"]

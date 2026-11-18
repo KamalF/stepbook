@@ -119,7 +119,6 @@ fn set_once(old: Option<PathBuf>, new: PathBuf) -> Result<PathBuf, String> {
     }
 }
 
-/// The text of an I/O error, without its "(os error N)" suffix.
 fn io_message(error: &std::io::Error) -> String {
     let text = error.to_string();
     match text.rfind(" (os error ") {
@@ -167,7 +166,6 @@ fn print_error(text: &str) {
     let _ = writeln!(std::io::stderr(), "{text}");
 }
 
-/// How the event loop ends.
 #[derive(Debug, PartialEq)]
 enum Exit {
     Quit,
@@ -304,7 +302,6 @@ fn set_up_terminal(workspace: &Path) -> std::io::Result<DefaultTerminal> {
     let default_hook = std::panic::take_hook();
     let workspace = workspace.to_owned();
     std::panic::set_hook(Box::new(move |info| {
-        // term.rs catches a panic of vt100, and the run goes on.
         if term::in_vt100() {
             return;
         }
@@ -412,7 +409,6 @@ fn query_background(
     parse_background(&answers)
 }
 
-/// The next byte of `input`, if one comes within `wait`.
 fn read_byte(input: BorrowedFd, wait: Duration) -> Option<u8> {
     let timeout = Timespec::try_from(wait).unwrap_or_default();
     let mut fds = [PollFd::new(&input, PollFlags::IN)];
@@ -552,7 +548,6 @@ struct Ran {
     code: String,
 }
 
-/// The state that the event loop owns.
 struct App {
     view: view::View,
     session: run::Session,
@@ -566,7 +561,6 @@ struct App {
     ticks: Receiver<Instant>,
     /// The question in the footer, which the next key answers.
     question: Option<Question>,
-    /// When the notification in the footer ends.
     notice_until: Option<Instant>,
     /// Until when keys do nothing: after stepbook stopped sending them to
     /// a program on its own (spec 7.2), or after a reload that moved the
@@ -574,7 +568,6 @@ struct App {
     paused_until: Option<Instant>,
     /// While stepbook stops the runs to quit: when it kills those left.
     stopping: Option<Instant>,
-    /// The thread that writes the log, unless there is no log.
     log: Option<Sender<log::Message>>,
     /// The messages that wait for room in the channel of the log.
     log_queue: VecDeque<log::Message>,
@@ -593,7 +586,6 @@ struct App {
 enum Question {
     /// Re-run block i.
     Rerun(usize),
-    /// Stop the runs and quit.
     Quit,
     /// Send a paste of lines, or with a control character, to the program
     /// of a block, which did not turn on bracketed paste (spec 7.2).
@@ -628,7 +620,8 @@ enum Incoming {
     Run(usize, run::Event),
 }
 
-/// The blink of the glyph of a running block, and the update of its time.
+/// The blink of the glyph of a running block, and the update of its time
+/// (spec 6.2).
 const TICK: Duration = Duration::from_millis(500);
 
 /// After output, the loop reads the next events for this long before it
@@ -720,7 +713,6 @@ impl App {
         }
     }
 
-    /// The blocks that run, with their runs.
     fn runs(&self) -> impl Iterator<Item = (usize, &run::Run)> {
         (self.ran.iter()).filter_map(|(&i, ran)| Some((i, ran.run.as_ref()?)))
     }
@@ -735,7 +727,6 @@ impl App {
             .min()
     }
 
-    /// Ends the notification and the pause of the keys after their time.
     fn expire(&mut self) {
         let now = Instant::now();
         if self.notice_until.is_some_and(|until| now >= until) {
@@ -760,7 +751,6 @@ impl App {
         self.notice_until = Some(until);
     }
 
-    /// Applies a terminal event, and returns how the loop ends, if it does.
     fn handle(&mut self, event: &Event, size: Size) -> Option<Exit> {
         if let Event::Resize(..) = event {
             self.resize(size);
@@ -913,8 +903,6 @@ impl App {
         true
     }
 
-    /// Whether the run of block `i` ended less than the pause of the keys
-    /// ago.
     fn just_ended(&self, i: usize) -> bool {
         let ended = self.ran.get(&i).and_then(|ran| ran.ended);
         ended.is_some_and(|ended| ended.elapsed() < PAUSE)
@@ -969,8 +957,6 @@ impl App {
         self.changed.insert(i);
     }
 
-    /// Goes back to the document view. A running block gets its PTY of
-    /// the document view back.
     fn leave(&mut self, size: Size) {
         let mode = std::mem::replace(&mut self.view.mode, view::Mode::Normal);
         if let view::Mode::Full(full) = mode {
@@ -1076,7 +1062,6 @@ impl App {
         self.runs().next().is_none()
     }
 
-    /// Shows a notification in the footer for 3 seconds.
     fn notify(&mut self, text: String) {
         self.view.notice = Some(text);
         self.notice_until = Some(Instant::now() + NOTICE);
@@ -1338,7 +1323,6 @@ impl App {
             };
             let full = match &self.view.mode {
                 view::Mode::Full(full) if full.block == i => true,
-                // The full-screen view of another block hides these rows.
                 view::Mode::Full(_) => {
                     hidden.insert(i);
                     continue;
@@ -1403,7 +1387,6 @@ impl App {
         }
     }
 
-    /// Updates the time of each running block, and blinks its glyph.
     fn tick(&mut self) {
         self.view.blink = !self.view.blink;
         for (&i, ran) in &self.ran {
@@ -1424,8 +1407,6 @@ impl App {
     }
 }
 
-/// Sends the messages of `queue` to the thread of the log while its
-/// channel has room.
 fn send_queued(log: &Sender<log::Message>, queue: &mut VecDeque<log::Message>) {
     while let Some(message) = queue.pop_front() {
         match log.try_send(message) {
@@ -1545,7 +1526,6 @@ enum Action {
     Select(isize),
     First,
     Last,
-    /// Scroll this many pages.
     Page(isize),
     /// Run the selected block, if the view shows it (spec 7.1).
     Run,
@@ -1594,8 +1574,6 @@ mod tests {
 
     const SIZE: Size = Size::new(80, 24);
 
-    /// The answer of `query_background` to the bytes that the terminal
-    /// sends, and the bytes that it writes.
     fn background(answers: &[u8], wait: Duration) -> (Option<(u8, u8, u8)>, Vec<u8>) {
         let (mut terminal, input) = std::os::unix::net::UnixStream::pair().unwrap();
         terminal.write_all(answers).unwrap();
@@ -1636,7 +1614,6 @@ mod tests {
         answer.join().unwrap();
     }
 
-    /// The bytes left in `input`.
     fn rest(input: &std::os::unix::net::UnixStream) -> Vec<u8> {
         std::iter::from_fn(|| read_byte(input.as_fd(), Duration::from_millis(10))).collect()
     }
@@ -1913,14 +1890,14 @@ mod tests {
         assert_eq!(app.handle(&key, SIZE), None);
     }
 
-    /// Gives `app` a log at `path`, and returns the thread that writes it.
     fn with_log(app: &mut App, path: &Path) -> std::thread::JoinHandle<()> {
         let (log, thread) = log::spawn(log::open(path).unwrap(), |e| panic!("{e}"));
         app.log = Some(log);
         thread
     }
 
-    /// The lines of the log of `app` at `path`, once its thread wrote them.
+    /// The lines of the log at `path`. It takes the log of `app`, so that
+    /// its thread writes them all and ends.
     fn log_lines(app: &mut App, thread: std::thread::JoinHandle<()>, path: &Path) -> Vec<String> {
         drop(app.log.take());
         thread.join().unwrap();
@@ -1997,7 +1974,6 @@ mod tests {
         assert!(lines[0].starts_with("=== START new "), "{lines:?}");
     }
 
-    /// An app on the runbook `text`, which is also in the file `run.md`.
     fn app_on_file(text: &str, tmp: &Path) -> App {
         let mut app = app(text, tmp);
         std::fs::write(app.session.file(), text).unwrap();
@@ -2034,7 +2010,6 @@ mod tests {
             app.view.notice.as_deref(),
             Some("reloaded: 1 new, 1 changed, 1 removed")
         );
-        // The selection stays on a.
         assert_eq!(app.view.selected, Some(1));
         assert_eq!(app.view.doc.label(1), "a");
         let text = |i| {
@@ -2258,7 +2233,6 @@ mod tests {
         read_until(&mut app, SIZE, |app| !running(app));
         let (_sender, control) = crossbeam_channel::unbounded();
         let quick = Duration::from_secs(5);
-        // A run that ended.
         let start = Instant::now();
         app.drain_runs(&control, Duration::from_secs(10));
         assert!(start.elapsed() < quick);
@@ -2632,8 +2606,6 @@ mod tests {
         });
     }
 
-    /// A block that waits for a line, enters the alternate screen, waits
-    /// for a line, leaves it, then waits for a line that it prints.
     const FULL_SCREEN: &str = "```bash
 echo before
 read
@@ -3111,7 +3083,6 @@ echo \"got $x\"
         app.runs().next().is_some()
     }
 
-    /// Reads the messages of the runs until `done`.
     fn read_until(app: &mut App, size: Size, done: impl Fn(&App) -> bool) {
         let (_sender, control) = crossbeam_channel::unbounded();
         // A bug that loses an event fails the test, and does not hang it.
