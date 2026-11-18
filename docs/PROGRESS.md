@@ -529,7 +529,7 @@ Kamal's checks, from `~/dev/claude/runbooks/2026-11-18-stepbook-input-alert-chec
 2. `herdr notification show stepbook --body "hidden waits for input" --sound request`, run from a block, showed a desktop notification while the tab of stepbook was active. `herdr pane report-agent --state blocked` showed the pane in red in the sidebar of herdr.
 3. Kamal's choices: in a pane of herdr, stepbook asks herdr for a toast once per wait, and keeps the bell for the other terminals. The red state of the sidebar would need a release at each end of a wait and at quit. The note takes the warning color.
 
-The test of the toast runs a script in place of herdr, which needs its server, and checks the arguments that the script gets. In tmux, with `HERDR_PANE_ID` set and that script first on the PATH, a `read -s` block made stepbook call it once, with `notification show stepbook --body "login waits for input" --sound request`.
+herdr needs its server, so the test of the toast checks only the arguments of its command, and `.cargo/mutants.toml` excludes the mutant that skips the run of herdr. In tmux, with `HERDR_PANE_ID` set and that script first on the PATH, a `read -s` block made stepbook call it once, with `notification show stepbook --body "login waits for input" --sound request`.
 
 ## Next
 
