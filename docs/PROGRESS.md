@@ -502,11 +502,17 @@ Follow-ups of the review loop:
 3. Kamal tags `v0.1.1`, and the release workflow builds the archives.
 4. Checks: both archives pass the attestation check, mise installs 0.1.1 and it prints `stepbook 0.1.1`, crates.io has 0.1.1.
 
+Kamal ran the release on 2026-11-18, from `~/dev/claude/runbooks/2026-11-18-stepbook-release-0.1.1.md`. Each block ended with rc=0:
+
+- CI passed on the branch, then `cargo publish` put stepbook 0.1.1 on crates.io: 14 files.
+- CI passed on `main` (6219b80), then the tag `v0.1.1` started the release workflow: both musl builds took under 3 minutes. The release is immutable, and its notes come from `CHANGELOG.md`.
+- Both archives pass the attestation check. `mise use -g github:KamalF/stepbook@0.1.1` installed a static, stripped binary that prints `stepbook 0.1.1`, and pins 0.1.1 in Kamal's global mise config: `minimum_release_age = 24h` hides the release from `@latest` until 2026-11-19.
+
 ## Next
 
 v1 is done. What comes next is Kamal's choice: the ideas of spec 17, the follow-ups of milestone 5 (two of them are choices for Kamal), and the open points below.
 
-1. After 2026-11-14, `mise use -g github:KamalF/stepbook@latest`, if Kamal wants mise to follow new releases.
+1. After 2026-11-19, `mise use -g github:KamalF/stepbook@latest`, if Kamal wants mise to follow new releases: his global config pins 0.1.1.
 2. The removal of the upmd left outside the mise config, if Kamal wants it: `cargo uninstall upmd`, `mise uninstall github:rezigned/upmd`.
 
 ## Open points
