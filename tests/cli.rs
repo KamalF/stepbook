@@ -126,7 +126,6 @@ fn a_log_that_is_the_runbook_itself_exits_with_1() {
         format!("stepbook: give a log with --log PATH, or --no-log: {log} is the runbook itself\n")
     };
     assert_eq!(stderr(&output), expected(&notes));
-    // A PATH that names the runbook through a link.
     let file = runbook();
     let link = dir.path().join("link.log");
     std::os::unix::fs::symlink(file.path(), &link).unwrap();

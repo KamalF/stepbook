@@ -93,7 +93,6 @@ impl Document {
         }
     }
 
-    /// The name of block `i`, or `#<n>` for the n-th block if it has no name.
     pub fn label(&self, i: usize) -> String {
         match &self.blocks[i].name {
             Some(name) => name.clone(),
@@ -150,8 +149,8 @@ pub fn parse(text: &str) -> Document {
 }
 
 fn parse_with(mut builder: Builder, text: &str) -> Document {
-    // CommonMark replaces U+0000 with U+FFFD, but pulldown-cmark keeps it.
-    // bash drops it: "r<U+0000>m" would show "r^@m" and run "rm".
+    // CommonMark replaces U+0000 with U+FFFD, but pulldown-cmark 0.13.6
+    // keeps it. bash drops it: "r<U+0000>m" would show "r^@m" and run "rm".
     let text = &text.replace('\0', "\u{fffd}");
     let (frontmatter, body) = split_frontmatter(text);
     if let Some(frontmatter) = frontmatter {
@@ -184,17 +183,15 @@ struct Builder {
     /// A blank line goes before the next element.
     blank: bool,
     containers: Vec<Container>,
-    /// The number of open lists.
+    /// The number of open lists: its parity picks the bullet.
     lists: usize,
     /// The columns of text since the last line break, for tab stops.
     column: usize,
     table: Option<Table>,
-    /// The source of the HTML block being read.
     html: Option<String>,
     highlighted: Highlighted,
 }
 
-/// The table being read.
 struct Table {
     aligns: Vec<Alignment>,
     rows: Vec<Vec<Cell>>,
@@ -340,10 +337,10 @@ impl Builder {
             }
             TagEnd::TableHead | TagEnd::TableRow => {
                 if let Some(table) = &mut self.table {
-                    // pulldown-cmark pads a short row with empty cells, up
-                    // to the columns of the header: a few bytes of input
-                    // can make thousands. The view shows a missing cell as
-                    // an empty one.
+                    // pulldown-cmark 0.13.6 pads a short row with empty
+                    // cells, up to the columns of the header: a few bytes
+                    // of input can make thousands. The view shows a missing
+                    // cell as an empty one.
                     if tag == TagEnd::TableRow {
                         while table.row.last().is_some_and(Vec::is_empty) {
                             table.row.pop();
@@ -448,7 +445,6 @@ impl Builder {
         }
     }
 
-    /// The style of the inline text being read.
     fn style(&self) -> Style {
         self.styles.last().copied().unwrap_or_default()
     }
@@ -464,8 +460,6 @@ impl Builder {
         escape_into(&mut self.text, text, style, &mut self.column, Text::Prose);
     }
 
-    /// Ends the text before a new element, and adds the blank line that
-    /// separates them.
     fn start_element(&mut self) {
         self.flush_text();
         if std::mem::take(&mut self.blank) {
@@ -534,7 +528,6 @@ impl Builder {
         });
     }
 
-    /// Adds an item, with the prefixes of the containers around it.
     fn push_item(&mut self, kind: Kind) {
         // A code block always ends with a blank line, or with the end of
         // the file. Text right under it would look like more code: the
@@ -554,15 +547,16 @@ impl Builder {
 }
 
 /// The dimmed lines of verbatim text, such as an HTML block. `lines` also
-/// ends a line at a CRLF, which pulldown-cmark leaves in the frontmatter.
+/// ends a line at a CRLF, which the frontmatter keeps: pulldown-cmark never
+/// sees it.
 fn source_lines(text: &str) -> Vec<Vec<Span<'static>>> {
     text.lines().map(|line| escaped(line, DIM)).collect()
 }
 
-/// pulldown-cmark rescans every open quote and list on each line: a file
-/// that opens 100,000 quotes, then has 200,000 lazy lines, took 30 s. At
-/// 1,000 levels, 1 MB of lazy lines takes 1 s. The lines of a runbook nest
-/// a few levels.
+/// pulldown-cmark 0.13.6 rescans every open quote and list on each line: a
+/// file that opens 100,000 quotes, then has 200,000 lazy lines, took 30 s.
+/// At 1,000 levels, 1 MB of lazy lines takes 1 s. The lines of a runbook
+/// nest a few levels.
 pub const MAX_NESTING: usize = 1_000;
 
 /// The deepest nesting at the start of a line of `text`: its quote and
@@ -607,8 +601,8 @@ fn line_nesting(line: &str) -> usize {
     }
 }
 
-/// pulldown-cmark pads each short row of a table with empty cells, up to
-/// the columns of its header, and keeps them all: 1 MB of crafted tables
+/// pulldown-cmark 0.13.6 pads each short row of a table with empty cells, up
+/// to the columns of its header, and keeps them all: 1 MB of crafted tables
 /// takes gigabytes. A file that could make more cells than this shows its
 /// tables as text.
 const MAX_TABLE_CELLS: usize = 200_000;
@@ -647,7 +641,7 @@ fn split_frontmatter(text: &str) -> (Option<&str>, &str) {
     (None, text)
 }
 
-/// The info string as written in the file. pulldown-cmark decodes
+/// The info string as written in the file. pulldown-cmark 0.13.6 decodes
 /// backslash escapes and entities in it, which would change quoted values.
 fn raw_info(source: &str) -> &str {
     let fence = source.lines().next().unwrap_or("").trim_start();
@@ -702,15 +696,15 @@ pub fn needs_escape(c: char) -> bool {
 /// like `"prod"`. It escapes the spaces other than U+0020, and the
 /// characters that fonts draw as a blank, U+2800 and U+1D159, which bash
 /// reads as part of a word: `true<U+00A0>#; curl x | sh` looks like a
-/// comment, and runs curl. It escapes the format characters that join the
-/// next character, such as U+070F, U+2D7F and the regional indicators: a
-/// terminal may count their columns otherwise than ratatui, and the text
-/// after them would shift. It escapes the characters that a terminal
-/// draws 2 columns wide by default, where ratatui counts 1, since the text
-/// after them would cover the end of the line: U+3248 to U+324F, the
-/// circled numbers on a black square, which glibc and tmux draw wide, and
-/// the 9 that tmux forces wide, such as U+261D. It escapes
-/// "␣" and "⇥", which would pass for the marks of a space and a tab. Prose
+/// comment, and runs curl. It escapes the characters that join the next
+/// character, such as U+070F, and others such as U+2D7F and the regional
+/// indicators: a terminal may count their columns otherwise than ratatui,
+/// and the text after them would shift. It escapes the characters that a
+/// terminal draws 2 columns wide by default, where ratatui counts 1, since
+/// the text after them would cover the end of the line: U+3248 to U+324F,
+/// the circled numbers on a black square, which glibc and tmux draw wide,
+/// and the 9 that tmux forces wide, such as U+261D. It escapes "␣" and
+/// "⇥", which would pass for the marks of a space and a tab. Prose
 /// keeps them all, for emoji, scripts and no-break spaces.
 pub fn needs_escape_in_code(c: char) -> bool {
     needs_escape(c)
@@ -889,7 +883,6 @@ fn hides(grapheme: &str) -> bool {
     grapheme.chars().nth(1).is_some() || width(grapheme) == 0
 }
 
-/// Whether `text` after a space makes one grapheme with it.
 fn joins_a_space(text: &str) -> bool {
     let span = Span::raw(format!(" {text}"));
     span.styled_graphemes(Style::new()).count() == 1
@@ -935,8 +928,6 @@ pub fn code_line(spans: &[Span], hidden: &mut bool) -> Vec<Span<'static>> {
         let mut chars = grapheme.symbol.chars().peekable();
         if hides(grapheme.symbol) || (at_start && joins_a_space(grapheme.symbol)) {
             *hidden = true;
-            // The grapheme keeps its first character, if the terminal
-            // draws it alone, and shows the others escaped.
             let drawn_alone = |c: &char| {
                 let c = c.encode_utf8(&mut [0; 4]).to_string();
                 !hides(&c) && !(at_start && joins_a_space(&c))
@@ -957,15 +948,15 @@ pub fn code_line(spans: &[Span], hidden: &mut bool) -> Vec<Span<'static>> {
     out
 }
 
-/// syntect is slow on some bash. Its time grows with the bytes, and with
-/// the square of the length of each line: 32 KB of heredoc takes about
-/// 1 s, 32 lines of 1,000 spaces 10 s, and a line of 80 KB 10 s. So a
-/// block is highlighted only if its lines are at most `HIGHLIGHT_LINE`
-/// bytes long, and if the highlighted code of the file stays within
-/// `HIGHLIGHT_BYTES` and `HIGHLIGHT_SQUARES`, the sum of the squares of
-/// its line lengths. On 2026-11-09, the runbooks of ~/dev/claude/runbooks
-/// had at most 16 KB of bash, lines of at most 386 bytes, and a sum of
-/// squares of at most 2,000,000.
+/// syntect 5.3.0 is slow on some bash. Its time grows with the bytes, and
+/// with the square of the length of each line: 32 KB of heredoc takes
+/// about 1 s, 32 lines of 1,000 spaces 10 s, and a line of 80 KB 10 s. So a
+/// block is highlighted only if its lines are at most `HIGHLIGHT_LINE` bytes
+/// long, and if the highlighted code of the file stays within
+/// `HIGHLIGHT_BYTES` and `HIGHLIGHT_SQUARES`, the sum of the squares of its
+/// line lengths. On 2026-11-09, the runbooks of ~/dev/claude/runbooks had
+/// at most 16 KB of bash, lines of at most 386 bytes, and a sum of squares
+/// of at most 2,000,000.
 const HIGHLIGHT_LINE: usize = 1_000;
 const HIGHLIGHT_BYTES: usize = 32 * 1024;
 const HIGHLIGHT_SQUARES: usize = 4_000_000;
@@ -998,9 +989,9 @@ static SYNTAXES: LazyLock<SyntaxSet> = LazyLock::new(SyntaxSet::load_defaults_ne
 /// The style of each kind of bash token, in the 16 terminal colors.
 static SCOPE_STYLES: LazyLock<Vec<(Scope, Style)>> = LazyLock::new(|| {
     [
-        // Not dim: the grammar works line by line, and marks as a comment
-        // code that bash runs, such as "#; curl x | sh" after a line that
-        // ends with "\". Dim code would look inert.
+        // Not dim: the Bash grammar of syntect 5.3.0 works line by line, and
+        // marks as a comment code that bash runs, such as "#; curl x | sh"
+        // after a line that ends with "\". Dim code would look inert.
         ("comment", Style::new().add_modifier(Modifier::ITALIC)),
         ("string.quoted", Style::new().fg(Color::Green)),
         ("keyword.control", Style::new().fg(Color::Magenta)),
@@ -1036,7 +1027,6 @@ fn highlight(code: &str, hidden: &mut bool) -> Vec<Vec<Span<'static>>> {
         for (region, op) in ScopeRegionIterator::new(&ops, line) {
             // An invalid operation only loses the colors of the rest.
             let _ = stack.apply(op);
-            // The newline is not part of the text of the line.
             let text = region.trim_end_matches('\n').to_string();
             spans.push(Span::styled(text, scope_style(&stack)));
         }
@@ -1054,9 +1044,10 @@ fn scope_style(stack: &ScopeStack) -> Style {
     Style::new()
 }
 
-/// Warnings never quote free text of the info string: the info line wraps,
-/// and a quoted value with spaces could make a wrapped line that passes
-/// for code. Keys hold no space, and show at most 20 characters.
+/// Warnings never quote free text of the info string, except one
+/// character: the info line wraps, and a quoted value with spaces could
+/// make a wrapped line that passes for code. Keys hold no space, and show
+/// at most 20 characters.
 const INVALID_NAME: &str = "invalid name: use [A-Za-z0-9_.-]";
 
 fn short(key: &str) -> String {
@@ -1178,7 +1169,6 @@ mod tests {
     use super::*;
     use proptest::prelude::*;
 
-    /// The blocks of the new `markdown` matched against those of `old`.
     fn matches(old: &str, new: &str) -> Vec<Option<usize>> {
         match_blocks(&parse(old).blocks, &parse(new).blocks)
     }
@@ -1477,7 +1467,8 @@ mod tests {
         assert_eq!(shown("abc\t\tx"), format!("abc{}x", " ".repeat(13)));
     }
 
-    /// The warnings of a bash block of `code`.
+    /// The warnings of a bash block of `code`, which must end with a line
+    /// feed.
     fn warnings(code: &str) -> Vec<String> {
         parse(&format!("```bash\n{code}```\n"))
             .blocks
@@ -1805,9 +1796,9 @@ mod tests {
             let doc = parse(&format!("```bash\n{code}\n```\n"));
             for item in &doc.items {
                 let Kind::Code { lines, block: Some(i) } = &item.kind else { continue };
-                // Without the spaces after a tab mark: syntect can split a
-                // grapheme in two spans, and each part then takes its own
-                // width, so the tab stops can differ.
+                // Without the spaces after a tab mark: syntect 5.3.0 can
+                // split a grapheme in two spans, and each part then takes its
+                // own width, so the tab stops can differ.
                 let text = |spans: &[Span]| -> String {
                     let text: String = spans.iter().map(|s| s.content.as_ref()).collect();
                     let mut parts = text.split(TAB_MARK);

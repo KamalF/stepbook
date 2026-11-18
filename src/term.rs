@@ -18,7 +18,6 @@ const SCROLLBACK: usize = 5_000;
 /// The rows of output under a block (spec 6.3).
 const OUTPUT_ROWS: usize = 15;
 
-/// What the terminal of a run shows after vt100 failed on its output.
 const LOST: &[u8] = b"[stepbook: the terminal of this run failed, and lost the output above]\r\n";
 
 thread_local! {
@@ -44,11 +43,11 @@ pub struct Terminal {
     last_screen: Option<Vec<Line<'static>>>,
 }
 
-/// The terminal of a run, between the reader thread of the run, which
-/// feeds it, and the main thread, which shows it. vt100 can take seconds on
-/// crafted output, such as a repeat of a character 65,535 times or a
-/// scroll of the whole screen: only the run that prints it waits, since
-/// the main thread only tries the lock.
+/// The terminal of a run, between the reader thread of the run, which feeds
+/// it, and the main thread, which shows it. vt100 0.18.1 can take seconds on
+/// crafted output, such as a repeat of a character 65,535 times or a scroll
+/// of the whole screen: only the run that prints it waits, since the main
+/// thread only tries the lock.
 pub struct Shared {
     terminal: Mutex<Terminal>,
     /// The size for the terminal, as columns << 16 | rows. The thread that
@@ -63,12 +62,9 @@ pub struct Shared {
     /// changes what the arrows send. The reader sets it after each read, so
     /// that a key never waits for the terminal.
     application_cursor: AtomicBool,
-    /// Whether the program turned on bracketed paste mode, which marks the
-    /// start and the end of a paste.
     bracketed_paste: AtomicBool,
 }
 
-/// Rows of a terminal, as lines of the view.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rows {
     pub lines: Vec<Line<'static>>,
@@ -82,7 +78,6 @@ pub struct Rows {
     pub ended_on_alternate: bool,
 }
 
-/// What the main thread takes of a terminal.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Want {
     /// The last rows, under the block. With `cursor`, they go down to the
@@ -218,15 +213,15 @@ impl vt100::Callbacks for Answers {
         match (c, params) {
             ('n', [[5]]) => self.0.extend(b"\x1b[0n"),
             ('n', [[6]]) => {
-                // After a character in the last column, vt100 keeps the
-                // cursor past it, until the next character wraps.
+                // After a character in the last column, vt100 0.18.1 keeps
+                // the cursor past it, until the next character wraps.
                 let (row, column) = screen.cursor_position();
                 let column = column.min(screen.size().1.get() - 1);
                 let answer = format!("\x1b[{};{}R", row + 1, column + 1);
                 self.0.extend(answer.as_bytes());
             }
-            // A VT100 with the advanced video option, as tmux and screen
-            // answer.
+            // A VT100 with the advanced video option, as screen answers, and
+            // tmux built without sixel.
             ('c', [] | [[0]]) => self.0.extend(b"\x1b[?1;2c"),
             _ => {}
         }
@@ -243,10 +238,10 @@ impl Terminal {
         }
     }
 
-    /// Runs `f` on the parser. vt100 can panic on the output of a run: 18
-    /// crafted bytes made it unwrap a None. The panic must not end stepbook
-    /// and the other runs: the terminal starts again, with a row that says
-    /// so, and `f` gives nothing.
+    /// Runs `f` on the parser. vt100 can panic on the output of a run:
+    /// crafted bytes made 0.18.1 unwrap a None. The panic must not end
+    /// stepbook and the other runs: the terminal starts again, with a row
+    /// that says so, and `f` gives nothing.
     fn guarded<T>(&mut self, f: impl FnOnce(&mut Parser) -> T) -> Option<T> {
         IN_VT100.set(true);
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| f(&mut self.parser)));
@@ -302,9 +297,10 @@ impl Terminal {
     }
 
     /// Leaves the alternate screen at the end of a run, as `reset` would:
-    /// vt100 gives no access to the main screen and its scrollback while
-    /// the alternate screen shows. The last screen of the program, where a
-    /// crash may have left its message, comes after them in `Want::All`.
+    /// vt100 0.18.1 gives no access to the main screen and its scrollback
+    /// while the alternate screen shows. The last screen of the program,
+    /// where a crash may have left its message, comes after them in
+    /// `Want::All`.
     pub fn end(&mut self) {
         if !self.parser.screen().alternate_screen() {
             return;
@@ -330,8 +326,6 @@ fn screen_rows(screen: &vt100::Screen) -> Lines {
     (lines.collect(), cursor)
 }
 
-/// The lines of the scrollback, then the rows of the screen, without the
-/// blank rows at the end.
 fn all_rows(screen: &mut vt100::Screen) -> Vec<Line<'static>> {
     let mut lines = scrollback(screen, screen.scrollback_len());
     lines.extend(screen_rows(screen).0);
@@ -341,21 +335,19 @@ fn all_rows(screen: &mut vt100::Screen) -> Vec<Line<'static>> {
     lines
 }
 
-/// The last `count` lines of the scrollback, at most its length. With an
-/// offset of n, row r of the screen shows the n-th line above the screen,
-/// plus r. Each change of the offset walks the scrollback, so the offset
-/// moves by a screen at a time: 5,000 changes took 50 ms.
+/// The last `count` lines of the scrollback, or all of them if it holds
+/// fewer. With an offset of n, the first row of the screen shows the n-th
+/// line above the screen.
 fn scrollback(screen: &mut vt100::Screen, count: usize) -> Vec<Line<'static>> {
-    let (rows, columns) = screen.size();
-    let (rows, columns) = (usize::from(rows.get()), columns.get());
-    let mut lines = Vec::with_capacity(count);
-    let mut offset = count;
-    while offset > 0 {
+    // vt100 0.18.1 clamps the offset: past the length, the first line would
+    // repeat.
+    let count = count.min(screen.scrollback_len());
+    let columns = screen.size().1.get();
+    let lines = (1..=count).rev().map(|offset| {
         screen.set_scrollback(offset);
-        let shown = rows.min(offset);
-        lines.extend((0..shown).map(|row| line(screen, row as u16, columns)));
-        offset -= shown;
-    }
+        line(screen, 0, columns)
+    });
+    let lines = lines.collect();
     screen.set_scrollback(0);
     lines
 }
@@ -376,14 +368,13 @@ fn last_rows(screen: &mut vt100::Screen, cursor: bool) -> Lines {
         end = end.max(cursor_row + 1);
     }
     let start = end.saturating_sub(OUTPUT_ROWS as u16);
-    // The cursor can be above the last rows, under the text that ends them.
+    // The cursor can be above the last rows, when text far under it ends
+    // them: it then does not show.
     let shown = cursor && !screen.hide_cursor() && cursor_row >= start;
     let mut cursor = shown.then(|| (usize::from(cursor_row - start), cursor_column));
     let mut lines: Vec<_> = (start..end).map(|row| line(screen, row, columns)).collect();
     if lines.len() < OUTPUT_ROWS {
-        // The scrollback shows above the screen.
-        let above = (OUTPUT_ROWS - lines.len()).min(screen.scrollback_len());
-        let mut all = scrollback(screen, above);
+        let mut all = scrollback(screen, OUTPUT_ROWS - lines.len());
         if let Some((row, _)) = &mut cursor {
             *row += all.len();
         }
@@ -461,14 +452,11 @@ pub fn key_bytes(key: &KeyEvent, application_cursor: bool) -> Vec<u8> {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let modifiers = 1 + u8::from(shift) + 2 * u8::from(alt) + 4 * u8::from(ctrl);
-    // A key that sends a letter after ESC [ or ESC O: ESC [ 1 ; m X with
-    // modifiers.
     let letter = |letter: char, prefix: &str| match modifiers {
         1 => format!("\x1b{prefix}{letter}"),
         m => format!("\x1b[1;{m}{letter}"),
     };
     let cursor = if application_cursor { "O" } else { "[" };
-    // A key that sends ESC [ n ~, with ESC [ n ; m ~ for modifiers.
     let tilde = |n: u8| match modifiers {
         1 => format!("\x1b[{n}~"),
         m => format!("\x1b[{n};{m}~"),
@@ -505,7 +493,8 @@ pub fn key_bytes(key: &KeyEvent, application_cursor: bool) -> Vec<u8> {
         _ => return Vec::new(),
     };
     let mut bytes = text.into_bytes();
-    // Alt before a key of one byte sends ESC first, as for a character.
+    // A key of several bytes that takes a parameter gives alt there. A key
+    // of one byte gets ESC first, as a character does.
     if alt && bytes.len() == 1 {
         bytes.insert(0, 0x1b);
     }
@@ -748,8 +737,8 @@ mod tests {
         // After the last column, the cursor stays in it.
         let mut narrow = Terminal::new(10, 3);
         assert_eq!(narrow.process(b"0123456789\x1b[6n"), b"\x1b[1;10R");
-        // Other queries get no answer: DA2, DECXCPR, the colors, the
-        // window title.
+        // Other queries get no answer: DA2, DECXCPR, DA with a parameter
+        // other than 0, DSR 7, the colors, the window title.
         let other = terminal.process(b"\x1b[>c\x1b[?6n\x1b[1c\x1b[7n\x1b]11;?\x07\x1b[21t");
         assert_eq!(other, b"");
     }
@@ -951,7 +940,6 @@ mod tests {
         drop(held);
     }
 
-    /// The length of the window title that vt100 gets.
     #[derive(Default)]
     struct TitleLength(usize);
 
@@ -976,7 +964,7 @@ mod tests {
 
     #[test]
     fn a_failure_of_vt100_loses_the_output_and_ends_nothing() {
-        // vt100 0.18.1 unwraps a None on these 18 bytes, at any size.
+        // vt100 0.18.1 unwraps a None on these bytes, at any size.
         let mut terminal = after(b"a\r\n", 80, 24);
         terminal.process(b"\x1b[999;999H8\xef\xb8\x8f\x1b[A\x1b[999Gx");
         terminal.process(b"b");
@@ -984,7 +972,6 @@ mod tests {
         assert_eq!(rows(&mut terminal, false), format!("{lost}\nb"));
     }
 
-    /// A read of a run, or a resize of its PTY.
     #[derive(Clone, Debug)]
     enum Step {
         Read(Vec<u8>),

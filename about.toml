@@ -1,6 +1,6 @@
 # cargo-about: the licence texts of the Rust crates in the release binaries.
-# Where a crate offers a choice, the first accepted licence wins. Any other
-# licence stops the task.
+# Where a crate offers a choice, the first licence of this list that it
+# offers wins. Any other licence stops the task.
 accepted = ["MIT", "Apache-2.0", "Unicode-3.0", "Zlib"]
 # Every target of the release, as in dist-workspace.toml, so that each archive
 # gets the same file.

@@ -9,7 +9,6 @@ use std::time::{Duration, Instant, SystemTime};
 
 use crossbeam_channel::Sender;
 
-/// The line that stands for the output of a run on the alternate screen.
 const FULL_SCREEN: &str = "[full-screen program output not logged]\n";
 
 /// The starts of the lines that stepbook writes in the log.
@@ -31,9 +30,7 @@ const MAX_HELD: usize = 1024 * 1024;
 /// memory stays bounded (spec 13).
 const MESSAGES: usize = 64;
 
-/// What the main thread sends to the thread of the log.
 pub enum Message {
-    /// Run `id`, of the block named `name`, started at `time`.
     Start {
         id: u64,
         name: String,
@@ -43,7 +40,6 @@ pub enum Message {
         id: u64,
         bytes: Vec<u8>,
     },
-    /// Run `id` ended with exit code `rc` at `time`.
     End {
         id: u64,
         rc: i32,
@@ -122,8 +118,8 @@ fn due(reported: &mut Option<Instant>, now: Instant) -> bool {
 }
 
 /// Waits up to `wait` for the end of the thread of the log, and returns
-/// whether it ended. A write that blocks, on a FIFO or a hung mount, must
-/// not keep stepbook from its end (spec 11).
+/// whether it ended. A write that blocks, on a hung mount, must not keep
+/// stepbook from its end (spec 11).
 pub fn wait(thread: &JoinHandle<()>, wait: Duration) -> bool {
     let deadline = Instant::now() + wait;
     while !thread.is_finished() {
@@ -137,8 +133,9 @@ pub fn wait(thread: &JoinHandle<()>, wait: Duration) -> bool {
 
 /// The sections of the runs, as the log holds them (spec 12.1). One run
 /// writes to the log at a time, so that lines of two runs never mix: the
-/// others hold their text, and write their whole section when they end
-/// (spec 12.2).
+/// others hold their text, and write it when they end, or when they hold
+/// MAX_HELD. When the run that writes ends, the run that has waited longest
+/// writes what it holds (spec 12.2).
 struct Sections<W> {
     out: W,
     /// The sections of the runs that have not ended, by ID. The IDs grow in
@@ -153,7 +150,6 @@ struct Sections<W> {
 struct Section {
     name: String,
     cleaner: Cleaner,
-    /// The text that waits for the log.
     held: String,
     /// The log has a part of the section: the next part follows a
     /// CONTINUE line.
@@ -257,10 +253,12 @@ fn clock(time: SystemTime) -> String {
 
 /// Turns the output of a run into the lines of its log (spec 12.1): no
 /// escape sequences, LF for CRLF, and U+FFFD for bytes that are not
-/// UTF-8. A carriage return alone drops the partial line, as a terminal
-/// overwrites it: a progress bar logs only its last state. The parser
-/// keeps its state from one read to the next, so a character or a
-/// sequence split across two reads comes out whole.
+/// UTF-8, except a lone byte from 0x80 to 0x9F: vte 0.15.0 takes it for a
+/// C1 control character, which the log drops. A carriage return alone
+/// drops the partial line, as a terminal overwrites it: a progress bar
+/// logs only its last state. The parser keeps its state from one read to
+/// the next, so a character or a sequence split across two reads comes out
+/// whole.
 #[derive(Default)]
 pub struct Cleaner {
     parser: vte::Parser,
@@ -271,7 +269,6 @@ pub struct Cleaner {
 struct Lines {
     /// The lines that ended, each with its line feed.
     done: String,
-    /// The line that has not ended yet.
     line: String,
     /// A carriage return came last: the next character starts the line
     /// again, and a line feed ends it as it is.
@@ -297,8 +294,6 @@ impl Lines {
         self.line.clear();
     }
 
-    /// Ends the line that has not ended, unless a carriage return dropped
-    /// it.
     fn flush(&mut self) {
         match !std::mem::take(&mut self.carriage_return) && !self.line.is_empty() {
             true => self.end_line(),
@@ -309,8 +304,8 @@ impl Lines {
 
 impl vte::Perform for Lines {
     fn print(&mut self, c: char) {
-        // A C1 control character encoded in UTF-8, which some terminals
-        // still act on.
+        // vte 0.15.0 prints DEL, and a C1 control character whose 2 bytes
+        // of UTF-8 come in two reads. Some terminals still act on C1.
         if self.alternate || c.is_control() && c != '\t' {
             return;
         }
@@ -331,8 +326,6 @@ impl vte::Perform for Lines {
             b'\n' => self.end_line(),
             b'\r' => self.carriage_return = true,
             b'\t' => self.print('\t'),
-            // Other control characters move the cursor or ring the bell:
-            // the log has no use for them.
             _ => {}
         }
     }
@@ -405,7 +398,6 @@ mod tests {
     fn crlf_is_a_line_feed_and_a_carriage_return_alone_drops_the_line() {
         assert_eq!(clean(&[b"a\r\nb\r\n"]), "a\nb\n");
         assert_eq!(clean(&[b" 10%\r 50%\r100%\n"]), "100%\n");
-        // Across two reads.
         assert_eq!(clean(&[b"a\r", b"\nb\n"]), "a\nb\n");
         assert_eq!(clean(&[b"old\r", b"new\n"]), "new\n");
     }
@@ -675,7 +667,6 @@ b3
 
     #[test]
     fn writes_that_fail_are_reported_at_most_once_every_ten_seconds() {
-        /// A disk that stays full.
         struct Full;
         impl Write for Full {
             fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
@@ -687,19 +678,17 @@ b3
         }
         let (reports, received) = crossbeam_channel::unbounded();
         let (sender, thread) = spawn(Full, move |error| reports.send(error.to_string()).unwrap());
+        // Each run ends before the next starts, so that each has the log,
+        // and each of its writes fails: a run that waits only holds.
         for id in 1..=3 {
             let name = format!("r{id}");
-            sender
-                .send(Message::Start {
-                    id,
-                    name,
-                    time: time(id),
-                })
-                .unwrap();
+            let time = time(id);
+            sender.send(Message::Start { id, name, time }).unwrap();
+            sender.send(Message::End { id, rc: 0, time }).unwrap();
         }
         drop(sender);
         thread.join().unwrap();
-        // Three writes fail within 10 s: one report.
+        // Six writes fail within 10 s: one report.
         assert_eq!(received.try_iter().collect::<Vec<_>>(), ["disk full"]);
         // A disk that stays full shows again 10 s later.
         let (start, mut reported) = (Instant::now(), None);
@@ -815,7 +804,7 @@ b3
         assert!(!target.exists());
         std::fs::write(&target, "key\n").unwrap();
         assert_eq!(error(&link), "it is a link");
-        // A hard link to another file of the user.
+        assert_eq!(std::fs::read_to_string(&target).unwrap(), "key\n");
         let other = tmp.path().join("bashrc");
         std::fs::write(&other, "alias\n").unwrap();
         let hard = tmp.path().join("hard.log");
@@ -850,6 +839,9 @@ b3
     }
 
     proptest! {
+        // escape_sequences_vanish and
+        // tabs_stay_and_other_control_characters_vanish pin known
+        // sequences; this one tries any bytes, cut into any reads.
         #[test]
         fn the_log_holds_no_control_character_but_tab_and_line_feed(
             reads in proptest::collection::vec(proptest::collection::vec(any::<u8>(), 0..64), 0..8),
@@ -861,6 +853,9 @@ b3
             prop_assert!(text.is_empty() || text.ends_with('\n'));
         }
 
+        // a_line_of_output_cannot_pass_for_a_line_of_stepbook pins the
+        // forms of a marker; this one mixes the markers with the carriage
+        // returns, line feeds and escapes that could rebuild one.
         #[test]
         fn no_line_of_output_starts_as_a_line_of_stepbook(
             pieces in proptest::collection::vec(
@@ -898,8 +893,9 @@ b3
         }
     }
 
-    /// A piece of output that can change the screen: a CSI sequence of a
-    /// mode, an escape sequence, or text.
+    /// A piece of output that can change the screen, or nearly: the log
+    /// must treat each as vt100 0.18.1 does. vt100 ignores mode 1047, and
+    /// ESC c resets the screen, while ESC ( c and ESC # c do not.
     fn piece() -> impl Strategy<Value = Vec<u8>> {
         let select = |items: &[&'static str]| prop::sample::select(items.to_vec());
         let params =

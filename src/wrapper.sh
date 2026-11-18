@@ -9,7 +9,9 @@
 #
 # bash runs the EXIT trap after the last line, after exit, after a failure
 # under set -e, and on SIGINT, SIGTERM and SIGHUP, and the trap keeps the
-# exit status. The names of the wrapper start with __stepbook_.
+# exit status. The names of the wrapper start with __stepbook_, except the
+# functions trap and exit, which take the place of the builtins. The
+# behaviours of bash that the comments state hold in bash 5.3.
 __stepbook_script=$1
 __stepbook_state=$2
 __stepbook_workspace=${2%/*}
@@ -151,8 +153,10 @@ __stepbook_drain() {
 # the group of the wrapper, background jobs included. So the wrapper hands
 # the PTY to a group that is gone by then: a bash with job control takes it
 # for a group of its own, and dies before it can give it back. Only while
-# the group of the wrapper has the PTY: otherwise that bash would stop the
-# group with SIGTTIN, to wait for its turn.
+# the group of the wrapper has the PTY: otherwise bash 5.3 finds no job
+# control, and prints an error into the output of the run. It does not
+# wait for its turn: the group of the wrapper is orphaned, so the kernel
+# discards the SIGTTIN that would stop it.
 __stepbook_keep_jobs() {
     local __stepbook_stat
     read -r __stepbook_stat <"/proc/$BASHPID/stat" || return 0

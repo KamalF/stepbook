@@ -102,7 +102,6 @@ impl Workspace {
         )))
     }
 
-    /// The path of the workspace in `parent`, with the suffix `n`.
     fn dir_in(parent: &Path, n: u32) -> PathBuf {
         let pid = std::process::id();
         match n {
@@ -293,7 +292,6 @@ pub struct Session {
     next_id: u64,
 }
 
-/// Why a run did not start.
 #[derive(Debug, PartialEq)]
 pub enum StartError {
     /// The session directory no longer exists. The session went back to the
@@ -332,7 +330,6 @@ pub struct Run {
     master: File,
     /// The bytes for the writer thread of the run.
     input: Sender<Vec<u8>>,
-    /// The state that the run started with.
     start: State,
     script: PathBuf,
     state_file: PathBuf,
@@ -351,7 +348,7 @@ pub enum Status {
 }
 
 impl Status {
-    /// The exit code, as a shell reports it: 128 + N for signal N.
+    /// The exit code, as a shell reports it.
     pub fn rc(self) -> i32 {
         match self {
             Status::Code(code) => code,
@@ -375,10 +372,11 @@ const INPUT_MESSAGES: usize = 256;
 /// (MAX_ARG_STRLEN) fails the start of every run.
 const LARGE: usize = 4096;
 
-/// The wrappers not reaped yet, which lead the sessions of the runs: those
-/// that have not ended, and those whose background jobs go on. Children of
-/// stepbook that came with an exec, such as a process that a launcher
-/// started before "exec stepbook", are not runs.
+/// The wrappers that lead the sessions of the runs: those that have not
+/// ended, and those whose background jobs go on. None is reaped yet, so no
+/// other session can have its pid. Children of stepbook that came with an
+/// exec, such as a process that a launcher started before "exec stepbook",
+/// are not runs.
 static RUNS: Mutex<Vec<Pid>> = Mutex::new(Vec::new());
 
 impl Session {
@@ -499,8 +497,6 @@ impl Session {
         })
     }
 
-    /// Spawns the wrapper with the files of a run, on the run's side of its
-    /// PTY.
     fn spawn(
         &self,
         run_files: &[&PathBuf; 3],
@@ -601,15 +597,12 @@ fn winsize(columns: u16, rows: u16) -> Winsize {
     }
 }
 
-/// A process, from /proc.
 struct Process {
     pid: Pid,
     session: i32,
-    /// Ended, but not yet reaped by its parent.
     zombie: bool,
 }
 
-/// The processes of the system.
 fn processes() -> Vec<Process> {
     let Ok(entries) = std::fs::read_dir("/proc") else {
         return Vec::new();
@@ -619,7 +612,6 @@ fn processes() -> Vec<Process> {
     pids.filter_map(process).collect()
 }
 
-/// A process from its /proc/PID/stat.
 fn parse_stat(pid: i32, stat: &[u8]) -> Option<Process> {
     // The name of the program, in parentheses, can hold any byte, and the
     // kernel cuts it at 15 bytes, inside a UTF-8 character too. The fields
@@ -717,7 +709,8 @@ fn read_run(
     let exit = rustix::process::pidfd_open(Pid::from_child(&child), PidfdFlags::empty()).ok();
     let mut buffer = vec![0; READ_SIZE];
     // The reads after the exit: a job that writes without a pause must
-    // not hold the end back.
+    // not hold the end back. A full PTY held about 18 KB on Linux 7.2: 16
+    // reads drain it only if READ_SIZE is over 1.2 KB.
     let mut left = None;
     while left != Some(0) {
         let now = Timespec::default();
@@ -749,6 +742,8 @@ fn read_run(
                     return;
                 }
             }
+            // A guard: the handlers of signal-hook-registry 1.4.8 have
+            // SA_RESTART, so a read does not fail with EINTR.
             Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
             Err(_) => break,
         }
@@ -775,10 +770,12 @@ fn read_run(
     screen.end();
     let _ = sender.send(Event::Exit(status));
     wait_for_jobs(&reader, pid, &mut buffer);
-    let _ = child.wait();
+    // Before the reap: once reaped, the pid is free for another session,
+    // which `end_runs` would then end.
     RUNS.lock()
         .unwrap_or_else(PoisonError::into_inner)
         .retain(|&run| run != pid);
+    let _ = child.wait();
 }
 
 /// Writes the input of a run to its PTY, until the run ends. A thread of
@@ -792,7 +789,6 @@ fn write_run(master: File, input: Receiver<Vec<u8>>) {
     }
 }
 
-/// How often `wait_for_jobs` checks the session of a run.
 const JOB_CHECK: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// Waits while the background jobs of a run go on: they outlive their
@@ -823,7 +819,8 @@ fn wait_for_jobs(reader: &File, wrapper: Pid, buffer: &mut [u8]) {
             match rustix::event::poll(&mut fds, Some(&timeout)) {
                 Ok(0) | Err(rustix::io::Errno::INTR) => {}
                 // Once the jobs close the PTY, a read fails with EIO. It never
-                // fails with EINTR: the signal handlers have SA_RESTART.
+                // fails with EINTR: the signal handlers of
+                // signal-hook-registry 1.4.8 have SA_RESTART.
                 Ok(_) => match (&*reader).read(buffer) {
                     Ok(0) | Err(_) => open = false,
                     Ok(_) => {}
@@ -1537,9 +1534,9 @@ mod tests {
 
     #[test]
     fn the_output_of_a_process_substitution_ends_before_the_run() {
-        // The logging header of the old runbooks (spec 12.3): when the
-        // wrapper exits, the kernel sends SIGHUP to its tee. Under set -f
-        // too, and with a handler that ends with exit.
+        // The logging header of the old runbooks (spec 12.3): the run ends
+        // when the wrapper exits, and the output of its tee after that is
+        // lost. Under set -f too, and with a handler that ends with exit.
         let handlers = [
             "trap 'echo \"=== END b rc=$?\"' EXIT",
             "set -f\ntrap 'echo \"=== END b rc=$?\"' EXIT",
@@ -1707,7 +1704,6 @@ mod tests {
         );
     }
 
-    /// Waits for `text` in the output of a run, and returns the output.
     fn wait_for(run: &Run, text: &str) -> String {
         let mut output = Vec::new();
         while !String::from_utf8_lossy(&output).contains(text) {
@@ -1825,9 +1821,9 @@ mod tests {
     #[test]
     fn a_background_job_outlives_its_run_until_stepbook_ends() {
         // A child of the wrapper, and a job that its parent left. Both are
-        // in the process group of the wrapper, which the kernel hangs up
-        // when the wrapper exits. The job writes after the run, more than
-        // the buffer of a PTY holds.
+        // in the process group of the wrapper, which the kernel would hang
+        // up when the wrapper exits, without its hand-off of the PTY. The
+        // job writes after the run, more than the buffer of a PTY holds.
         let job = "(sleep 1.2; seq 1 200000; echo $? > \"$PWD/seq\"; sleep 30)";
         for code in [format!("{job} &\n"), format!("({job} &)\n")] {
             let tmp = tempfile::tempdir().unwrap();
@@ -1844,7 +1840,7 @@ mod tests {
             assert!(RUNS.lock().unwrap().contains(&run.pid), "{code}");
             end_sessions(&[run.pid.as_raw_pid()]);
             assert_eq!(session_of(&run), [], "{code}");
-            // The reader reaps the wrapper once its jobs end.
+            // The reader drops the run from RUNS once its jobs end.
             while RUNS.lock().unwrap().contains(&run.pid) {
                 assert!(std::time::Instant::now() < deadline, "{code}");
                 std::thread::sleep(std::time::Duration::from_millis(20));
@@ -1853,11 +1849,12 @@ mod tests {
     }
 
     #[test]
-    fn a_run_ends_when_the_terminal_is_in_the_hands_of_another_group() {
+    fn the_wrapper_hands_off_the_terminal_only_while_its_group_has_it() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
-        // A bash with job control that dies leaves the PTY to its group: the
-        // wrapper must not wait for its turn.
+        // A bash with job control that dies leaves the PTY to its group,
+        // which is gone. The wrapper must skip its own hand-off: its bash
+        // would find no job control, and say so in the output.
         let code = "(exec -c /proc/self/exe -m -c 'kill -KILL $$') 2>/dev/tty\n\
             sleep 30 &\necho started\n";
         let run = session.start(code, "check", 80, 24).unwrap();
@@ -1900,8 +1897,6 @@ mod tests {
         }
     }
 
-    /// The processes of a run, without the zombies that wait for their
-    /// parent.
     #[test]
     fn a_job_that_writes_without_a_pause_never_holds_the_end_of_its_run() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1963,6 +1958,8 @@ mod tests {
         }
     }
 
+    /// The processes of a run, without the zombies that wait for their
+    /// parent.
     fn session_of(run: &Run) -> Vec<Pid> {
         let session = |p: &Process| p.session == run.pid.as_raw_pid() && !p.zombie;
         processes()
