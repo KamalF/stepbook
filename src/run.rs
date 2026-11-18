@@ -775,10 +775,12 @@ fn read_run(
     screen.end();
     let _ = sender.send(Event::Exit(status));
     wait_for_jobs(&reader, pid, &mut buffer);
-    let _ = child.wait();
+    // Before the reap: once reaped, the pid is free for another session,
+    // which `end_runs` would then end.
     RUNS.lock()
         .unwrap_or_else(PoisonError::into_inner)
         .retain(|&run| run != pid);
+    let _ = child.wait();
 }
 
 /// Writes the input of a run to its PTY, until the run ends. A thread of
@@ -1844,7 +1846,7 @@ mod tests {
             assert!(RUNS.lock().unwrap().contains(&run.pid), "{code}");
             end_sessions(&[run.pid.as_raw_pid()]);
             assert_eq!(session_of(&run), [], "{code}");
-            // The reader reaps the wrapper once its jobs end.
+            // The reader drops the run from RUNS once its jobs end.
             while RUNS.lock().unwrap().contains(&run.pid) {
                 assert!(std::time::Instant::now() < deadline, "{code}");
                 std::thread::sleep(std::time::Duration::from_millis(20));
