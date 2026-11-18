@@ -109,8 +109,9 @@ file, from 1. Other code blocks show dimmed and do not run.
   echo of the terminal. While a block waits at such a prompt, it shows
   `waits for input, press i`, and stepbook rings the bell of your terminal
   once. Your terminal decides what the bell does: by default, Ghostty marks
-  its window as urgent. A prompt that keeps the echo on, such as `read -p`,
-  does not count.
+  its window as urgent. In a pane of [herdr](https://herdr.dev), which keeps
+  the bell to itself, stepbook also asks herdr for a toast. A prompt that
+  keeps the echo on, such as `read -p`, does not count.
 - If blocks are running, stepbook asks before it stops them and quits.
 
 ### Keys

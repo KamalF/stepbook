@@ -12,7 +12,7 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{ExitCode, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant, SystemTime};
@@ -248,6 +248,9 @@ fn open(args: &Args) -> Result<Exit, String> {
     view.background = background;
     let mut app = App::new(view, session, crossbeam_channel::tick(TICK));
     app.text = text;
+    if std::env::var_os("HERDR_PANE_ID").is_some() {
+        app.herdr = run::find_in_path("herdr", &path);
+    }
     let failed = sender.clone();
     let (log, thread) = log
         .map(|file| {
@@ -577,9 +580,12 @@ struct App {
     /// The run of a block that a reload removed has ended: the block goes
     /// at the next frame.
     reapply: bool,
-    /// A block started to wait for input: the next frame rings the bell
+    /// The labels of the blocks that started to wait for input since the
+    /// last frame: the frame rings the bell, and asks herdr for a toast
     /// (spec 6.2).
-    bell: bool,
+    alerts: Vec<String>,
+    /// The herdr program, if stepbook runs in a pane of herdr.
+    herdr: Option<PathBuf>,
 }
 
 /// A question in the footer (spec 7.4).
@@ -644,7 +650,8 @@ impl App {
             text: String::new(),
             reload_pending: Arc::default(),
             reapply: false,
-            bell: false,
+            alerts: Vec::new(),
+            herdr: None,
         }
     }
 
@@ -1396,7 +1403,7 @@ impl App {
                 self.view.set_status(i, status);
                 let waiting = run.reads_hidden_line();
                 if self.view.set_waiting(i, waiting) && waiting {
-                    self.bell = true;
+                    self.alerts.push(self.view.doc.label(i));
                 }
             }
         }
@@ -1446,9 +1453,15 @@ fn event_loop(
         terminal.swap_buffers();
         terminal.draw(|frame| app.view.draw(frame))?;
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
-        if std::mem::take(&mut app.bell) {
+        let alerts = std::mem::take(&mut app.alerts);
+        if !alerts.is_empty() {
             terminal.backend_mut().write_all(b"\x07")?;
             terminal.backend_mut().flush()?;
+        }
+        if let Some(herdr) = &app.herdr {
+            for label in &alerts {
+                toast(herdr, label);
+            }
         }
         // The events of one frame: if output starts it, those of the next
         // FRAME; if another event starts it, no other. A deadline of the app
@@ -1520,6 +1533,24 @@ fn event_loop(
             };
             frame.get_or_insert(Instant::now() + wait);
         }
+    }
+}
+
+/// Asks herdr for a toast about block `label`, which waits for input:
+/// herdr keeps the bell of a pane to itself (spec 6.2). Its output would
+/// draw over the view. A thread reaps it, so that a herdr that hangs never
+/// holds the loop.
+fn toast(herdr: &Path, label: &str) {
+    let child = std::process::Command::new(herdr)
+        .args(["notification", "show", "stepbook", "--body"])
+        .arg(format!("{label} waits for input"))
+        .args(["--sound", "request"])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn();
+    if let Ok(mut child) = child {
+        std::thread::spawn(move || child.wait());
     }
 }
 
@@ -2075,17 +2106,17 @@ mod tests {
         let mut app = app("```bash\nread -rsp 'Password: ' a\n```\n", tmp.path());
         let ring = |app: &mut App| {
             let deadline = Instant::now() + Duration::from_secs(10);
-            while !app.bell {
+            while app.alerts.is_empty() {
                 assert!(Instant::now() < deadline, "no bell");
                 std::thread::sleep(Duration::from_millis(10));
                 app.tick();
             }
-            app.bell = false;
+            assert_eq!(std::mem::take(&mut app.alerts), ["#1"]);
         };
         enter(&mut app, SIZE);
         ring(&mut app);
         app.tick();
-        assert!(!app.bell);
+        assert!(app.alerts.is_empty());
         // A run that ended while it waited does not keep a new run of its
         // block from the bell.
         app.runs().next().unwrap().1.write(b"\x03");
@@ -2093,6 +2124,35 @@ mod tests {
         enter(&mut app, SIZE);
         key(&mut app, KeyCode::Char('y'));
         ring(&mut app);
+    }
+
+    #[test]
+    fn a_toast_asks_herdr_to_show_that_the_block_waits() {
+        use std::os::unix::fs::PermissionsExt;
+        // herdr needs its server: a script takes its place, and keeps its
+        // arguments.
+        let tmp = tempfile::tempdir().unwrap();
+        let herdr = tmp.path().join("herdr");
+        let script =
+            "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$0.part\" && mv \"$0.part\" \"$0.args\"\n";
+        std::fs::write(&herdr, script).unwrap();
+        std::fs::set_permissions(&herdr, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let args = tmp.path().join("herdr.args");
+        // A fork in another test can hold the script open for a moment:
+        // its exec then fails with ETXTBSY.
+        for _ in 0..10 {
+            toast(&herdr, "login");
+            let deadline = Instant::now() + Duration::from_secs(1);
+            while !args.exists() && Instant::now() < deadline {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            if args.exists() {
+                break;
+            }
+        }
+        let expected =
+            "notification\nshow\nstepbook\n--body\nlogin waits for input\n--sound\nrequest\n";
+        assert_eq!(std::fs::read_to_string(&args).unwrap(), expected);
     }
 
     #[test]

@@ -6,7 +6,7 @@
 
 ### Added
 
-- A running block whose terminal has the echo off, as at the password prompt of sudo, ssh or `read -s`, shows `waits for input, press i`. stepbook rings the bell of the terminal once when a block starts to wait.
+- A running block whose terminal has the echo off, as at the password prompt of sudo, ssh or `read -s`, shows `waits for input, press i`. stepbook rings the bell of the terminal once when a block starts to wait. In a pane of herdr, which keeps the bell to itself, stepbook also asks herdr for a toast.
 
 ## 0.1.1 - 2026-11-18
 
