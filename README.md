@@ -105,6 +105,12 @@ file, from 1. Other code blocks show dimmed and do not run.
   program goes through a terminal screen of stepbook, never raw to your
   terminal. Some terminals can still show code differently from how bash
   reads it. Sections 6.5 and 11 of [the spec](docs/SPEC.md) say which ones.
+- A password prompt, such as that of sudo, ssh or `read -s`, turns off the
+  echo of the terminal. While a block waits at such a prompt, it shows
+  `waits for input, press i`, and stepbook rings the bell of your terminal
+  once. Your terminal decides what the bell does: by default, Ghostty marks
+  its window as urgent. A prompt that keeps the echo on, such as `read -p`,
+  does not count.
 - If blocks are running, stepbook asks before it stops them and quits.
 
 ### Keys

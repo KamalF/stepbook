@@ -16,7 +16,7 @@ use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::fs::{CWD, FileType, Mode, OFlags};
 use rustix::process::{Pid, PidfdFlags, Signal, WaitId, WaitIdOptions};
 use rustix::pty::OpenptFlags;
-use rustix::termios::Winsize;
+use rustix::termios::{LocalModes, Winsize};
 
 use crate::{io_message, term};
 
@@ -579,6 +579,16 @@ impl Run {
         for pid in session_processes(self.pid) {
             let _ = rustix::process::kill_process(pid, signal);
         }
+    }
+
+    /// Whether the terminal of the run has the echo off and the line mode
+    /// on, as at a password prompt (spec 6.2). On Linux, the settings that
+    /// the master gives are those that the program set on its side.
+    pub fn reads_hidden_line(&self) -> bool {
+        rustix::termios::tcgetattr(&self.master).is_ok_and(|termios| {
+            let modes = termios.local_modes;
+            modes.contains(LocalModes::ICANON) && !modes.contains(LocalModes::ECHO)
+        })
     }
 
     /// Sets the size of the PTY. The kernel sends SIGWINCH to the program.
@@ -1976,6 +1986,30 @@ mod tests {
         let code = "printf 'ab\\e[6n'\nIFS= read -rsd R pos\necho \" at ${pos#*[}\"\n";
         let (output, status, _) = run(&mut session, code);
         assert_eq!((&*output, status), ("ab\x1b[6n at 1;3\n", Status::Code(0)));
+    }
+
+    #[test]
+    fn only_a_line_read_with_the_echo_off_is_hidden() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code =
+            "read -rsp 'Password: ' a\nread -rp 'Name: ' b\nstty raw -echo\necho raw\nsleep 30\n";
+        let run = session.start(code, "check", 80, 24).unwrap();
+        wait_for(&run, "Password: ");
+        // bash may print the prompt before it turns the echo off.
+        let deadline = std::time::Instant::now() + WAIT;
+        while !run.reads_hidden_line() {
+            assert!(std::time::Instant::now() < deadline);
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        run.write(b"x\r");
+        wait_for(&run, "Name: ");
+        assert!(!run.reads_hidden_line());
+        run.write(b"y\r");
+        wait_for(&run, "raw");
+        assert!(!run.reads_hidden_line());
+        run.signal(Signal::KILL);
+        wait(&run);
     }
 
     #[test]

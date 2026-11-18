@@ -2,6 +2,12 @@
 
 <!-- One line per item: the release notes on GitHub keep each line break. -->
 
+## Unreleased
+
+### Added
+
+- A running block whose terminal has the echo off, as at the password prompt of sudo, ssh or `read -s`, shows `waits for input, press i`. stepbook rings the bell of the terminal once when a block starts to wait.
+
 ## 0.1.1 - 2026-11-18
 
 ### Fixed

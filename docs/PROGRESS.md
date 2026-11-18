@@ -508,6 +508,24 @@ Kamal ran the release on 2026-11-18, from `~/dev/claude/runbooks/2026-11-18-step
 - CI passed on `main` (6219b80), then the tag `v0.1.1` started the release workflow: both musl builds took under 3 minutes. The release is immutable, and its notes come from `CHANGELOG.md`.
 - Both archives pass the attestation check. `mise use -g github:KamalF/stepbook@0.1.1` installed a static, stripped binary that prints `stepbook 0.1.1`, and pins 0.1.1 in Kamal's global mise config: `minimum_release_age = 24h` hides the release from `@latest` until 2026-11-19.
 
+## Input alert
+
+On 2026-11-18, Kamal asked for a way to call the user to a block that waits for input. His choices: stepbook detects only the prompts that turn the echo off, such as those of sudo, ssh and `read -s`; the block shows `waits for input, press i`, and stepbook rings the bell of its terminal once (spec 6.2). The detection of the prompts that keep the echo on goes to spec 17.
+
+The plan, on the branch `input-alert`:
+
+1. `feat`: the check of the terminal of each running block at each tick, the line of the block, and the bell, with the spec, the README and the changelog.
+
+Checks:
+
+- Before the code, a probe in Python: on a PTY master, `tcgetattr` gives the echo off and the line mode on during `read -s`, and the echo on during `read -p`. `/proc/<pid>/syscall` shows a `read` of fd 0 at both prompts; `wchan` shows `wait_woken` at both, so it cannot tell them apart.
+- In tmux, with a `read -s` block: the line of the block shows `waits for input, press i`, and the output of stepbook holds one BEL, after the end of the synchronized update of the frame. The first try ran an old binary: the verify build of `cargo publish` had put into `target/debug` a binary built from `target/package/stepbook-0.1.1/src`, and `cargo build` took it as fresh, even after a `touch` of `src/main.rs`. `cargo clean -p stepbook` fixed it.
+
+Kamal's manual checklist:
+
+1. In herdr in Ghostty, a block that runs `sleep 5; sudo -v`: switch to another sway workspace before the prompt. The workspace of Ghostty must turn urgent. If it does not, herdr does not pass the bell of a pane to Ghostty.
+2. The look of `waits for input, press i` in your theme.
+
 ## Next
 
 v1 is done. What comes next is Kamal's choice: the ideas of spec 17, the follow-ups of milestone 5 (two of them are choices for Kamal), and the open points below.

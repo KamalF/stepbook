@@ -125,6 +125,8 @@ pub struct View {
     statuses: Vec<Option<Status>>,
     /// Whether the program of each block is on the alternate screen.
     alternates: Vec<bool>,
+    /// Whether each block waits for input (spec 6.2).
+    waiting: Vec<bool>,
     /// Whether the code of each block changed since its run (spec 10).
     changed: Vec<bool>,
     /// The width of the sidebar, which only a reload changes.
@@ -157,6 +159,7 @@ impl View {
             background: None,
             statuses: vec![None; blocks],
             alternates: vec![false; blocks],
+            waiting: vec![false; blocks],
             changed: vec![false; blocks],
             outputs: vec![Rows::default(); blocks],
             page: RefCell::default(),
@@ -361,7 +364,9 @@ impl View {
             info.get_or_insert_with(|| {
                 let status = self.statuses[i].as_ref();
                 let (alternate, changed) = (self.alternates[i], self.changed[i]);
-                let rows = info_rows(&self.doc, i, status, alternate, changed, page.widths[i]);
+                let waiting = self.waiting[i];
+                let width = page.widths[i];
+                let rows = info_rows(&self.doc, i, status, alternate, waiting, changed, width);
                 prefixed(&page.firsts[i], &page.prefixes[i], rows).collect()
             });
         }
@@ -426,6 +431,17 @@ impl View {
         self.alternates[i]
     }
 
+    /// Sets whether block `i` waits for input, and returns whether it
+    /// switched. While it runs, its info line says so (spec 6.2).
+    pub fn set_waiting(&mut self, i: usize, waiting: bool) -> bool {
+        let switched = self.waiting[i] != waiting;
+        if switched {
+            self.waiting[i] = waiting;
+            self.infos.get_mut()[i] = None;
+        }
+        switched
+    }
+
     /// Sets whether the code of block `i` changed since its run.
     pub fn set_changed(&mut self, i: usize, changed: bool) {
         if self.changed[i] != changed {
@@ -473,6 +489,7 @@ impl View {
         };
         self.statuses = moved(&mut self.statuses, matches);
         self.alternates = moved(&mut self.alternates, matches);
+        self.waiting = moved(&mut self.waiting, matches);
         self.outputs = moved(&mut self.outputs, matches);
         self.changed = changed;
         self.sidebar = sidebar_width(&doc);
@@ -985,6 +1002,7 @@ fn info_rows(
     i: usize,
     status: Option<&Status>,
     alternate: bool,
+    waiting: bool,
     changed: bool,
     width: usize,
 ) -> Vec<Line<'static>> {
@@ -996,8 +1014,12 @@ fn info_rows(
         info.push(Span::raw("  "));
         info.extend(status_spans(status));
     }
-    if alternate && matches!(status, Some(Status::Running(_))) {
+    let running = matches!(status, Some(Status::Running(_)));
+    if alternate && running {
         info.push(Span::raw("  full-screen program, press o"));
+    }
+    if waiting && running {
+        info.push(Span::raw("  waits for input, press i"));
     }
     if let Some(problem) = doc.blocks[i].problem {
         info.extend([Span::raw("  "), Span::styled(problem, ERROR)]);
@@ -2671,6 +2693,19 @@ pub(crate) mod tests {
         assert_snapshot!(info(&view), @"▐ «b:edit»  «yellow:●» running 0:03  full-screen program, press o");
         view.set_alternate(0, false);
         assert_snapshot!(info(&view), @"▐ «b:edit»  «yellow:●» running 0:03");
+    }
+
+    #[test]
+    fn the_info_line_says_when_a_running_block_waits_for_input() {
+        let mut view = view("```bash [name:login]\nsudo -v\n```\n");
+        let info = |view: &View| markup(&view.rows(60).0[..1]);
+        assert!(view.set_waiting(0, true));
+        assert!(!view.set_waiting(0, true));
+        assert_snapshot!(info(&view), @"▐ «b:login»");
+        view.set_status(0, Status::Running(Duration::from_secs(3)));
+        assert_snapshot!(info(&view), @"▐ «b:login»  «yellow:●» running 0:03  waits for input, press i");
+        assert!(view.set_waiting(0, false));
+        assert_snapshot!(info(&view), @"▐ «b:login»  «yellow:●» running 0:03");
     }
 
     #[test]

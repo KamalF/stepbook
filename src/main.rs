@@ -577,6 +577,9 @@ struct App {
     /// The run of a block that a reload removed has ended: the block goes
     /// at the next frame.
     reapply: bool,
+    /// A block started to wait for input: the next frame rings the bell
+    /// (spec 6.2).
+    bell: bool,
 }
 
 /// A question in the footer (spec 7.4).
@@ -641,6 +644,7 @@ impl App {
             text: String::new(),
             reload_pending: Arc::default(),
             reapply: false,
+            bell: false,
         }
     }
 
@@ -1113,6 +1117,7 @@ impl App {
         self.view.set_status(i, status);
         self.view.set_changed(i, false);
         let _ = self.view.set_alternate(i, false);
+        let _ = self.view.set_waiting(i, false);
         self.view.set_output(i, term::Rows::default(), size);
     }
 
@@ -1386,9 +1391,13 @@ impl App {
     fn tick(&mut self) {
         self.view.blink = !self.view.blink;
         for (&i, ran) in &self.ran {
-            if ran.run.is_some() {
+            if let Some(run) = &ran.run {
                 let status = view::Status::Running(ran.started.elapsed());
                 self.view.set_status(i, status);
+                let waiting = run.reads_hidden_line();
+                if self.view.set_waiting(i, waiting) && waiting {
+                    self.bell = true;
+                }
             }
         }
     }
@@ -1437,6 +1446,10 @@ fn event_loop(
         terminal.swap_buffers();
         terminal.draw(|frame| app.view.draw(frame))?;
         execute!(terminal.backend_mut(), EndSynchronizedUpdate)?;
+        if std::mem::take(&mut app.bell) {
+            terminal.backend_mut().write_all(b"\x07")?;
+            terminal.backend_mut().flush()?;
+        }
         // The events of one frame: if output starts it, those of the next
         // FRAME; if another event starts it, no other. A deadline of the app
         // also ends the frame. crossbeam-channel 0.5.17 returns a ready event
@@ -2054,6 +2067,32 @@ mod tests {
         read_until(&mut app, SIZE, |app| !running(app));
         app.handle(&ctrl('r'), SIZE);
         assert_eq!(app.view.notice.as_deref(), Some("reloaded: no change"));
+    }
+
+    #[test]
+    fn a_block_that_starts_to_wait_for_input_rings_the_bell_once() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut app = app("```bash\nread -rsp 'Password: ' a\n```\n", tmp.path());
+        let ring = |app: &mut App| {
+            let deadline = Instant::now() + Duration::from_secs(10);
+            while !app.bell {
+                assert!(Instant::now() < deadline, "no bell");
+                std::thread::sleep(Duration::from_millis(10));
+                app.tick();
+            }
+            app.bell = false;
+        };
+        enter(&mut app, SIZE);
+        ring(&mut app);
+        app.tick();
+        assert!(!app.bell);
+        // A run that ended while it waited does not keep a new run of its
+        // block from the bell.
+        app.runs().next().unwrap().1.write(b"\x03");
+        read_until(&mut app, SIZE, |app| !running(app));
+        enter(&mut app, SIZE);
+        key(&mut app, KeyCode::Char('y'));
+        ring(&mut app);
     }
 
     #[test]
