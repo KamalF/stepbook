@@ -493,6 +493,15 @@ Follow-ups of the review loop:
 - The test `code_escapes_the_format_characters_that_join_the_next_one` keeps "format characters" and "join the next one", which the doc of `needs_escape_in_code` no longer says, for U+2D7F.
 - U+11A3A is no longer a Prepend character in unicode-segmentation 1.13.3, so code escapes it for nothing, and the list of joiners in that test holds it.
 
+## Release 0.1.1
+
+0.1.1 carries the fix of the comment audit (a run leaves `RUNS` before the reap of its wrapper), signal-hook 0.4.6 and the new README. The README no longer names the release: that line went stale at each one. The order is that of spec 14.4, with the 0.1.0 runbook as a model:
+
+1. The branch `release-0.1.1`: the version, `CHANGELOG.md` and this section. CI passes on it once Kamal pushes it, then Claude merges it into `main`.
+2. Kamal publishes the crate from `main`, pushes `main`, and waits for CI.
+3. Kamal tags `v0.1.1`, and the release workflow builds the archives.
+4. Checks: both archives pass the attestation check, mise installs 0.1.1 and it prints `stepbook 0.1.1`, crates.io has 0.1.1.
+
 ## Next
 
 v1 is done. What comes next is Kamal's choice: the ideas of spec 17, the follow-ups of milestone 5 (two of them are choices for Kamal), and the open points below.
@@ -508,5 +517,6 @@ v1 is done. What comes next is Kamal's choice: the ideas of spec 17, the follow-
 - Follow-ups of the review loop of milestone 3: the input channel of a run holds up to 256 writes, pastes included, while a program reads no input; the full-screen view of an ended block makes the spans of its whole scrollback when it opens, 380 ms with crafted output that changes color on each cell at 180 columns; the answer to DSR 6 ignores origin mode, which vt100 does not expose.
 - Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal). Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
 - `run::tests::a_program_gets_the_position_of_its_cursor_from_the_terminal` failed under load too, once, during milestone 4, and passed alone.
+- `run::tests::trap_keeps_its_other_forms` fails now and then in the full suite under load: the bare `trap` of the run also lists `trap -- '' SIGTSTP`, `SIGTTIN` and `SIGTTOU`, so the wrapper ran with them ignored. bash lists a signal so when it was ignored at its start. The test process ignores only SIGPIPE (its SigIgn is 0x1000), and stepbook never touches these signals, so the cause is still open. `main` fails the same way (checked on 2026-11-18), and the test passes alone.
 - `the_output_of_a_process_substitution_ends_before_the_run` fails its 900 ms bound under heavy load, such as two test suites at once: the reader of the run parses 20,000 lines of output in a debug build, and tee waits on the PTY. It did so before the last changes of milestone 2 too (checked on c7e5ca9, 2026-11-11). A single suite passes.
 - Claude drives stepbook in tmux from the sandbox with `scripts/tui.sh` and one steps file per check: it starts tmux, sends the keys and captures the pane. The sandbox stops the tmux server when a command ends. Checked on 2026-11-09.

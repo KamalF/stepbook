@@ -19,9 +19,9 @@ unchanged.
 each block under its code. While it runs, an agent adds a step to the file,
 and stepbook reloads it.](docs/demo.gif)
 
-0.1.0 is the first release. stepbook is a Rust binary for Linux, on x86_64
-and aarch64. macOS is not a target: there is no release for it, and no test
-runs on it. stepbook does not build on Windows.
+stepbook is a Rust binary for Linux, on x86_64 and aarch64. macOS is not a
+target: there is no release for it, and no test runs on it. stepbook does
+not build on Windows.
 
 ## Install
 

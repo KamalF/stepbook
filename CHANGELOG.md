@@ -2,6 +2,17 @@
 
 <!-- One line per item: the release notes on GitHub keep each line break. -->
 
+## 0.1.1 - 2026-11-18
+
+### Fixed
+
+- When stepbook ended, it could send SIGHUP and SIGKILL to a session that had just taken the pid of the wrapper of an ended run, in a window of a few microseconds. stepbook now forgets the run before it frees the pid.
+
+### Changed
+
+- signal-hook 0.4.6.
+- The README opens with a demo, and compares stepbook with similar tools.
+
 ## 0.1.0 - 2026-11-13
 
 The first release.
