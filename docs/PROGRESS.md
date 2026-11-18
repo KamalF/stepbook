@@ -460,6 +460,21 @@ The plan, one commit per line, on the branch `comments`:
 6. The stale and unclear comments say what the code does, and so do spec 11 (a log is never a FIFO) and the small errors of useful comments. Two pairs of tests get the comment of spec 14.2 that says what each one checks.
 7. The redundant comments go, or give the one fact that they missed.
 
+### After the commits
+
+Two steps changed from the plan:
+
+- Step 3 has no test. A test catches the mutant of `READ_SIZE` only if the PTY holds between 16.9 KB (16 reads of the mutant's 1,056 bytes) and its capacity at the exit: about 18 KB on Linux 7.2, a value that the kernel sets. On CI, such a test would fail at random. The exclusion stays, with that reason, and `read_run` says that 16 reads of `READ_SIZE` drain a full PTY.
+- Step 5 removed the workaround. A harness outside git read 5,000 lines of scrollback: 18.95 ms with one offset per line, 19.11 ms with one per screen, in a release build. The read of the cells takes the time, so the simple loop came back.
+
+Of the 123 redundant comments, 94 went, 12 now give the fact that they missed, and 17 stay: a reference to the spec, the end of the thread that reads the keys, the count of `NAMES`, the use of `escaped_text`, the cursor that `screen_rows` can leave out, and the rule of `Sections::place`. Each commit passed `cargo fmt --check`, clippy and the tests, and `cargo mutants` on its new lines found no surviving mutant. `dist plan` still passes.
+
+Open points for Kamal:
+
+- signal-hook 0.4.6 is out, a major version after 0.3.18. Its changes (the ownership of the fd of `low_level::pipe`, flags of `'static` lifetime) remove no workaround of stepbook. Update it or not?
+- `read_run` retries a read that fails with EINTR, and `.cargo/mutants.toml` excludes that arm as dead: the signal handlers have SA_RESTART. `wait_for_jobs` has no such arm. Drop the arm of `read_run`, or keep it as a guard against a handler without SA_RESTART?
+- `the_output_of_a_process_substitution_ends_before_the_run` failed its 900 ms bound twice in the full suite on this branch, and passed 8 times out of 8 alone: the open point below still holds.
+
 ## Next
 
 v1 is done. What comes next is Kamal's choice: the ideas of spec 17, the follow-ups of milestone 5 (two of them are choices for Kamal), and the open points below.
