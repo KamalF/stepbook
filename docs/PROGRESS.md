@@ -469,10 +469,11 @@ Two steps changed from the plan:
 
 Of the 123 redundant comments, 94 went, 12 now give the fact that they missed, and 17 stay: a reference to the spec, the end of the thread that reads the keys, the count of `NAMES`, the use of `escaped_text`, the cursor that `screen_rows` can leave out, and the rule of `Sections::place`. Each commit passed `cargo fmt --check`, clippy and the tests, and `cargo mutants` on its new lines found no surviving mutant. `dist plan` still passes.
 
-Open points for Kamal:
+signal-hook went from 0.3.18 to 0.4.6, at Kamal's choice. Its changes (the ownership of the fd of `low_level::pipe`, flags of `'static` lifetime) remove no workaround of stepbook, and crossterm 0.29 still pulls in 0.3.18 through signal-hook-mio 0.2.5, so the build holds both. Both use signal-hook-registry 1.4.8, which installs the handlers with SA_RESTART.
 
-- signal-hook 0.4.6 is out, a major version after 0.3.18. Its changes (the ownership of the fd of `low_level::pipe`, flags of `'static` lifetime) remove no workaround of stepbook. Update it or not?
-- `read_run` retries a read that fails with EINTR, and `.cargo/mutants.toml` excludes that arm as dead: the signal handlers have SA_RESTART. `wait_for_jobs` has no such arm. Drop the arm of `read_run`, or keep it as a guard against a handler without SA_RESTART?
+Open points:
+
+- `read_run` retries a read that fails with EINTR, and `.cargo/mutants.toml` excludes that arm as dead: the signal handlers have SA_RESTART. `wait_for_jobs` has no such arm. Kamal chose to keep it, as a guard against a handler without SA_RESTART.
 - `the_output_of_a_process_substitution_ends_before_the_run` failed its 900 ms bound twice in the full suite on this branch, and passed 8 times out of 8 alone: the open point below still holds.
 
 ## Next
