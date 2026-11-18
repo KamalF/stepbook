@@ -1019,7 +1019,10 @@ fn info_rows(
         info.push(Span::raw("  full-screen program, press o"));
     }
     if waiting && running {
-        info.push(Span::raw("  waits for input, press i"));
+        info.extend([
+            Span::raw("  "),
+            Span::styled("waits for input, press i", WARNING),
+        ]);
     }
     if let Some(problem) = doc.blocks[i].problem {
         info.extend([Span::raw("  "), Span::styled(problem, ERROR)]);
@@ -2703,7 +2706,7 @@ pub(crate) mod tests {
         assert!(!view.set_waiting(0, true));
         assert_snapshot!(info(&view), @"▐ «b:login»");
         view.set_status(0, Status::Running(Duration::from_secs(3)));
-        assert_snapshot!(info(&view), @"▐ «b:login»  «yellow:●» running 0:03  waits for input, press i");
+        assert_snapshot!(info(&view), @"▐ «b:login»  «yellow:●» running 0:03  «yellow:waits for input, press i»");
         assert!(view.set_waiting(0, false));
         assert_snapshot!(info(&view), @"▐ «b:login»  «yellow:●» running 0:03");
     }

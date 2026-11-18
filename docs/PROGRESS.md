@@ -515,16 +515,19 @@ On 2026-11-18, Kamal asked for a way to call the user to a block that waits for 
 The plan, on the branch `input-alert`:
 
 1. `feat`: the check of the terminal of each running block at each tick, the line of the block, and the bell, with the spec, the README and the changelog.
+2. `feat`: `waits for input, press i` in the warning color.
+3. `feat`: in a pane of herdr, a toast of herdr when a block starts to wait.
 
 Checks:
 
 - Before the code, a probe in Python: on a PTY master, `tcgetattr` gives the echo off and the line mode on during `read -s`, and the echo on during `read -p`. `/proc/<pid>/syscall` shows a `read` of fd 0 at both prompts; `wchan` shows `wait_woken` at both, so it cannot tell them apart.
 - In tmux, with a `read -s` block: the line of the block shows `waits for input, press i`, and the output of stepbook holds one BEL, after the end of the synchronized update of the frame. The first try ran an old binary: the verify build of `cargo publish` had put into `target/debug` a binary built from `target/package/stepbook-0.1.1/src`, and `cargo build` took it as fresh, even after a `touch` of `src/main.rs`. `cargo clean -p stepbook` fixed it.
 
-Kamal's manual checklist:
+Kamal's checks, from `~/dev/claude/runbooks/2026-11-18-stepbook-input-alert-check.md`:
 
-1. In herdr in Ghostty, a block that runs `sleep 5; sudo -v`: switch to another sway workspace before the prompt. The workspace of Ghostty must turn urgent. If it does not, herdr does not pass the bell of a pane to Ghostty.
-2. The look of `waits for input, press i` in your theme.
+1. herdr 0.9.5 does not pass the bell of a pane to Ghostty: the workspace of Ghostty did not turn urgent.
+2. `herdr notification show stepbook --body "hidden waits for input" --sound request`, run from a block, showed a desktop notification while the tab of stepbook was active. `herdr pane report-agent --state blocked` showed the pane in red in the sidebar of herdr.
+3. Kamal's choices: in a pane of herdr, stepbook asks herdr for a toast once per wait, and keeps the bell for the other terminals. The red state of the sidebar would need a release at each end of a wait and at quit. The note takes the warning color.
 
 ## Next
 

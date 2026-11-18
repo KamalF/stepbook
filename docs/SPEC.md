@@ -154,7 +154,7 @@ No nesting depth can crash stepbook: it walks the document without recursion (up
 - The info line shows the glyph and the state after the name, such as `restart  ✔ rc=0 0:02`, then the problem and the warnings. A run that saved no state adds `state not saved` (9.2).
 - stepbook blinks the `●` of the sidebar itself, every 0.5 s: terminals differ on the blink attribute. The time of a running block shows to the second.
 - A run that cannot start fails, so that `Enter` can run the block again. Only a reload ends "Cannot run".
-- A password prompt turns off the echo of its terminal, and keeps its line mode: sudo, ssh and `read -s` do so. While the terminal of a running block is in that state, its info line shows `waits for input, press i`. A full-screen program or a raw read turns off the line mode too, so it does not count. stepbook checks the terminal of each running block at each tick, every 0.5 s.
+- A password prompt turns off the echo of its terminal, and keeps its line mode: sudo, ssh and `read -s` do so. While the terminal of a running block is in that state, its info line shows `waits for input, press i`, in the warning color. A full-screen program or a raw read turns off the line mode too, so it does not count. stepbook checks the terminal of each running block at each tick, every 0.5 s.
 - When a block starts to wait for input, stepbook rings the bell of its own terminal once (BEL). The terminal decides what a bell does: by default, Ghostty marks its window as urgent, and sway then marks its workspace. The bell rings in input mode too, because the user may have left the pane after `i`.
 - A prompt that keeps the echo on, such as `read -p` or the `[y/N]` of dnf, does not count (17).
 
@@ -669,3 +669,4 @@ This spec is the source of truth. A change of decision updates it in the same co
 | A block that a reload removes while it runs stays at the end of the document too, not only in the sidebar (10): `i` and the output under the block need a place in the document view | 2026-11-12 |
 | A changed block shows `~` in the sidebar, and keeps the mark while its code differs from the code of its last run (6.2, 10) | 2026-11-12 |
 | A running block whose terminal has the echo off and the line mode on shows `waits for input, press i`, and stepbook rings the bell of its terminal once (6.2), at Kamal's choice: he asked for a way to call the user to a block that waits for input. The bell works in each terminal, and needs no new dependency. Prompts that keep the echo on do not count, at Kamal's choice: their detection needs a scan of `/proc` at each tick (17) | 2026-11-18 |
+| `waits for input, press i` has the warning color (6.2), at Kamal's choice: it stands out from the code more than plain text | 2026-11-18 |
