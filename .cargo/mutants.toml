@@ -78,6 +78,9 @@ exclude_re = [
     "run.rs:\\d+:\\d+: replace \\* with \\+$",
     # The flags of the PTY are distinct bits: ^ gives the same value as |.
     "replace \\| with \\^ in open_pty",
+    # The line mode and the signal keys are distinct bits: ^ gives the same
+    # value as |.
+    "replace \\| with \\^ in Run::hides_input",
     # A read of the PTY never fails with EINTR: signal-hook and crossterm
     # install their handlers through signal-hook-registry 1.4.8, with
     # SA_RESTART.

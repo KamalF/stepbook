@@ -562,6 +562,20 @@ Round 4, on 2026-11-19:
 - Two nits fixed: a row of the Decided table named the wrong row, and a sentence of round 2 in this section left out the condition of the main screen.
 - The security reviewer found that an empty or relative entry of the PATH makes stepbook find a `herdr` in its start directory. The lookup of bash does the same since milestone 2, so the fix of both is a change of spec 8.2, for Kamal to decide: a follow-up.
 
+Round 5 found no blocker and no should-fix: the loop converged on 2026-11-19. Accepted findings per round: 1, 2, 2, 2, 0. Two nits are deferred:
+
+- A block name that starts with `-` may make herdr reject its toast, if herdr parses its arguments with clap. One reviewer found clap 4.6.7 in the herdr binary, and others found a parser of its own.
+- The mutant that replaces `|` with `^` in `Run::hides_input` gives the same value: `.cargo/mutants.toml` excludes it.
+
+The log of the loop, with its Decisions, Follow-ups and Nits deferred, is `~/.cache/stepbook-review/input-alert-review-loop-log.md`. A follow-up for Kamal: an empty or relative entry of the PATH makes stepbook find `herdr`, and `bash`, in its start directory (spec 8.2).
+
+`cargo mutants` after the loop, on the diff of the branch: 30 mutants, 25 caught, 3 unviable, 2 timeouts, 0 missed, in 4 minutes. The 2 timeouts make `Shared::process` answer each read of the PTY, so a test hangs: the tests catch them. The check in tmux on the last commit: a `read -s` block shows the note, and stepbook calls a stand-in `herdr` once, with the expected arguments.
+
+Kamal's checks after the loop:
+
+1. A block with `sudo -k; sudo -v`: the note shows 0.5 to 1 s after the prompt, and herdr shows the toast.
+2. `herdr notification show stepbook --body "-x waits for input"`: if herdr rejects it, a block named `-x` gets no toast.
+
 ## Next
 
 v1 is done. What comes next is Kamal's choice: the ideas of spec 17, the follow-ups of milestone 5 (two of them are choices for Kamal), and the open points below.
