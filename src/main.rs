@@ -549,6 +549,9 @@ struct Ran {
     log_id: Option<u64>,
     /// The code that ran: a reload marks the block if its code changed.
     code: String,
+    /// Whether the terminal of the run hid input at the last tick: a block
+    /// waits for input when it does on two ticks in a row (spec 6.2).
+    hid: bool,
 }
 
 struct App {
@@ -1106,6 +1109,7 @@ impl App {
                         ended: None,
                         log_id,
                         code,
+                        hid: false,
                     },
                 );
                 view::Status::Running(Duration::ZERO)
@@ -1396,12 +1400,17 @@ impl App {
 
     fn tick(&mut self) {
         self.view.blink = !self.view.blink;
-        for (&i, ran) in &self.ran {
+        for (&i, ran) in &mut self.ran {
             if let Some(run) = &ran.run {
                 let status = view::Status::Running(ran.started.elapsed());
                 self.view.set_status(i, status);
-                let waiting = run.hides_input() && !ran.screen.alternate();
-                if self.view.set_waiting(i, waiting) && waiting {
+                // An ncurses program turns the echo off a moment before it
+                // takes the alternate screen.
+                let hides = run.hides_input();
+                let waiting = hides && ran.hid;
+                ran.hid = hides;
+                // Output that leaves the alternate screen starts no wait.
+                if self.view.set_waiting(i, waiting) && waiting && !ran.screen.alternate() {
                     self.bell = true;
                     if let Some(herdr) = &self.herdr {
                         toast(herdr, &self.view.doc.label(i));
@@ -2106,11 +2115,15 @@ mod tests {
         let mut app = app("```bash\nread -rsp 'Password: ' a\n```\n", tmp.path());
         let ring = |app: &mut App| {
             let deadline = Instant::now() + Duration::from_secs(10);
-            while !std::mem::take(&mut app.bell) {
-                assert!(Instant::now() < deadline, "no bell");
+            while !app.runs().next().unwrap().1.hides_input() {
+                assert!(Instant::now() < deadline, "the echo stays on");
                 std::thread::sleep(Duration::from_millis(10));
-                app.tick();
             }
+            // A state that lasts less than a tick does not count.
+            app.tick();
+            assert!(!app.bell);
+            app.tick();
+            assert!(std::mem::take(&mut app.bell));
         };
         enter(&mut app, SIZE);
         ring(&mut app);
@@ -2138,6 +2151,7 @@ mod tests {
             assert!(Instant::now() < deadline, "the echo stays on");
             std::thread::sleep(Duration::from_millis(10));
         }
+        app.tick();
         app.tick();
         assert!(!app.bell);
         app.runs().next().unwrap().1.write(b"k");

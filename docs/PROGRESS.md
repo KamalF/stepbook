@@ -519,6 +519,7 @@ The plan, on the branch `input-alert`:
 3. `feat`: in a pane of herdr, a toast of herdr when a block starts to wait.
 4. `refactor`: the changes of `/simplify`, before the review loop: the tick asks herdr for the toast, and the test of the toast checks only the arguments of its command.
 5. `fix`: the rule of round 1 of the review loop: the echo off and the signal keys on, outside the alternate screen.
+6. `fix`: the choices of round 2: two ticks in a row, and a bell only when the wait starts on the main screen.
 
 Checks:
 
@@ -540,6 +541,11 @@ Round 1, with a code reviewer and a security reviewer, on 2026-11-19:
 - The code reviewer found that the rule of the echo off and the line mode on misses sudo-rs, sudo with `pwfeedback`, and upstream sudo after 1.9.17p2: their prompt reads a key at a time, with the line mode off. Fedora's sudo 1.9.17p2 keeps the line mode, unless `pwfeedback` is set. Kamal chose the rule of the echo off and the signal keys on, outside the alternate screen. A probe in a PTY gave, for echo, line mode and signal keys: `read -s` and `getpass` off, on, on; `read -s -n1` and `less` off, off, on; `stty raw -echo` and vim off, off, off.
 - Two nits fixed: a reason of the Decided table said that the bell works in each terminal, and a sentence of this section named a script that it no longer described.
 - The security reviewer found that a herdr that hangs leaves one process per wait, which outlives stepbook. It is deferred: only a hung herdr server causes it, and a block can run herdr itself.
+
+Round 2, on 2026-11-19:
+
+- The code reviewer probed top and ffmpeg: both keep the echo off and the signal keys on, on the main screen, for their whole run. Kamal chose to count them, and the spec and the README say so.
+- The code reviewer found that an ncurses program turns the echo off before it takes the alternate screen: for 3 to 7 ms with nano, and for a whole scan of `/proc` with htop. The security reviewer found that output that enters and leaves the alternate screen started a new wait at each cycle: 8 bells in 9 s for one prompt. Kamal chose two ticks in a row. The bell and the toast now follow the settings of the terminal, and the alternate screen only hides the note.
 
 ## Next
 

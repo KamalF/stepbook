@@ -1018,7 +1018,7 @@ fn info_rows(
     if alternate && running {
         info.push(Span::raw("  full-screen program, press o"));
     }
-    if waiting && running {
+    if waiting && running && !alternate {
         info.extend([
             Span::raw("  "),
             Span::styled("waits for input, press i", WARNING),
@@ -2709,6 +2709,10 @@ pub(crate) mod tests {
         assert_snapshot!(info(&view), @"▐ «b:login»  «yellow:●» running 0:03  «yellow:waits for input, press i»");
         assert!(view.set_waiting(0, false));
         assert_snapshot!(info(&view), @"▐ «b:login»  «yellow:●» running 0:03");
+        // A full-screen program shows its own line.
+        view.set_waiting(0, true);
+        view.set_alternate(0, true);
+        assert_snapshot!(info(&view), @"▐ «b:login»  «yellow:●» running 0:03  full-screen program, press o");
     }
 
     #[test]
