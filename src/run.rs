@@ -16,7 +16,7 @@ use rustix::event::{PollFd, PollFlags, Timespec};
 use rustix::fs::{CWD, FileType, Mode, OFlags};
 use rustix::process::{Pid, PidfdFlags, Signal, WaitId, WaitIdOptions};
 use rustix::pty::OpenptFlags;
-use rustix::termios::Winsize;
+use rustix::termios::{LocalModes, Winsize};
 
 use crate::{io_message, term};
 
@@ -579,6 +579,19 @@ impl Run {
         for pid in session_processes(self.pid) {
             let _ = rustix::process::kill_process(pid, signal);
         }
+    }
+
+    /// Whether the terminal of the run has the echo off, and the line mode
+    /// or the signal keys on, as at a password prompt (spec 6.2): sudo-rs
+    /// turns the line mode off, and glibc's getpass the signal keys. A raw
+    /// terminal turns both off. On Linux, the settings that the master
+    /// gives are those that the program set on its side.
+    pub fn hides_input(&self) -> bool {
+        rustix::termios::tcgetattr(&self.master).is_ok_and(|termios| {
+            let modes = termios.local_modes;
+            let keys = modes.intersects(LocalModes::ICANON | LocalModes::ISIG);
+            keys && !modes.contains(LocalModes::ECHO)
+        })
     }
 
     /// Sets the size of the PTY. The kernel sends SIGWINCH to the program.
@@ -1976,6 +1989,41 @@ mod tests {
         let code = "printf 'ab\\e[6n'\nIFS= read -rsd R pos\necho \" at ${pos#*[}\"\n";
         let (output, status, _) = run(&mut session, code);
         assert_eq!((&*output, status), ("ab\x1b[6n at 1;3\n", Status::Code(0)));
+    }
+
+    #[test]
+    fn input_is_hidden_with_the_echo_off_unless_the_terminal_is_raw() {
+        let tmp = tempfile::tempdir().unwrap();
+        let mut session = session(tmp.path());
+        let code = "read -rsp 'Password: ' a\nread -rp 'Name: ' b\nread -rsn1 -p 'Key: ' c\n\
+                    stty -echo -isig\nread -rp 'Line: ' d\nstty raw -echo\necho raw\nsleep 30\n";
+        let run = session.start(code, "check", 80, 24).unwrap();
+        // bash may print a prompt before it turns the echo off.
+        let until_hidden = || {
+            let deadline = std::time::Instant::now() + WAIT;
+            while !run.hides_input() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
+        wait_for(&run, "Password: ");
+        until_hidden();
+        run.write(b"x\r");
+        wait_for(&run, "Name: ");
+        assert!(!run.hides_input());
+        run.write(b"y\r");
+        // A key at a time, as sudo-rs reads a password.
+        wait_for(&run, "Key: ");
+        until_hidden();
+        run.write(b"k");
+        // The signal keys off, as glibc's getpass sets them.
+        wait_for(&run, "Line: ");
+        assert!(run.hides_input());
+        run.write(b"z\r");
+        wait_for(&run, "raw");
+        assert!(!run.hides_input());
+        run.signal(Signal::KILL);
+        wait(&run);
     }
 
     #[test]

@@ -63,6 +63,10 @@ pub struct Shared {
     /// that a key never waits for the terminal.
     application_cursor: AtomicBool,
     bracketed_paste: AtomicBool,
+    /// Whether the program is on the alternate screen. The tick reads it:
+    /// the view learns it only at the next frame, and a full-screen program
+    /// can turn the echo off as it starts (spec 6.2).
+    alternate: AtomicBool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -105,6 +109,7 @@ impl Shared {
             exchange: Mutex::default(),
             application_cursor: AtomicBool::new(false),
             bracketed_paste: AtomicBool::new(false),
+            alternate: AtomicBool::new(false),
         }
     }
 
@@ -118,6 +123,7 @@ impl Shared {
         let screen = terminal.parser.screen();
         (self.application_cursor).store(screen.application_cursor(), Ordering::Relaxed);
         (self.bracketed_paste).store(screen.bracketed_paste(), Ordering::Relaxed);
+        (self.alternate).store(screen.alternate_screen(), Ordering::Relaxed);
         let asked = self.exchange().asked.take();
         if let Some(want) = asked {
             let rows = terminal.rows(want);
@@ -163,6 +169,10 @@ impl Shared {
 
     pub fn bracketed_paste(&self) -> bool {
         self.bracketed_paste.load(Ordering::Relaxed)
+    }
+
+    pub fn alternate(&self) -> bool {
+        self.alternate.load(Ordering::Relaxed)
     }
 
     fn exchange(&self) -> MutexGuard<'_, Exchange> {

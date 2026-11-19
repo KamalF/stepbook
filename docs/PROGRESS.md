@@ -508,6 +508,74 @@ Kamal ran the release on 2026-11-18, from `~/dev/claude/runbooks/2026-11-18-step
 - CI passed on `main` (6219b80), then the tag `v0.1.1` started the release workflow: both musl builds took under 3 minutes. The release is immutable, and its notes come from `CHANGELOG.md`.
 - Both archives pass the attestation check. `mise use -g github:KamalF/stepbook@0.1.1` installed a static, stripped binary that prints `stepbook 0.1.1`, and pins 0.1.1 in Kamal's global mise config: `minimum_release_age = 24h` hides the release from `@latest` until 2026-11-19.
 
+## Input alert
+
+On 2026-11-18, Kamal asked for a way to call the user to a block that waits for input. His choices: stepbook detects only the prompts that turn the echo off, such as those of sudo, ssh and `read -s`; the block shows `waits for input, press i`, and stepbook rings the bell of its terminal once (spec 6.2). The detection of the prompts that keep the echo on goes to spec 17.
+
+The plan, on the branch `input-alert`:
+
+1. `feat`: the check of the terminal of each running block at each tick, the line of the block, and the bell, with the spec, the README and the changelog.
+2. `feat`: `waits for input, press i` in the warning color.
+3. `feat`: in a pane of herdr, a toast of herdr when a block starts to wait.
+4. `refactor`: the changes of `/simplify`, before the review loop: the tick asks herdr for the toast, and the test of the toast checks only the arguments of its command.
+5. `fix`: the rule of round 1 of the review loop: the echo off and the signal keys on, outside the alternate screen.
+6. `fix`: the choices of round 2: two ticks in a row, and a bell only when the wait starts on the main screen.
+7. `docs`: the limits that round 3 found, and a test of the note of a new run.
+8. `fix`: the findings of round 4: glibc's `getpass`, and a test of output that leaves the alternate screen.
+
+Checks:
+
+- Before the code, a probe in Python: on a PTY master, `tcgetattr` gives the echo off and the line mode on during `read -s`, and the echo on during `read -p`. `/proc/<pid>/syscall` shows a `read` of fd 0 at both prompts; `wchan` shows `wait_woken` at both, so it cannot tell them apart.
+- In tmux, with a `read -s` block: the line of the block shows `waits for input, press i`, and the output of stepbook holds one BEL, after the end of the synchronized update of the frame. The first try ran an old binary: the verify build of `cargo publish` had put into `target/debug` a binary built from `target/package/stepbook-0.1.1/src`, and `cargo build` took it as fresh, even after a `touch` of `src/main.rs`. `cargo clean -p stepbook` fixed it.
+
+Kamal's checks, from `~/dev/claude/runbooks/2026-11-18-stepbook-input-alert-check.md`:
+
+1. herdr 0.9.5 does not pass the bell of a pane to Ghostty: the workspace of Ghostty did not turn urgent.
+2. `herdr notification show stepbook --body "hidden waits for input" --sound request`, run from a block, showed a desktop notification while the tab of stepbook was active. `herdr pane report-agent --state blocked` showed the pane in red in the sidebar of herdr.
+3. Kamal's choices: in a pane of herdr, stepbook asks herdr for a toast once per wait, and keeps the bell for the other terminals. The red state of the sidebar would need a release at each end of a wait and at quit. The note takes the warning color.
+
+herdr needs its server, so the test of the toast checks only the arguments of its command, and `.cargo/mutants.toml` excludes the mutant that skips the run of herdr. In tmux, with `HERDR_PANE_ID` set and a script named `herdr` first on the PATH, a `read -s` block made stepbook call the script once, with `notification show stepbook --body "login waits for input" --sound request`.
+
+### Review loop
+
+Round 1, with a code reviewer and a security reviewer, on 2026-11-19:
+
+- The code reviewer found that the rule of the echo off and the line mode on misses sudo-rs, sudo with `pwfeedback`, and upstream sudo after 1.9.17p2: their prompt reads a key at a time, with the line mode off. Fedora's sudo 1.9.17p2 keeps the line mode, unless `pwfeedback` is set. Kamal chose the rule of the echo off and the signal keys on, outside the alternate screen. A probe in a PTY gave, for echo, line mode and signal keys: `read -s` and `getpass` off, on, on; `read -s -n1` and `less` off, off, on; `stty raw -echo` and vim off, off, off.
+- Two nits fixed: a reason of the Decided table said that the bell works in each terminal, and a sentence of this section named a script that it no longer described.
+- The security reviewer found that a herdr that hangs leaves one process per wait, which outlives stepbook. It is deferred: only a hung herdr server causes it, and a block can run herdr itself.
+
+Round 2, on 2026-11-19:
+
+- The code reviewer probed top and ffmpeg: both keep the echo off and the signal keys on, on the main screen, for their whole run. Kamal chose to count them, and the spec and the README say so.
+- The code reviewer found that an ncurses program turns the echo off before it takes the alternate screen: for 3 to 7 ms with nano, and for a whole scan of `/proc` with htop. The security reviewer found that output that enters and leaves the alternate screen started a new wait at each cycle: 8 bells in 9 s for one prompt. Kamal chose two ticks in a row. A wait now follows only the settings of the terminal: the bell and the toast need the main screen when the wait starts, and later the alternate screen only hides the note.
+
+Round 3, on 2026-11-19:
+
+- The code reviewer found that a prompt that follows another program that hides input, within a tick, joins its wait and rings no bell, as `watch -g …; sudo …` does. Kamal chose to document it. A prompt behind a relay, such as `ssh -t` or `docker exec -it`, never counts: the relay keeps the terminal of the run raw. The spec and the README say so.
+- Two nits fixed: a row of the Decided table did not say which row it replaced, and no test checked that a new run starts with no note.
+- The security reviewer found nothing.
+
+Round 4, on 2026-11-19:
+
+- The code reviewer found that glibc's `getpass(3)`, which mount.cifs, mkpasswd, certtool and gnutls-cli use, turns the signal keys off and keeps the line mode: the rule of round 1 missed it, and the rule of the line mode had caught it. Claude chose the rule of the echo off, and the line mode or the signal keys on: a raw terminal, vim and the relays turn both off, so they still do not count. Kamal can still change this choice.
+- The code reviewer found that no test caught the bug of round 2. A test now checks that output that enters and leaves the alternate screen starts no new wait. It fails when the wait depends on the alternate screen, as it did after round 1.
+- Two nits fixed: a row of the Decided table named the wrong row, and a sentence of round 2 in this section left out the condition of the main screen.
+- The security reviewer found that an empty or relative entry of the PATH makes stepbook find a `herdr` in its start directory. The lookup of bash does the same since milestone 2, so the fix of both is a change of spec 8.2, for Kamal to decide: a follow-up.
+
+Round 5 found no blocker and no should-fix: the loop converged on 2026-11-19. Accepted findings per round: 1, 2, 2, 2, 0. Two nits are deferred:
+
+- A block name that starts with `-` may make herdr reject its toast, if herdr parses its arguments with clap. One reviewer found clap 4.6.7 in the herdr binary, and others found a parser of its own.
+- The mutant that replaces `|` with `^` in `Run::hides_input` gives the same value: `.cargo/mutants.toml` excludes it.
+
+The log of the loop, with its Decisions, Follow-ups and Nits deferred, is `~/.cache/stepbook-review/input-alert-review-loop-log.md`. A follow-up for Kamal: an empty or relative entry of the PATH makes stepbook find `herdr`, and `bash`, in its start directory (spec 8.2).
+
+`cargo mutants` after the loop, on the diff of the branch: 30 mutants, 25 caught, 3 unviable, 2 timeouts, 0 missed, in 4 minutes. The 2 timeouts make `Shared::process` answer each read of the PTY, so a test hangs: the tests catch them. The check in tmux on the last commit: a `read -s` block shows the note, and stepbook calls a stand-in `herdr` once, with the expected arguments.
+
+Kamal's checks after the loop:
+
+1. A block with `sudo -k; sudo -v`: the note shows 0.5 to 1 s after the prompt, and herdr shows the toast.
+2. `herdr notification show stepbook --body "-x waits for input"`: if herdr rejects it, a block named `-x` gets no toast.
+
 ## Next
 
 v1 is done. What comes next is Kamal's choice: the ideas of spec 17, the follow-ups of milestone 5 (two of them are choices for Kamal), and the open points below.
