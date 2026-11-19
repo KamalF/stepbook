@@ -2129,12 +2129,13 @@ mod tests {
         ring(&mut app);
         app.tick();
         assert!(!app.bell);
-        // A run that ended while it waited does not keep a new run of its
-        // block from the bell.
+        // A new run of a block whose run ended while it waited starts with
+        // no note, and rings again.
         app.runs().next().unwrap().1.write(b"\x03");
         read_until(&mut app, SIZE, |app| !running(app));
         enter(&mut app, SIZE);
         key(&mut app, KeyCode::Char('y'));
+        assert!(!markup(&app.view.rows(80).0).contains("waits for input"));
         ring(&mut app);
     }
 
