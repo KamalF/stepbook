@@ -521,6 +521,7 @@ The plan, on the branch `input-alert`:
 5. `fix`: the rule of round 1 of the review loop: the echo off and the signal keys on, outside the alternate screen.
 6. `fix`: the choices of round 2: two ticks in a row, and a bell only when the wait starts on the main screen.
 7. `docs`: the limits that round 3 found, and a test of the note of a new run.
+8. `fix`: the findings of round 4: glibc's `getpass`, and a test of output that leaves the alternate screen.
 
 Checks:
 
@@ -546,13 +547,20 @@ Round 1, with a code reviewer and a security reviewer, on 2026-11-19:
 Round 2, on 2026-11-19:
 
 - The code reviewer probed top and ffmpeg: both keep the echo off and the signal keys on, on the main screen, for their whole run. Kamal chose to count them, and the spec and the README say so.
-- The code reviewer found that an ncurses program turns the echo off before it takes the alternate screen: for 3 to 7 ms with nano, and for a whole scan of `/proc` with htop. The security reviewer found that output that enters and leaves the alternate screen started a new wait at each cycle: 8 bells in 9 s for one prompt. Kamal chose two ticks in a row. The bell and the toast now follow the settings of the terminal, and the alternate screen only hides the note.
+- The code reviewer found that an ncurses program turns the echo off before it takes the alternate screen: for 3 to 7 ms with nano, and for a whole scan of `/proc` with htop. The security reviewer found that output that enters and leaves the alternate screen started a new wait at each cycle: 8 bells in 9 s for one prompt. Kamal chose two ticks in a row. A wait now follows only the settings of the terminal: the bell and the toast need the main screen when the wait starts, and later the alternate screen only hides the note.
 
 Round 3, on 2026-11-19:
 
 - The code reviewer found that a prompt that follows another program that hides input, within a tick, joins its wait and rings no bell, as `watch -g …; sudo …` does. Kamal chose to document it. A prompt behind a relay, such as `ssh -t` or `docker exec -it`, never counts: the relay keeps the terminal of the run raw. The spec and the README say so.
 - Two nits fixed: a row of the Decided table did not say which row it replaced, and no test checked that a new run starts with no note.
 - The security reviewer found nothing.
+
+Round 4, on 2026-11-19:
+
+- The code reviewer found that glibc's `getpass(3)`, which mount.cifs, mkpasswd, certtool and gnutls-cli use, turns the signal keys off and keeps the line mode: the rule of round 1 missed it, and the rule of the line mode had caught it. Claude chose the rule of the echo off, and the line mode or the signal keys on: a raw terminal, vim and the relays turn both off, so they still do not count. Kamal can still change this choice.
+- The code reviewer found that no test caught the bug of round 2. A test now checks that output that enters and leaves the alternate screen starts no new wait. It fails when the wait depends on the alternate screen, as it did after round 1.
+- Two nits fixed: a row of the Decided table named the wrong row, and a sentence of round 2 in this section left out the condition of the main screen.
+- The security reviewer found that an empty or relative entry of the PATH makes stepbook find a `herdr` in its start directory. The lookup of bash does the same since milestone 2, so the fix of both is a change of spec 8.2, for Kamal to decide: a follow-up.
 
 ## Next
 

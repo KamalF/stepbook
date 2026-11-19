@@ -2140,6 +2140,31 @@ mod tests {
     }
 
     #[test]
+    fn output_that_leaves_the_alternate_screen_starts_no_new_wait() {
+        let tmp = tempfile::tempdir().unwrap();
+        let code = "```bash\n(sleep 0.5; printf '\\e[?1049h'; sleep 0.2; printf '\\e[?1049l') &\n\
+                    read -rs a\n```\n";
+        let mut app = app(code, tmp.path());
+        enter(&mut app, SIZE);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !app.runs().next().unwrap().1.hides_input() {
+            assert!(Instant::now() < deadline, "the echo stays on");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        app.tick();
+        app.tick();
+        assert!(std::mem::take(&mut app.bell));
+        read_until(&mut app, SIZE, |app| app.view.alternate(0));
+        app.tick();
+        read_until(&mut app, SIZE, |app| !app.view.alternate(0));
+        app.tick();
+        app.tick();
+        assert!(!app.bell);
+        app.runs().next().unwrap().1.write(b"x\r");
+        read_until(&mut app, SIZE, |app| !running(app));
+    }
+
+    #[test]
     fn a_full_screen_program_that_reads_keys_rings_no_bell() {
         let tmp = tempfile::tempdir().unwrap();
         // As htop or less: the alternate screen, then keys with no echo.

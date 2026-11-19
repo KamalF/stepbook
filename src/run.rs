@@ -581,14 +581,16 @@ impl Run {
         }
     }
 
-    /// Whether the terminal of the run has the echo off and the signal
-    /// keys on, as at a password prompt (spec 6.2). A raw terminal turns
-    /// the signal keys off. On Linux, the settings that the master gives
-    /// are those that the program set on its side.
+    /// Whether the terminal of the run has the echo off, and the line mode
+    /// or the signal keys on, as at a password prompt (spec 6.2): sudo-rs
+    /// turns the line mode off, and glibc's getpass the signal keys. A raw
+    /// terminal turns both off. On Linux, the settings that the master
+    /// gives are those that the program set on its side.
     pub fn hides_input(&self) -> bool {
         rustix::termios::tcgetattr(&self.master).is_ok_and(|termios| {
             let modes = termios.local_modes;
-            modes.contains(LocalModes::ISIG) && !modes.contains(LocalModes::ECHO)
+            let keys = modes.intersects(LocalModes::ICANON | LocalModes::ISIG);
+            keys && !modes.contains(LocalModes::ECHO)
         })
     }
 
@@ -1990,11 +1992,11 @@ mod tests {
     }
 
     #[test]
-    fn input_is_hidden_with_the_echo_off_and_the_signal_keys_on() {
+    fn input_is_hidden_with_the_echo_off_unless_the_terminal_is_raw() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
         let code = "read -rsp 'Password: ' a\nread -rp 'Name: ' b\nread -rsn1 -p 'Key: ' c\n\
-                    stty raw -echo\necho raw\nsleep 30\n";
+                    stty -echo -isig\nread -rp 'Line: ' d\nstty raw -echo\necho raw\nsleep 30\n";
         let run = session.start(code, "check", 80, 24).unwrap();
         // bash may print a prompt before it turns the echo off.
         let until_hidden = || {
@@ -2014,6 +2016,10 @@ mod tests {
         wait_for(&run, "Key: ");
         until_hidden();
         run.write(b"k");
+        // The signal keys off, as glibc's getpass sets them.
+        wait_for(&run, "Line: ");
+        assert!(run.hides_input());
+        run.write(b"z\r");
         wait_for(&run, "raw");
         assert!(!run.hides_input());
         run.signal(Signal::KILL);
