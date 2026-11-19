@@ -1400,7 +1400,7 @@ impl App {
             if let Some(run) = &ran.run {
                 let status = view::Status::Running(ran.started.elapsed());
                 self.view.set_status(i, status);
-                let waiting = run.reads_hidden_line();
+                let waiting = run.hides_input() && !ran.screen.alternate();
                 if self.view.set_waiting(i, waiting) && waiting {
                     self.bell = true;
                     if let Some(herdr) = &self.herdr {
@@ -2123,6 +2123,25 @@ mod tests {
         enter(&mut app, SIZE);
         key(&mut app, KeyCode::Char('y'));
         ring(&mut app);
+    }
+
+    #[test]
+    fn a_full_screen_program_that_reads_keys_rings_no_bell() {
+        let tmp = tempfile::tempdir().unwrap();
+        // As htop or less: the alternate screen, then keys with no echo.
+        let code = "```bash\nprintf '\\e[?1049h'\nread -rsn1 key\n```\n";
+        let mut app = app(code, tmp.path());
+        enter(&mut app, SIZE);
+        read_until(&mut app, SIZE, |app| app.view.alternate(0));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !app.runs().next().unwrap().1.hides_input() {
+            assert!(Instant::now() < deadline, "the echo stays on");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        app.tick();
+        assert!(!app.bell);
+        app.runs().next().unwrap().1.write(b"k");
+        read_until(&mut app, SIZE, |app| !running(app));
     }
 
     #[test]

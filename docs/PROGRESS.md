@@ -517,6 +517,8 @@ The plan, on the branch `input-alert`:
 1. `feat`: the check of the terminal of each running block at each tick, the line of the block, and the bell, with the spec, the README and the changelog.
 2. `feat`: `waits for input, press i` in the warning color.
 3. `feat`: in a pane of herdr, a toast of herdr when a block starts to wait.
+4. `refactor`: the changes of `/simplify`, before the review loop: the tick asks herdr for the toast, and the test of the toast checks only the arguments of its command.
+5. `fix`: the rule of round 1 of the review loop: the echo off and the signal keys on, outside the alternate screen.
 
 Checks:
 
@@ -529,7 +531,15 @@ Kamal's checks, from `~/dev/claude/runbooks/2026-11-18-stepbook-input-alert-chec
 2. `herdr notification show stepbook --body "hidden waits for input" --sound request`, run from a block, showed a desktop notification while the tab of stepbook was active. `herdr pane report-agent --state blocked` showed the pane in red in the sidebar of herdr.
 3. Kamal's choices: in a pane of herdr, stepbook asks herdr for a toast once per wait, and keeps the bell for the other terminals. The red state of the sidebar would need a release at each end of a wait and at quit. The note takes the warning color.
 
-herdr needs its server, so the test of the toast checks only the arguments of its command, and `.cargo/mutants.toml` excludes the mutant that skips the run of herdr. In tmux, with `HERDR_PANE_ID` set and that script first on the PATH, a `read -s` block made stepbook call it once, with `notification show stepbook --body "login waits for input" --sound request`.
+herdr needs its server, so the test of the toast checks only the arguments of its command, and `.cargo/mutants.toml` excludes the mutant that skips the run of herdr. In tmux, with `HERDR_PANE_ID` set and a script named `herdr` first on the PATH, a `read -s` block made stepbook call the script once, with `notification show stepbook --body "login waits for input" --sound request`.
+
+### Review loop
+
+Round 1, with a code reviewer and a security reviewer, on 2026-11-19:
+
+- The code reviewer found that the rule of the echo off and the line mode on misses sudo-rs, sudo with `pwfeedback`, and upstream sudo after 1.9.17p2: their prompt reads a key at a time, with the line mode off. Fedora's sudo 1.9.17p2 keeps the line mode, unless `pwfeedback` is set. Kamal chose the rule of the echo off and the signal keys on, outside the alternate screen. A probe in a PTY gave, for echo, line mode and signal keys: `read -s` and `getpass` off, on, on; `read -s -n1` and `less` off, off, on; `stty raw -echo` and vim off, off, off.
+- Two nits fixed: a reason of the Decided table said that the bell works in each terminal, and a sentence of this section named a script that it no longer described.
+- The security reviewer found that a herdr that hangs leaves one process per wait, which outlives stepbook. It is deferred: only a hung herdr server causes it, and a block can run herdr itself.
 
 ## Next
 

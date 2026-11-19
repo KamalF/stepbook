@@ -581,13 +581,14 @@ impl Run {
         }
     }
 
-    /// Whether the terminal of the run has the echo off and the line mode
-    /// on, as at a password prompt (spec 6.2). On Linux, the settings that
-    /// the master gives are those that the program set on its side.
-    pub fn reads_hidden_line(&self) -> bool {
+    /// Whether the terminal of the run has the echo off and the signal
+    /// keys on, as at a password prompt (spec 6.2). A raw terminal turns
+    /// the signal keys off. On Linux, the settings that the master gives
+    /// are those that the program set on its side.
+    pub fn hides_input(&self) -> bool {
         rustix::termios::tcgetattr(&self.master).is_ok_and(|termios| {
             let modes = termios.local_modes;
-            modes.contains(LocalModes::ICANON) && !modes.contains(LocalModes::ECHO)
+            modes.contains(LocalModes::ISIG) && !modes.contains(LocalModes::ECHO)
         })
     }
 
@@ -1989,25 +1990,32 @@ mod tests {
     }
 
     #[test]
-    fn only_a_line_read_with_the_echo_off_is_hidden() {
+    fn input_is_hidden_with_the_echo_off_and_the_signal_keys_on() {
         let tmp = tempfile::tempdir().unwrap();
         let mut session = session(tmp.path());
-        let code =
-            "read -rsp 'Password: ' a\nread -rp 'Name: ' b\nstty raw -echo\necho raw\nsleep 30\n";
+        let code = "read -rsp 'Password: ' a\nread -rp 'Name: ' b\nread -rsn1 -p 'Key: ' c\n\
+                    stty raw -echo\necho raw\nsleep 30\n";
         let run = session.start(code, "check", 80, 24).unwrap();
+        // bash may print a prompt before it turns the echo off.
+        let until_hidden = || {
+            let deadline = std::time::Instant::now() + WAIT;
+            while !run.hides_input() {
+                assert!(std::time::Instant::now() < deadline);
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+        };
         wait_for(&run, "Password: ");
-        // bash may print the prompt before it turns the echo off.
-        let deadline = std::time::Instant::now() + WAIT;
-        while !run.reads_hidden_line() {
-            assert!(std::time::Instant::now() < deadline);
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        until_hidden();
         run.write(b"x\r");
         wait_for(&run, "Name: ");
-        assert!(!run.reads_hidden_line());
+        assert!(!run.hides_input());
         run.write(b"y\r");
+        // A key at a time, as sudo-rs reads a password.
+        wait_for(&run, "Key: ");
+        until_hidden();
+        run.write(b"k");
         wait_for(&run, "raw");
-        assert!(!run.reads_hidden_line());
+        assert!(!run.hides_input());
         run.signal(Signal::KILL);
         wait(&run);
     }
