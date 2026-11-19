@@ -576,11 +576,20 @@ Kamal's checks after the loop, on 2026-11-19, from `~/dev/claude/runbooks/2026-1
 1. A block with `sudo -k; sudo -v`, and a block named `-x` at a `read -s` prompt: each showed `waits for input, press i` in yellow, and the toast of herdr as a desktop notification, and the workspace of Ghostty turned urgent. The log of herdr shows each call of stepbook, about a second after the start of its block. With `[ui.toast] delivery = "system"`, the toast of herdr is the desktop notification: herdr then shows no toast in its own UI.
 2. herdr 0.9.5 takes a body that starts with `-` after `--body`, and rejects `--body=<text>` with `unknown option`: herdr has a parser of its own. So a block named `-x` gets its toast, and the deferred nit of round 5 needs no change.
 
+## Release 0.2.0
+
+0.2.0 carries the input alert: a block that waits at a password prompt shows a note, and stepbook rings the bell, with a toast of herdr in a pane of herdr. It is a new feature, so the minor version goes up. The order is that of spec 14.4, with the 0.1.1 runbook as a model:
+
+1. The branch `release-0.2.0`: the version, `CHANGELOG.md` and this section. CI passes on it once Kamal pushes it, then Claude merges it into `main`.
+2. Kamal publishes the crate from `main`, pushes `main`, and waits for CI.
+3. Kamal tags `v0.2.0`, and the release workflow builds the archives.
+4. Checks: both archives pass the attestation check, mise installs 0.2.0 and it prints `stepbook 0.2.0`, crates.io has 0.2.0.
+
 ## Next
 
 v1 is done. What comes next is Kamal's choice: the ideas of spec 17, the follow-ups of milestone 5 (two of them are choices for Kamal), and the open points below.
 
-1. After 2026-11-19, `mise use -g github:KamalF/stepbook@latest`, if Kamal wants mise to follow new releases: his global config pins 0.1.1.
+1. After 2026-11-20, `mise use -g github:KamalF/stepbook@latest`, if Kamal wants mise to follow new releases: the release of 0.2.0 pins 0.2.0 in his global config.
 2. The removal of the upmd left outside the mise config, if Kamal wants it: `cargo uninstall upmd`, `mise uninstall github:rezigned/upmd`.
 
 ## Open points
@@ -592,5 +601,5 @@ v1 is done. What comes next is Kamal's choice: the ideas of spec 17, the follow-
 - Follow-ups of the review loop: bash highlighting takes 0.1 to 0.2 s before the first frame on the largest runbook (syntect's onig backend, or highlighting on first view, would be faster: a choice for Kamal). Terminals that apply the bidi algorithm on their own (VTE, Konsole) can still reorder code with right-to-left letters. Ghostty does not.
 - `run::tests::a_program_gets_the_position_of_its_cursor_from_the_terminal` failed under load too, once, during milestone 4, and passed alone.
 - `run::tests::trap_keeps_its_other_forms` fails now and then in the full suite under load: the bare `trap` of the run also lists `trap -- '' SIGTSTP`, `SIGTTIN` and `SIGTTOU`, so the wrapper ran with them ignored. bash lists a signal so when it was ignored at its start. The test process ignores only SIGPIPE (its SigIgn is 0x1000), and stepbook never touches these signals, so the cause is still open. `main` fails the same way (checked on 2026-11-18), and the test passes alone.
-- `the_output_of_a_process_substitution_ends_before_the_run` fails its 900 ms bound under heavy load, such as two test suites at once: the reader of the run parses 20,000 lines of output in a debug build, and tee waits on the PTY. It did so before the last changes of milestone 2 too (checked on c7e5ca9, 2026-11-11). A single suite passes.
+- `the_output_of_a_process_substitution_ends_before_the_run` fails its 900 ms bound under heavy load, such as two test suites at once: the reader of the run parses 20,000 lines of output in a debug build, and tee waits on the PTY. It did so before the last changes of milestone 2 too (checked on c7e5ca9, 2026-11-11). A single suite passes. On 2026-11-19, in Claude's sandbox, it failed in most full runs at a load of 4 to 9, on `main` too (4 of 6 runs), and passed alone; CI passed on `main`.
 - Claude drives stepbook in tmux from the sandbox with `scripts/tui.sh` and one steps file per check: it starts tmux, sends the keys and captures the pane. The sandbox stops the tmux server when a command ends. Checked on 2026-11-09.
