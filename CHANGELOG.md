@@ -2,11 +2,12 @@
 
 <!-- One line per item: the release notes on GitHub keep each line break. -->
 
-## Unreleased
+## 0.2.0 - 2026-11-19
 
 ### Added
 
-- A running block whose terminal has the echo off, and is not in raw mode, as at the password prompt of sudo, ssh or `read -s`, shows `waits for input, press i`. stepbook rings the bell of the terminal once when a block starts to wait. In a pane of herdr, which keeps the bell to itself, stepbook also asks herdr for a toast.
+- A block that waits at a password prompt, such as that of sudo, ssh or `read -s`, shows `waits for input, press i`. stepbook reads it from the terminal of the block: the echo is off, and the terminal is not in raw mode.
+- When a block starts to wait, stepbook rings the bell of the terminal once. In a pane of herdr, which keeps the bell to itself, stepbook also asks herdr for a toast.
 
 ## 0.1.1 - 2026-11-18
 
