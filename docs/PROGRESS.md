@@ -585,6 +585,12 @@ Kamal's checks after the loop, on 2026-11-19, from `~/dev/claude/runbooks/2026-1
 3. Kamal tags `v0.2.0`, and the release workflow builds the archives.
 4. Checks: both archives pass the attestation check, mise installs 0.2.0 and it prints `stepbook 0.2.0`, crates.io has 0.2.0.
 
+Kamal ran the release on 2026-11-19, from `~/dev/claude/runbooks/2026-11-19-stepbook-release-0.2.0.md`. Each block ended with rc=0:
+
+- CI passed on the branch, then `cargo publish` put stepbook 0.2.0 on crates.io: 14 files.
+- CI passed on `main` (27bff0e), then the tag `v0.2.0` started the release workflow: both musl builds took under 4 minutes. The release is immutable, and its notes come from `CHANGELOG.md`.
+- Both archives pass the attestation check. `mise use -g github:KamalF/stepbook@0.2.0` installed a static, stripped binary that prints `stepbook 0.2.0`, and pins 0.2.0 in Kamal's global mise config. In the block, `command -v stepbook` still named 0.1.1: a block gets the PATH that stepbook had at its start. `mise which stepbook` names 0.2.0.
+
 ## Next
 
 v1 is done. What comes next is Kamal's choice: the ideas of spec 17, the follow-ups of milestone 5 (two of them are choices for Kamal), and the open points below.
